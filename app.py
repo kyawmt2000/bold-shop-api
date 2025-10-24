@@ -11,6 +11,10 @@ app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI', 'sq
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
+# --- 初始化数据库表 ---
+with app.app_context():
+    db.create_all()
+
 class Merchant(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     shop_name = db.Column(db.String(100), nullable=False)
