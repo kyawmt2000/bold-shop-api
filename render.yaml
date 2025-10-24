@@ -1,0 +1,18 @@
+
+services:
+  - type: web
+    name: bold-shop-api
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app --preload --workers=2 --timeout=90"
+    envVars:
+      - key: FLASK_ENV
+        value: production
+      - key: SECRET_KEY
+        value: change-me
+      - key: ADMIN_TOKEN
+        value: boldAdmin2025
+      - key: SQLALCHEMY_DATABASE_URI
+        sync: false
+      - key: UPLOAD_BACKEND
+        value: local
