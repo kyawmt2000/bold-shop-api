@@ -5,111 +5,103 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from io import BytesIO
 
-# ---------- Config ----------
 app = Flask(__name__)
 
-# DB: Render's Postgres uses DATABASE_URL
+# DB
 db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "sqlite:///data.db"
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# CORS (front端域名可替换为你的正式域名以提高安全性)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-# API 密钥（与前端 X-API-Key 对应）
 API_KEY = os.getenv("API_KEY", "")
 
 db = SQLAlchemy(app)
 
-# ---------- Model ----------
 class MerchantApplication(db.Model):
     __tablename__ = "merchant_applications"
     id = db.Column(db.Integer, primary_key=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
     account_name = db.Column(db.String(120), nullable=False)
     shop_name    = db.Column(db.String(120), nullable=False)
     license_id   = db.Column(db.String(120), nullable=False)
     phone        = db.Column(db.String(64),  nullable=True)
     email        = db.Column(db.String(200), nullable=True)
-
     license_image_name = db.Column(db.String(255))
     license_image_type = db.Column(db.String(128))
-    license_image_data = db.Column(db.LargeBinary)  # <=2MB
+    license_image_data = db.Column(db.LargeBinary)
+    # 新增：审核状态
+    status       = db.Column(db.String(32), default="pending", nullable=False)
 
 with app.app_context():
     db.create_all()
+    # 保险：尝试给老表加 status（如果是旧版本）
+    try:
+        with db.engine.connect() as conn:
+            conn.execute(db.text("ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"))
+            conn.commit()
+    except Exception as e:
+        pass
 
-# ---------- Utils ----------
-def check_api_key(req):
-    key = req.headers.get("X-API-Key", "")
-    return (API_KEY and key == API_KEY)
+def ok(): return {"ok": True}
 
-# ---------- Routes ----------
+def check_key(req):
+    return API_KEY and req.headers.get("X-API-Key") == API_KEY
+
 @app.route("/health")
 def health():
-    return {"ok": True}
+    return ok()
 
 @app.route("/api/merchants/apply", methods=["POST"])
 def apply_merchant():
-    # API key check
-    if not check_api_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
-
-    # Fields
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     account_name = (request.form.get("account_name") or "").strip()
     shop_name    = (request.form.get("shop_name") or "").strip()
     license_id   = (request.form.get("license_id") or "").strip()
     phone        = (request.form.get("phone") or "").strip()
     email        = (request.form.get("email") or "").strip()
     f            = request.files.get("license_image")
-
-    # Validate
-    missing = [k for k,v in {
-        "account_name": account_name,
-        "shop_name": shop_name,
-        "license_id": license_id
-    }.items() if not v]
-    if missing:
-        return jsonify({"message": f"缺少字段: {', '.join(missing)}"}), 400
-    if not f:
-        return jsonify({"message": "请上传营业执照图片"}), 400
-
-    # Size limit 2MB
-    f.seek(0, os.SEEK_END)
-    size = f.tell()
-    f.seek(0)
-    if size > 2 * 1024 * 1024:
-        return jsonify({"message": "图片不能超过2MB"}), 400
-
+    missing = [k for k,v in {"account_name":account_name,"shop_name":shop_name,"license_id":license_id}.items() if not v]
+    if missing: return jsonify({"message": f"缺少字段: {', '.join(missing)}"}), 400
+    if not f: return jsonify({"message":"请上传营业执照图片"}), 400
+    f.seek(0, os.SEEK_END); size=f.tell(); f.seek(0)
+    if size > 2*1024*1024: return jsonify({"message":"图片不能超过2MB"}), 400
     row = MerchantApplication(
-        account_name=account_name,
-        shop_name=shop_name,
-        license_id=license_id,
-        phone=phone,
-        email=email,
-        license_image_name=f.filename,
+        account_name=account_name, shop_name=shop_name, license_id=license_id,
+        phone=phone, email=email, license_image_name=f.filename,
         license_image_type=f.mimetype or "application/octet-stream",
-        license_image_data=f.read()
+        license_image_data=f.read(), status="pending"
     )
-    db.session.add(row)
-    db.session.commit()
+    db.session.add(row); db.session.commit()
+    return jsonify({"message":"ok","id":row.id})
 
-    return jsonify({"message": "ok", "id": row.id})
+@app.route("/api/admin/merchants", methods=["GET"])
+def admin_list():
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    q = MerchantApplication.query.order_by(MerchantApplication.created_at.desc()).all()
+    items = [{
+        "id":r.id, "created_at":r.created_at.isoformat(),
+        "account_name":r.account_name, "shop_name":r.shop_name,
+        "license_id":r.license_id, "phone":r.phone, "email":r.email,
+        "status":r.status or "pending", "license_image_name":r.license_image_name
+    } for r in q]
+    return jsonify({"items": items})
 
-# Optional: 简单查看图片（临时调试用）
-@app.route("/api/merchants/<int:rid>/license_image")
-def get_image(rid):
-    # 也用 API_KEY 保护，避免被随便访问
-    if not check_api_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
+@app.route("/api/admin/merchants/<int:rid>/status", methods=["POST"])
+def admin_set_status(rid):
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    r = MerchantApplication.query.get_or_404(rid)
+    status = (request.json or {}).get("status","").strip().lower()
+    if status not in {"pending","approved","rejected"}:
+        return jsonify({"message":"status 必须是 pending/approved/rejected"}), 400
+    r.status = status; db.session.commit()
+    return jsonify({"message":"ok"})
 
-    row = MerchantApplication.query.get_or_404(rid)
-    return send_file(BytesIO(row.license_image_data),
-                     mimetype=row.license_image_type or "application/octet-stream",
+@app.route("/api/admin/merchants/<int:rid>/license_image")
+def admin_image(rid):
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    r = MerchantApplication.query.get_or_404(rid)
+    return send_file(BytesIO(r.license_image_data),
+                     mimetype=r.license_image_type or "application/octet-stream",
                      as_attachment=False,
-                     download_name=row.license_image_name or f"license_{rid}.bin")
-
-if __name__ == "__main__":
-    # For local testing
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+                     download_name=r.license_image_name or f"license_{rid}.bin")
