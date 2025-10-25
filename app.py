@@ -46,7 +46,20 @@ with app.app_context():
 def ok(): return {"ok": True}
 
 def check_key(req):
-    return API_KEY and req.headers.get("X-API-Key") == API_KEY
+    """
+    Accept API key via:
+    - Header: X-API-Key: <key>
+    - Query:  ?key=<key>
+    - JSON body: {"key": "<key>"}  (for POST/PUT with application/json)
+    """
+    key = req.headers.get("X-API-Key") or req.args.get("key")
+    if not key and req.is_json:
+        try:
+            data = req.get_json(silent=True) or {}
+            key = data.get("key")
+        except Exception:
+            key = None
+    return API_KEY and key == API_KEY
 
 @app.route("/health")
 def health():
