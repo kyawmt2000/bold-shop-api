@@ -9,19 +9,26 @@ from werkzeug.utils import secure_filename
 app = Flask(__name__)
 
 # -------------------- Database config --------------------
-db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "sqlite:///data.db"
+db_url = (
+    os.getenv("SQLALCHEMY_DATABASE_URI")
+    or os.getenv("DATABASE_URL")
+    or "sqlite:///data.db"
+)
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+# 连接保活，避免 Render/PG 连接过期导致的 EOF
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
+}
 
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-API_KEY = os.getenv("API_KEY", "")  # set this in Render dashboard
+API_KEY = os.getenv("API_KEY", "")  # set in Render dashboard
 
 db = SQLAlchemy(app)
 
 # -------------------- Models --------------------
-
-# Merchant applications (store onboarding + review)
 class MerchantApplication(db.Model):
     __tablename__ = "merchant_applications"
     id = db.Column(db.Integer, primary_key=True)
@@ -36,7 +43,6 @@ class MerchantApplication(db.Model):
     license_image_data = db.Column(db.LargeBinary)
     status       = db.Column(db.String(32), default="pending", nullable=False)  # pending/approved/rejected
 
-# Products & Images
 class Product(db.Model):
     __tablename__ = "products"
     id = db.Column(db.Integer, primary_key=True)
@@ -60,12 +66,14 @@ class ProductImage(db.Model):
     data       = db.Column(db.LargeBinary)
 
 with app.app_context():
-    # ensure all tables exist
     db.create_all()
-    # add column 'status' for old merchant_applications (best-effort)
+    # 给旧 merchant_applications 表补 status（容错）
     try:
         with db.engine.connect() as conn:
-            conn.execute(db.text("ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"))
+            conn.execute(db.text(
+                "ALTER TABLE merchant_applications "
+                "ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"
+            ))
             conn.commit()
     except Exception:
         pass
@@ -82,10 +90,26 @@ def check_key(req):
         key = data.get("key")
     return (API_KEY != "") and (key == API_KEY)
 
-def _safe_json_loads(s, default):
-    import json as _json
+def _parse_list_value(raw, default=None):
+    """
+    兼容两种写法：
+    1) JSON: '["XS","S"]'
+    2) 逗号分隔: 'XS,S'
+    """
+    if default is None:
+        default = []
+    if not raw:
+        return default
+    s = str(raw).strip()
     try:
-        return _json.loads(s) if s else default
+        if s.startswith("[") and s.endswith("]"):
+            import json as _json
+            v = _json.loads(s)
+            if isinstance(v, list):
+                return v
+            return default
+        # comma
+        return [x.strip() for x in s.split(",") if x.strip()]
     except Exception:
         return default
 
@@ -100,7 +124,11 @@ def _is_approved_merchant(email: str) -> bool:
 
 def _product_to_dict(p: Product):
     imgs = ProductImage.query.filter_by(product_id=p.id).all()
-    urls = [f"{request.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}" for im in imgs]
+    base = request.url_root.rstrip("/")
+    urls = [f"{base}/api/products/{p.id}/image/{im.id}" for im in imgs]
+    import json as _json
+    sizes = _parse_list_value(p.sizes_json, [])
+    colors = _parse_list_value(p.colors_json, [])
     return {
         "id": p.id,
         "created_at": p.created_at.isoformat(),
@@ -110,19 +138,27 @@ def _product_to_dict(p: Product):
         "gender": p.gender,
         "category": p.category,
         "desc": p.desc,
-        "sizes": _safe_json_loads(p.sizes_json, []),
-        "colors": _safe_json_loads(p.colors_json, []),
+        "sizes": sizes,
+        "colors": colors,
         "images": urls,
         "status": p.status
     }
 
 # -------------------- Health --------------------
-@app.route("/health")
+@app.get("/health")
 def health():
     return ok()
 
+@app.get("/api/admin/dbcheck")
+def dbcheck():
+    try:
+        db.session.execute(db.text("SELECT 1"))
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500
+
 # ==================== Merchant APIs ====================
-@app.route("/api/merchants/apply", methods=["POST"])
+@app.post("/api/merchants/apply")
 def apply_merchant():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     account_name = (request.form.get("account_name") or "").strip()
@@ -145,7 +181,7 @@ def apply_merchant():
     db.session.add(row); db.session.commit()
     return jsonify({"message":"ok","id":row.id})
 
-@app.route("/api/admin/merchants", methods=["GET"])
+@app.get("/api/admin/merchants")
 def admin_list():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     q = MerchantApplication.query.order_by(MerchantApplication.created_at.desc()).all()
@@ -157,7 +193,7 @@ def admin_list():
     } for r in q]
     return jsonify({"items": items})
 
-@app.route("/api/admin/merchants/<int:rid>/status", methods=["POST"])
+@app.post("/api/admin/merchants/<int:rid>/status")
 def admin_set_status(rid):
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     r = MerchantApplication.query.get_or_404(rid)
@@ -167,7 +203,7 @@ def admin_set_status(rid):
     r.status = status; db.session.commit()
     return jsonify({"message":"ok"})
 
-@app.route("/api/admin/merchants/<int:rid>/license_image")
+@app.get("/api/admin/merchants/<int:rid>/license_image")
 def admin_image(rid):
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     r = MerchantApplication.query.get_or_404(rid)
@@ -203,13 +239,16 @@ def products_add():
         return jsonify({"message":"not approved"}), 403
 
     title = (f.get("title") or "").strip()
-    price = int(f.get("price") or 0)
+    try:
+        price = int(f.get("price") or 0)
+    except Exception:
+        return jsonify({"message":"price 不合法"}), 400
     gender = (f.get("gender") or "").strip()
     category = (f.get("category") or "").strip()
     desc = (f.get("desc") or "").strip()
 
-    sizes = _safe_json_loads(f.get("sizes"), [])
-    colors = _safe_json_loads(f.get("colors"), [])
+    sizes = _parse_list_value(f.get("sizes"), [])
+    colors = _parse_list_value(f.get("colors"), [])
 
     if not title: return jsonify({"message":"title 不能为空"}), 400
     if price < 0: return jsonify({"message":"price 不合法"}), 400
@@ -282,17 +321,20 @@ def product_delete(pid):
     db.session.commit()
     return jsonify({"ok": True, "id": pid})
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
-
-
 # ========= 临时：产品表字段迁移（受 API Key 保护） =========
 def _run_products_migrations():
     stmts = [
+        # products
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS gender VARCHAR(10)",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS category VARCHAR(20)",
+        'ALTER TABLE products ADD COLUMN IF NOT EXISTS "desc" TEXT',
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS sizes_json TEXT",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS colors_json TEXT",
+        # product_images
         "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)",
-        "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"
+        "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)",
     ]
     results = []
     with app.app_context():
@@ -315,3 +357,6 @@ def admin_migrate():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 # ========= /临时迁移 =========
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
