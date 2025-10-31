@@ -284,3 +284,34 @@ def product_delete(pid):
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
+
+
+# ========= 临时：产品表字段迁移（受 API Key 保护） =========
+def _run_products_migrations():
+    stmts = [
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
+        "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)",
+        "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"
+    ]
+    results = []
+    with app.app_context():
+        with db.engine.begin() as conn:
+            for sql in stmts:
+                try:
+                    conn.execute(db.text(sql))
+                    results.append({"sql": sql, "ok": True})
+                except Exception as e:
+                    results.append({"sql": sql, "ok": False, "error": str(e)})
+    return results
+
+@app.post("/api/admin/migrate")
+def admin_migrate():
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    try:
+        results = _run_products_migrations()
+        return jsonify({"ok": True, "results": results})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+# ========= /临时迁移 =========
