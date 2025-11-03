@@ -16,7 +16,7 @@ db_url = (
 )
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-# 连接保活，避免 Render/PG 连接过期导致的 EOF
+# keep-alive 防止 Render/PG 连接过期
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_pre_ping": True,
     "pool_recycle": 300,
@@ -53,8 +53,8 @@ class Product(db.Model):
     gender  = db.Column(db.String(10))         # women / men
     category= db.Column(db.String(20))         # clothes / pants / shoes
     desc    = db.Column(db.Text)
-    sizes_json  = db.Column(db.Text)           # '["M","L"]'
-    colors_json = db.Column(db.Text)           # '["Black","White"]'
+    sizes_json  = db.Column(db.Text)           # '["M","L"]' 或 'M,L'
+    colors_json = db.Column(db.Text)           # '["Black"]' 或 'Black,White'
     status  = db.Column(db.String(20), default="active")  # active/removed
 
 class ProductImage(db.Model):
@@ -67,7 +67,7 @@ class ProductImage(db.Model):
 
 with app.app_context():
     db.create_all()
-    # 给旧 merchant_applications 表补 status（容错）
+    # 容错：老表没有 status 字段时补上
     try:
         with db.engine.connect() as conn:
             conn.execute(db.text(
@@ -91,11 +91,7 @@ def check_key(req):
     return (API_KEY != "") and (key == API_KEY)
 
 def _parse_list_value(raw, default=None):
-    """
-    兼容两种写法：
-    1) JSON: '["XS","S"]'
-    2) 逗号分隔: 'XS,S'
-    """
+    """兼容 JSON 数组或逗号分隔"""
     if default is None:
         default = []
     if not raw:
@@ -105,10 +101,7 @@ def _parse_list_value(raw, default=None):
         if s.startswith("[") and s.endswith("]"):
             import json as _json
             v = _json.loads(s)
-            if isinstance(v, list):
-                return v
-            return default
-        # comma
+            return v if isinstance(v, list) else default
         return [x.strip() for x in s.split(",") if x.strip()]
     except Exception:
         return default
@@ -126,7 +119,6 @@ def _product_to_dict(p: Product):
     imgs = ProductImage.query.filter_by(product_id=p.id).all()
     base = request.url_root.rstrip("/")
     urls = [f"{base}/api/products/{p.id}/image/{im.id}" for im in imgs]
-    import json as _json
     sizes = _parse_list_value(p.sizes_json, [])
     colors = _parse_list_value(p.colors_json, [])
     return {
@@ -222,7 +214,10 @@ def products_list():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     try:
         email = (request.args.get("merchant_email") or "").strip().lower()
+        include_removed = (request.args.get("include_removed") or "").strip() in {"1", "true", "yes"}
         q = Product.query
+        if not include_removed:
+            q = q.filter(Product.status != "removed")
         if email:
             q = q.filter_by(merchant_email=email)
         rows = q.order_by(Product.id.desc()).all()
@@ -314,17 +309,24 @@ def product_delete(pid):
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("merchant_email") or "").strip().lower()
+    hard  = bool(data.get("hard"))
     row = Product.query.get_or_404(pid)
     if email != (row.merchant_email or "").lower():
         return jsonify({"message":"forbidden"}), 403
-    row.status = "removed"
-    db.session.commit()
-    return jsonify({"ok": True, "id": pid})
 
-# ========= 临时：产品表字段迁移（受 API Key 保护） =========
+    if hard:
+        # 真正删除商品与其图片
+        ProductImage.query.filter_by(product_id=pid).delete(synchronize_session=False)
+        db.session.delete(row)
+    else:
+        # 软删除：仅标记
+        row.status = "removed"
+    db.session.commit()
+    return jsonify({"ok": True, "id": pid, "hard": hard})
+
+# ========= 临时迁移（受 API Key 保护） =========
 def _run_products_migrations():
     stmts = [
-        # products
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS gender VARCHAR(10)",
@@ -332,7 +334,6 @@ def _run_products_migrations():
         'ALTER TABLE products ADD COLUMN IF NOT EXISTS "desc" TEXT',
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS sizes_json TEXT",
         "ALTER TABLE products ADD COLUMN IF NOT EXISTS colors_json TEXT",
-        # product_images
         "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)",
         "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)",
     ]
