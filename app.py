@@ -5,6 +5,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from io import BytesIO
 from werkzeug.utils import secure_filename
+from sqlalchemy import func
 
 app = Flask(__name__)
 
@@ -17,7 +18,6 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 API_KEY = os.getenv("API_KEY", "")  # 在 Render 的环境变量里设置
-
 db = SQLAlchemy(app)
 
 # -------------------- Models --------------------
@@ -57,9 +57,21 @@ class ProductImage(db.Model):
     mimetype   = db.Column(db.String(128))
     data       = db.Column(db.LargeBinary)
 
+# 新增：账号追踪（登录用户后台清单）
+class UserAccount(db.Model):
+    __tablename__ = "user_accounts"
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(190), unique=True, nullable=False, index=True)
+    name = db.Column(db.String(190))
+    picture = db.Column(db.Text)
+    provider = db.Column(db.String(50), default="google")  # google / email / phone ...
+    login_count = db.Column(db.Integer, default=0)
+    last_login = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 with app.app_context():
     db.create_all()
-    # 兜底增加缺失字段
+    # 兜底增加缺失字段/表
     try:
         with db.engine.connect() as conn:
             conn.execute(db.text("ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"))
@@ -67,6 +79,7 @@ with app.app_context():
             conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'"))
             conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)"))
             conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"))
+            # user_accounts 表（若不是 SQLite，可使用 CREATE TABLE IF NOT EXISTS，现由 SQLAlchemy 已 create_all）
             conn.commit()
     except Exception:
         pass
@@ -105,7 +118,8 @@ def _is_approved_merchant(email: str) -> bool:
 def _product_to_dict(p: Product, req=None):
     r = req or request
     imgs = ProductImage.query.filter_by(product_id=p.id).all()
-    urls = [f"{r.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}" for im in imgs]
+    base = (r.url_root or "").rstrip("/")
+    urls = [f"{base}/api/products/{p.id}/image/{im.id}" for im in imgs]
     return {
         "id": p.id,
         "created_at": p.created_at.isoformat(),
@@ -338,5 +352,95 @@ def admin_migrate():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# ==================== 用户账号追踪 · 新增 ====================
+@app.post("/api/auth/track-login")
+def track_login():
+    """
+    接收 JSON：
+      { "email": "...", "name": "...", "picture": "...", "provider": "google" }
+    作用：
+      - email 必填；其余可选
+      - 若不存在则创建；存在则更新 name/picture/provider
+      - 更新 last_login = 现在；login_count += 1
+    """
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"message": "email required"}), 400
+
+    name = (data.get("name") or "").strip()
+    picture = (data.get("picture") or "").strip()
+    provider = (data.get("provider") or "google").strip().lower()
+
+    ua = UserAccount.query.filter_by(email=email).first()
+    now = datetime.utcnow()
+
+    if not ua:
+        ua = UserAccount(
+            email=email,
+            name=name,
+            picture=picture,
+            provider=provider,
+            login_count=1,
+            last_login=now,
+            created_at=now
+        )
+        db.session.add(ua)
+    else:
+        ua.name = name or ua.name
+        ua.picture = picture or ua.picture
+        ua.provider = provider or ua.provider
+        ua.login_count = (ua.login_count or 0) + 1
+        ua.last_login = now
+
+    db.session.commit()
+    return jsonify({"ok": True, "id": ua.id})
+
+@app.get("/api/admin/users")
+def admin_users():
+    """后台账号清单：?q=关键字&page=1&page_size=20  （需 API_KEY）"""
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+
+    q = (request.args.get("q") or "").strip().lower()
+    page = max(int(request.args.get("page", 1)), 1)
+    page_size = min(max(int(request.args.get("page_size", 20)), 1), 100)
+
+    query = UserAccount.query
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            db.or_(
+                func.lower(UserAccount.email).like(like),
+                func.lower(UserAccount.name).like(like),
+                func.lower(UserAccount.provider).like(like)
+            )
+        )
+
+    query = query.order_by(UserAccount.last_login.desc().nullslast(),
+                           UserAccount.created_at.desc())
+
+    total = query.count()
+    items = query.offset((page-1)*page_size).limit(page_size).all()
+
+    def row(u: UserAccount):
+        return {
+            "id": u.id,
+            "email": u.email,
+            "name": u.name,
+            "picture": u.picture,
+            "provider": u.provider,
+            "login_count": u.login_count or 0,
+            "last_login": (u.last_login.isoformat()+"Z") if u.last_login else None,
+            "created_at": (u.created_at.isoformat()+"Z") if u.created_at else None,
+        }
+
+    return jsonify({
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "items": [row(u) for u in items]
+    })
+
+# -------------------- Run --------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
