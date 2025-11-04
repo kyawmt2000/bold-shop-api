@@ -2,10 +2,11 @@ import os
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from werkzeug.utils import secure_filename
-from sqlalchemy import func
+import csv
+import json
 
 app = Flask(__name__)
 
@@ -14,10 +15,11 @@ db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "s
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# CORS：只开放 /api/*，便于前端调用
+# 只开放 /api/* 给前端
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-API_KEY = os.getenv("API_KEY", "")  # 在 Render 的环境变量里设置
+API_KEY = os.getenv("API_KEY", "")  # 在 Render 的 Environment 里设置
+
 db = SQLAlchemy(app)
 
 # -------------------- Models --------------------
@@ -57,21 +59,33 @@ class ProductImage(db.Model):
     mimetype   = db.Column(db.String(128))
     data       = db.Column(db.LargeBinary)
 
-# 新增：账号追踪（登录用户后台清单）
-class UserAccount(db.Model):
-    __tablename__ = "user_accounts"
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(190), unique=True, nullable=False, index=True)
-    name = db.Column(db.String(190))
-    picture = db.Column(db.Text)
-    provider = db.Column(db.String(50), default="google")  # google / email / phone ...
-    login_count = db.Column(db.Integer, default=0)
-    last_login = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+# ===== 新增：登录用户表（去重） =====
+class AuthUser(db.Model):
+    __tablename__ = "auth_users"
+    id         = db.Column(db.Integer, primary_key=True)
+    email      = db.Column(db.String(200), unique=True, index=True, nullable=False)
+    name       = db.Column(db.String(200))
+    picture    = db.Column(db.String(500))
+    provider   = db.Column(db.String(50))
+    status     = db.Column(db.String(20), default="active")  # active/blocked
+    login_count= db.Column(db.Integer, default=0)
+    first_seen = db.Column(db.DateTime, default=datetime.utcnow)
+    last_seen  = db.Column(db.DateTime, default=datetime.utcnow)
+
+# ===== 新增：每次登录事件表 =====
+class AuthLoginEvent(db.Model):
+    __tablename__ = "auth_login_events"
+    id        = db.Column(db.Integer, primary_key=True)
+    email     = db.Column(db.String(200), index=True)
+    name      = db.Column(db.String(200))
+    provider  = db.Column(db.String(50))
+    ip        = db.Column(db.String(64))
+    ua        = db.Column(db.String(500))
+    created_at= db.Column(db.DateTime, default=datetime.utcnow)
 
 with app.app_context():
     db.create_all()
-    # 兜底增加缺失字段/表
+    # 兜底迁移（PG/SQLite 兼容；SQLite 忽略 IF NOT EXISTS）
     try:
         with db.engine.connect() as conn:
             conn.execute(db.text("ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"))
@@ -79,7 +93,6 @@ with app.app_context():
             conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'"))
             conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)"))
             conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"))
-            # user_accounts 表（若不是 SQLite，可使用 CREATE TABLE IF NOT EXISTS，现由 SQLAlchemy 已 create_all）
             conn.commit()
     except Exception:
         pass
@@ -96,15 +109,13 @@ def check_key(req):
     return (API_KEY != "") and (key == API_KEY)
 
 def _safe_json_loads(s, default):
-    import json as _json
     try:
-        return _json.loads(s) if s else default
+        return json.loads(s) if s else default
     except Exception:
         return default
 
 def _json_dumps(o):
-    import json as _json
-    return _json.dumps(o, ensure_ascii=False)
+    return json.dumps(o, ensure_ascii=False)
 
 def _is_approved_merchant(email: str) -> bool:
     if not email:
@@ -118,8 +129,7 @@ def _is_approved_merchant(email: str) -> bool:
 def _product_to_dict(p: Product, req=None):
     r = req or request
     imgs = ProductImage.query.filter_by(product_id=p.id).all()
-    base = (r.url_root or "").rstrip("/")
-    urls = [f"{base}/api/products/{p.id}/image/{im.id}" for im in imgs]
+    urls = [f"{r.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}" for im in imgs]
     return {
         "id": p.id,
         "created_at": p.created_at.isoformat(),
@@ -138,6 +148,119 @@ def _product_to_dict(p: Product, req=None):
 # -------------------- Health --------------------
 @app.route("/health")
 def health(): return ok()
+
+# ==================== Auth / Users ====================
+@app.post("/api/auth/track-login")
+def auth_track_login():
+    """前端登录成功后调用一次，记录用户与登录事件"""
+    data = request.get_json(silent=True) or {}
+    email    = (data.get("email") or "").strip().lower()
+    name     = (data.get("name") or "").strip()
+    picture  = (data.get("picture") or "").strip()
+    provider = (data.get("provider") or "google").strip().lower()
+    if not email:
+        return jsonify({"message": "email required"}), 400
+
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    ua = request.headers.get("User-Agent", "")
+
+    # upsert AuthUser
+    user = AuthUser.query.filter_by(email=email).first()
+    now = datetime.utcnow()
+    if user:
+        user.name = name or user.name
+        user.picture = picture or user.picture
+        user.provider = provider or user.provider
+        user.login_count = (user.login_count or 0) + 1
+        user.last_seen = now
+    else:
+        user = AuthUser(
+            email=email, name=name, picture=picture, provider=provider,
+            status="active", login_count=1, first_seen=now, last_seen=now
+        )
+        db.session.add(user)
+
+    # 记录事件
+    ev = AuthLoginEvent(email=email, name=name, provider=provider, ip=ip, ua=ua)
+    db.session.add(ev)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+@app.get("/api/admin/users")
+def admin_users_list():
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    q = AuthUser.query
+    search = (request.args.get("q") or "").strip()
+    if search:
+        like = f"%{search}%"
+        q = q.filter(db.or_(AuthUser.email.ilike(like), AuthUser.name.ilike(like)))
+    # pagination
+    page = max(int(request.args.get("page", 1)), 1)
+    size = min(max(int(request.args.get("size", 20)), 1), 200)
+    q = q.order_by(AuthUser.last_seen.desc())
+    rows = q.limit(size).offset((page-1)*size).all()
+    total = q.count()
+    items = [{
+        "email": r.email, "name": r.name, "picture": r.picture, "provider": r.provider,
+        "status": r.status, "login_count": r.login_count,
+        "first_seen": r.first_seen.isoformat() if r.first_seen else None,
+        "last_seen": r.last_seen.isoformat() if r.last_seen else None
+    } for r in rows]
+    return jsonify({"items": items, "page": page, "size": size, "total": total})
+
+@app.post("/api/admin/users/<path:email>/status")
+def admin_users_status(email):
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    status = (body.get("status") or "").lower()
+    if status not in {"active","blocked"}:
+        return jsonify({"message": "status must be active/blocked"}), 400
+    user = AuthUser.query.filter_by(email=email).first_or_404()
+    user.status = status
+    db.session.commit()
+    return jsonify({"ok": True})
+
+@app.get("/api/admin/users/stats")
+def admin_users_stats():
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    days = min(max(int(request.args.get("days", 30)), 1), 180)
+
+    # 新增用户按天
+    start = (datetime.utcnow() - timedelta(days=days-1)).date()
+    labels = []
+    new_users = []
+    logins = []
+    for i in range(days):
+        d0 = datetime.combine(start + timedelta(days=i), datetime.min.time())
+        d1 = d0 + timedelta(days=1)
+        labels.append((start + timedelta(days=i)).strftime("%m-%d"))
+
+        nu = AuthUser.query.filter(AuthUser.first_seen >= d0, AuthUser.first_seen < d1).count()
+        new_users.append(nu)
+
+        le = AuthLoginEvent.query.filter(AuthLoginEvent.created_at >= d0,
+                                         AuthLoginEvent.created_at < d1).count()
+        logins.append(le)
+
+    return jsonify({"labels": labels, "new_users": new_users, "logins": logins})
+
+@app.get("/api/admin/users/export")
+def admin_users_export():
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    q = AuthUser.query.order_by(AuthUser.last_seen.desc()).all()
+    buf = BytesIO()
+    writer = csv.writer(buf)
+    writer.writerow(["email","name","provider","status","login_count","first_seen","last_seen","picture"])
+    for r in q:
+        writer.writerow([
+            r.email, r.name or "", r.provider or "", r.status or "",
+            r.login_count or 0,
+            r.first_seen.isoformat() if r.first_seen else "",
+            r.last_seen.isoformat() if r.last_seen else "",
+            r.picture or ""
+        ])
+    buf.seek(0)
+    return send_file(buf, mimetype="text/csv", as_attachment=True, download_name="users.csv")
 
 # ==================== Merchant APIs ====================
 @app.post("/api/merchants/apply")
@@ -305,10 +428,7 @@ def product_update(pid):
 
 @app.delete("/api/products/<int:pid>")
 def product_delete(pid):
-    """支持两种删除：
-       - 软删除（默认）：status = 'removed'
-       - 硬删除（body: {"hard": true}）：同时删除产品与其所有图片
-    """
+    """支持软删（默认）或硬删（body: {"hard": true}）"""
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("merchant_email") or "").strip().lower()
@@ -319,7 +439,6 @@ def product_delete(pid):
         return jsonify({"message":"forbidden"}), 403
 
     if hard:
-        # 先删图片，再删商品
         ProductImage.query.filter_by(product_id=pid).delete()
         db.session.delete(row)
         db.session.commit()
@@ -329,7 +448,7 @@ def product_delete(pid):
         db.session.commit()
         return jsonify({"ok": True, "id": pid, "deleted": "soft"})
 
-# 方便一次性补表的迁移端点（可选）
+# 迁移端点（可选）
 @app.post("/api/admin/migrate")
 def admin_migrate():
     if not check_key(request): return jsonify({"message": "Unauthorized"}), 401
@@ -352,95 +471,5 @@ def admin_migrate():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ==================== 用户账号追踪 · 新增 ====================
-@app.post("/api/auth/track-login")
-def track_login():
-    """
-    接收 JSON：
-      { "email": "...", "name": "...", "picture": "...", "provider": "google" }
-    作用：
-      - email 必填；其余可选
-      - 若不存在则创建；存在则更新 name/picture/provider
-      - 更新 last_login = 现在；login_count += 1
-    """
-    data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    if not email:
-        return jsonify({"message": "email required"}), 400
-
-    name = (data.get("name") or "").strip()
-    picture = (data.get("picture") or "").strip()
-    provider = (data.get("provider") or "google").strip().lower()
-
-    ua = UserAccount.query.filter_by(email=email).first()
-    now = datetime.utcnow()
-
-    if not ua:
-        ua = UserAccount(
-            email=email,
-            name=name,
-            picture=picture,
-            provider=provider,
-            login_count=1,
-            last_login=now,
-            created_at=now
-        )
-        db.session.add(ua)
-    else:
-        ua.name = name or ua.name
-        ua.picture = picture or ua.picture
-        ua.provider = provider or ua.provider
-        ua.login_count = (ua.login_count or 0) + 1
-        ua.last_login = now
-
-    db.session.commit()
-    return jsonify({"ok": True, "id": ua.id})
-
-@app.get("/api/admin/users")
-def admin_users():
-    """后台账号清单：?q=关键字&page=1&page_size=20  （需 API_KEY）"""
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
-
-    q = (request.args.get("q") or "").strip().lower()
-    page = max(int(request.args.get("page", 1)), 1)
-    page_size = min(max(int(request.args.get("page_size", 20)), 1), 100)
-
-    query = UserAccount.query
-    if q:
-        like = f"%{q}%"
-        query = query.filter(
-            db.or_(
-                func.lower(UserAccount.email).like(like),
-                func.lower(UserAccount.name).like(like),
-                func.lower(UserAccount.provider).like(like)
-            )
-        )
-
-    query = query.order_by(UserAccount.last_login.desc().nullslast(),
-                           UserAccount.created_at.desc())
-
-    total = query.count()
-    items = query.offset((page-1)*page_size).limit(page_size).all()
-
-    def row(u: UserAccount):
-        return {
-            "id": u.id,
-            "email": u.email,
-            "name": u.name,
-            "picture": u.picture,
-            "provider": u.provider,
-            "login_count": u.login_count or 0,
-            "last_login": (u.last_login.isoformat()+"Z") if u.last_login else None,
-            "created_at": (u.created_at.isoformat()+"Z") if u.created_at else None,
-        }
-
-    return jsonify({
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "items": [row(u) for u in items]
-    })
-
-# -------------------- Run --------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
