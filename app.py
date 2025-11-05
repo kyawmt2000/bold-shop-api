@@ -43,12 +43,12 @@ class Product(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     merchant_email = db.Column(db.String(200), index=True, nullable=False)
     title   = db.Column(db.String(200), nullable=False)
-    price   = db.Column(db.Integer, default=0)
-    gender  = db.Column(db.String(10))         # women / men
-    category= db.Column(db.String(20))         # clothes / pants / shoes
+    price   = db.Column(db.Integer, default=0)   # 可作为基础价
+    gender  = db.Column(db.String(10))           # women / men
+    category= db.Column(db.String(20))           # clothes / pants / shoes
     desc    = db.Column(db.Text)
-    sizes_json  = db.Column(db.Text)           # '["M","L"]'
-    colors_json = db.Column(db.Text)           # '["Black","White"]'
+    sizes_json  = db.Column(db.Text)             # '["M","L"]'
+    colors_json = db.Column(db.Text)             # '["Black","White"]'
     status  = db.Column(db.String(20), default="active")  # active/removed
 
 class ProductImage(db.Model):
@@ -59,7 +59,25 @@ class ProductImage(db.Model):
     mimetype   = db.Column(db.String(128))
     data       = db.Column(db.LargeBinary)
 
-# ===== 新增：登录用户表（去重） =====
+# ===== 新增：商品变体（尺码/颜色不同价与库存） =====
+class ProductVariant(db.Model):
+    __tablename__ = "product_variants"
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False, index=True)
+    size   = db.Column(db.String(50))     # 例如 "XS" / "35.5"
+    color  = db.Column(db.String(50))     # 例如 "Black"
+    sku    = db.Column(db.String(120))    # 可选
+    price  = db.Column(db.Integer, nullable=False, default=0)
+    stock  = db.Column(db.Integer, nullable=False, default=0)
+    status = db.Column(db.String(20), default="active")  # active/removed
+
+    __table_args__ = (
+        db.UniqueConstraint("product_id","size","color", name="uq_variant_product_size_color"),
+    )
+
+# ===== 登录用户表与登录事件（你原有后台看登录账号用） =====
 class AuthUser(db.Model):
     __tablename__ = "auth_users"
     id         = db.Column(db.Integer, primary_key=True)
@@ -72,7 +90,6 @@ class AuthUser(db.Model):
     first_seen = db.Column(db.DateTime, default=datetime.utcnow)
     last_seen  = db.Column(db.DateTime, default=datetime.utcnow)
 
-# ===== 新增：每次登录事件表 =====
 class AuthLoginEvent(db.Model):
     __tablename__ = "auth_login_events"
     id        = db.Column(db.Integer, primary_key=True)
@@ -93,6 +110,20 @@ with app.app_context():
             conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'"))
             conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)"))
             conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"))
+            # 变体表兜底
+            conn.execute(db.text("""
+                CREATE TABLE IF NOT EXISTS product_variants (
+                    id INTEGER PRIMARY KEY,
+                    created_at TIMESTAMP,
+                    product_id INTEGER,
+                    size VARCHAR(50),
+                    color VARCHAR(50),
+                    sku VARCHAR(120),
+                    price INTEGER,
+                    stock INTEGER,
+                    status VARCHAR(20)
+                )
+            """))
             conn.commit()
     except Exception:
         pass
@@ -126,16 +157,16 @@ def _is_approved_merchant(email: str) -> bool:
     ).first()
     return bool(row)
 
-def _product_to_dict(p: Product, req=None):
+def _product_to_dict(p: Product, req=None, with_variants=True):
     r = req or request
     imgs = ProductImage.query.filter_by(product_id=p.id).all()
     urls = [f"{r.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}" for im in imgs]
-    return {
+    d = {
         "id": p.id,
         "created_at": p.created_at.isoformat(),
         "merchant_email": p.merchant_email,
         "title": p.title,
-        "price": p.price,
+        "price": p.price,  # 基础价（不一定用作售卖价）
         "gender": p.gender,
         "category": p.category,
         "desc": p.desc,
@@ -144,6 +175,18 @@ def _product_to_dict(p: Product, req=None):
         "images": urls,
         "status": p.status
     }
+    if with_variants:
+        vs = ProductVariant.query.filter_by(product_id=p.id, status="active").all()
+        d["variants"] = [{
+            "id": v.id,
+            "size": v.size,
+            "color": v.color,
+            "sku": v.sku,
+            "price": v.price,
+            "stock": v.stock,
+            "status": v.status
+        } for v in vs]
+    return d
 
 # -------------------- Health --------------------
 @app.route("/health")
@@ -224,24 +267,17 @@ def admin_users_status(email):
 def admin_users_stats():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     days = min(max(int(request.args.get("days", 30)), 1), 180)
-
-    # 新增用户按天
     start = (datetime.utcnow() - timedelta(days=days-1)).date()
-    labels = []
-    new_users = []
-    logins = []
+    labels, new_users, logins = [], [], []
     for i in range(days):
         d0 = datetime.combine(start + timedelta(days=i), datetime.min.time())
         d1 = d0 + timedelta(days=1)
         labels.append((start + timedelta(days=i)).strftime("%m-%d"))
-
         nu = AuthUser.query.filter(AuthUser.first_seen >= d0, AuthUser.first_seen < d1).count()
         new_users.append(nu)
-
         le = AuthLoginEvent.query.filter(AuthLoginEvent.created_at >= d0,
                                          AuthLoginEvent.created_at < d1).count()
         logins.append(le)
-
     return jsonify({"labels": labels, "new_users": new_users, "logins": logins})
 
 @app.get("/api/admin/users/export")
@@ -379,6 +415,42 @@ def products_add():
     db.session.add(p)
     db.session.flush()  # 得到 p.id
 
+    # ---- New: 解析并创建变体（两种方式任选其一） ----
+    variants_json = f.get("variants") or ""          # [{"size":"M","color":"Black","price":26000,"stock":10,"sku":"SKU-M-BK"}, ...]
+    variant_prices_json = f.get("variant_prices") or ""  # {"XS":24000,"S":25000,"M":26000}
+
+    to_create = []
+    try:
+        if variants_json:
+            arr = json.loads(variants_json)
+            for it in arr:
+                to_create.append(ProductVariant(
+                    product_id=p.id,
+                    size=(it.get("size") or "").strip(),
+                    color=(it.get("color") or "").strip(),
+                    price=int(it.get("price") or 0),
+                    stock=int(it.get("stock") or 0),
+                    sku=(it.get("sku") or "").strip(),
+                    status="active"
+                ))
+        elif variant_prices_json:
+            mp = json.loads(variant_prices_json)  # 仅按尺码定价
+            for size_key, price_val in (mp or {}).items():
+                to_create.append(ProductVariant(
+                    product_id=p.id, size=str(size_key), color="", price=int(price_val or 0),
+                    stock=0, sku="", status="active"
+                ))
+        else:
+            # 不传变体则仅保留基础价；也可以选择为每个 size 生成同价变体（按需开启）
+            pass
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message": "variants 解析失败", "detail": str(e)}), 400
+
+    for v in to_create:
+        db.session.add(v)
+
+    # 图片
     files = request.files.getlist("images")
     for i, file in enumerate(files[:5]):
         if not file:
@@ -439,6 +511,7 @@ def product_delete(pid):
         return jsonify({"message":"forbidden"}), 403
 
     if hard:
+        ProductVariant.query.filter_by(product_id=pid).delete()
         ProductImage.query.filter_by(product_id=pid).delete()
         db.session.delete(row)
         db.session.commit()
@@ -447,6 +520,61 @@ def product_delete(pid):
         row.status = "removed"
         db.session.commit()
         return jsonify({"ok": True, "id": pid, "deleted": "soft"})
+
+# ---- New: 读取/更新/修改 变体 ----
+@app.get("/api/products/<int:pid>/variants")
+def product_variants(pid):
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    vs = ProductVariant.query.filter_by(product_id=pid, status="active").all()
+    return jsonify([{
+        "id": v.id, "size": v.size, "color": v.color, "sku": v.sku,
+        "price": v.price, "stock": v.stock, "status": v.status
+    } for v in vs])
+
+@app.post("/api/products/<int:pid>/variants")
+def product_variants_upsert(pid):
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    _ = Product.query.get_or_404(pid)
+    body = request.get_json(silent=True) or {}
+    arr = body.get("variants", [])
+    if not isinstance(arr, list):
+        return jsonify({"message":"variants 必须是数组"}), 400
+    # 简单策略：全量覆盖
+    ProductVariant.query.filter_by(product_id=pid).delete()
+    for it in arr:
+        v = ProductVariant(
+            product_id=pid,
+            size=(it.get("size") or "").strip(),
+            color=(it.get("color") or "").strip(),
+            sku=(it.get("sku") or "").strip(),
+            price=int(it.get("price") or 0),
+            stock=int(it.get("stock") or 0),
+            status=(it.get("status") or "active")
+        )
+        db.session.add(v)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+@app.put("/api/variants/<int:vid>")
+def variant_update(vid):
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    v = ProductVariant.query.get_or_404(vid)
+    data = request.get_json(silent=True) or {}
+    for k in ("size","color","sku","status"):
+        if k in data:
+            setattr(v, k, (data.get(k) or "").strip())
+    if "price" in data: v.price = int(data.get("price") or 0)
+    if "stock" in data: v.stock = int(data.get("stock") or 0)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+@app.delete("/api/variants/<int:vid>")
+def variant_delete(vid):
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    v = ProductVariant.query.get_or_404(vid)
+    db.session.delete(v)
+    db.session.commit()
+    return jsonify({"ok": True})
 
 # 迁移端点（可选）
 @app.post("/api/admin/migrate")
