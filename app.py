@@ -655,6 +655,41 @@ def outfit_media(oid, mid):
         download_name=m.filename or f"o{oid}_{mid}"
     )
 
+# ---- 新增：点赞 & 评论计数 ----
+@app.post("/api/outfits/<int:oid>/like")
+def outfit_like(oid):
+    """点赞：默认 +1；JSON body 可传 {"delta": n} 指定增加数量（仅正数生效）"""
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    row = Outfit.query.get_or_404(oid)
+    data = request.get_json(silent=True) or {}
+    try:
+        delta = int(data.get("delta", 1))
+    except Exception:
+        delta = 1
+    if delta < 0:
+        delta = 0
+    row.likes = (row.likes or 0) + delta
+    db.session.commit()
+    return jsonify({"ok": True, "id": oid, "likes": row.likes})
+
+@app.post("/api/outfits/<int:oid>/comment")
+def outfit_comment_inc(oid):
+    """评论计数：默认 +1；JSON body 可传 {"delta": n} 指定增加数量（仅正数生效）"""
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    row = Outfit.query.get_or_404(oid)
+    data = request.get_json(silent=True) or {}
+    try:
+        delta = int(data.get("delta", 1))
+    except Exception:
+        delta = 1
+    if delta < 0:
+        delta = 0
+    row.comments = (row.comments or 0) + delta
+    db.session.commit()
+    return jsonify({"ok": True, "id": oid, "comments": row.comments})
+
 # ==================== 迁移端点：按方言执行 ====================
 @app.post("/api/admin/migrate")
 def admin_migrate():
