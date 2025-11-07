@@ -102,7 +102,99 @@ with app.app_context():
     db.create_all()
     # 兜底增加缺失字段/表
     try:
+        with app.app_context():
+    db.create_all()
+    try:
         with db.engine.connect() as conn:
+            dialect = conn.engine.dialect.name.lower()
+            is_pg = 'postgres' in dialect
+
+            # 公共列兜底
+            conn.execute(db.text("ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"))
+            conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)"))
+            conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'"))
+            conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)"))
+            conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"))
+
+            # product_variants
+            if is_pg:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS product_variants (
+                        id SERIAL PRIMARY KEY,
+                        product_id INTEGER,
+                        size VARCHAR(50),
+                        color VARCHAR(50),
+                        price INTEGER,
+                        stock INTEGER
+                    )
+                """))
+            else:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS product_variants (
+                        id INTEGER PRIMARY KEY,
+                        product_id INTEGER,
+                        size VARCHAR(50),
+                        color VARCHAR(50),
+                        price INTEGER,
+                        stock INTEGER
+                    )
+                """))
+
+            # outfits / outfit_media
+            if is_pg:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS outfits (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMP,
+                        author_email VARCHAR(200),
+                        author_name VARCHAR(200),
+                        title VARCHAR(200),
+                        desc TEXT,
+                        tags_json TEXT,
+                        likes INTEGER DEFAULT 0,
+                        comments INTEGER DEFAULT 0,
+                        status VARCHAR(20) DEFAULT 'active'
+                    )
+                """))
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS outfit_media (
+                        id SERIAL PRIMARY KEY,
+                        outfit_id INTEGER,
+                        filename VARCHAR(255),
+                        mimetype VARCHAR(128),
+                        data BYTEA,
+                        is_video BOOLEAN DEFAULT FALSE
+                    )
+                """))
+            else:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS outfits (
+                        id INTEGER PRIMARY KEY,
+                        created_at TIMESTAMP,
+                        author_email VARCHAR(200),
+                        author_name VARCHAR(200),
+                        title VARCHAR(200),
+                        desc TEXT,
+                        tags_json TEXT,
+                        likes INTEGER DEFAULT 0,
+                        comments INTEGER DEFAULT 0,
+                        status VARCHAR(20) DEFAULT 'active'
+                    )
+                """))
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS outfit_media (
+                        id INTEGER PRIMARY KEY,
+                        outfit_id INTEGER,
+                        filename VARCHAR(255),
+                        mimetype VARCHAR(128),
+                        data BLOB,
+                        is_video BOOLEAN DEFAULT 0
+                    )
+                """))
+            conn.commit()
+    except Exception:
+        pass
+:
             conn.execute(db.text("ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"))
             conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)"))
             conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'"))
