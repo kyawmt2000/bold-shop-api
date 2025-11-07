@@ -36,6 +36,7 @@ class MerchantApplication(db.Model):
     license_image_data = db.Column(db.LargeBinary)
     status       = db.Column(db.String(32), default="pending", nullable=False)  # pending/approved/rejected
 
+
 class Product(db.Model):
     __tablename__ = "products"
     id = db.Column(db.Integer, primary_key=True)
@@ -51,6 +52,7 @@ class Product(db.Model):
     colors_json = db.Column(db.Text)           # '["Black","White"]' 兼容老前端
     status  = db.Column(db.String(20), default="active")  # active/removed
 
+
 class ProductVariant(db.Model):
     __tablename__ = "product_variants"
     id = db.Column(db.Integer, primary_key=True)
@@ -60,6 +62,7 @@ class ProductVariant(db.Model):
     price  = db.Column(db.Integer, nullable=False, default=0)
     stock  = db.Column(db.Integer, nullable=False, default=0)  # 可选库存，默认0表示未维护
 
+
 class ProductImage(db.Model):
     __tablename__ = "product_images"
     id = db.Column(db.Integer, primary_key=True)
@@ -67,6 +70,33 @@ class ProductImage(db.Model):
     filename   = db.Column(db.String(255))
     mimetype   = db.Column(db.String(128))
     data       = db.Column(db.LargeBinary)
+
+
+# === Outfit(穿搭) ===
+class Outfit(db.Model):
+    __tablename__ = "outfits"
+    id = db.Column(db.Integer, primary_key=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    author_email = db.Column(db.String(200), index=True, nullable=False)
+    author_name  = db.Column(db.String(200))
+    title        = db.Column(db.String(200))
+    desc         = db.Column(db.Text)
+    tags_json    = db.Column(db.Text)                    # '["日常","运动"]'
+    likes        = db.Column(db.Integer, default=0)
+    comments     = db.Column(db.Integer, default=0)
+    status       = db.Column(db.String(20), default="active")  # active/removed
+
+
+class OutfitMedia(db.Model):
+    __tablename__ = "outfit_media"
+    id = db.Column(db.Integer, primary_key=True)
+    outfit_id = db.Column(db.Integer, db.ForeignKey("outfits.id"), index=True, nullable=False)
+    filename  = db.Column(db.String(255))
+    mimetype  = db.Column(db.String(128))
+    data      = db.Column(db.LargeBinary)
+    is_video  = db.Column(db.Boolean, default=False)
+
 
 with app.app_context():
     db.create_all()
@@ -87,6 +117,31 @@ with app.app_context():
                     color VARCHAR(50),
                     price INTEGER,
                     stock INTEGER
+                )
+            """))
+            # Outfit 相关表
+            conn.execute(db.text("""
+                CREATE TABLE IF NOT EXISTS outfits (
+                    id INTEGER PRIMARY KEY,
+                    created_at TIMESTAMP,
+                    author_email VARCHAR(200),
+                    author_name VARCHAR(200),
+                    title VARCHAR(200),
+                    desc TEXT,
+                    tags_json TEXT,
+                    likes INTEGER DEFAULT 0,
+                    comments INTEGER DEFAULT 0,
+                    status VARCHAR(20) DEFAULT 'active'
+                )
+            """))
+            conn.execute(db.text("""
+                CREATE TABLE IF NOT EXISTS outfit_media (
+                    id INTEGER PRIMARY KEY,
+                    outfit_id INTEGER,
+                    filename VARCHAR(255),
+                    mimetype VARCHAR(128),
+                    data BLOB,
+                    is_video BOOLEAN DEFAULT 0
                 )
             """))
             conn.commit()
@@ -150,6 +205,31 @@ def _product_to_dict(p: Product, req=None):
         "images": urls,
         "variants": [_variant_to_dict(v) for v in variants],  # 新增
         "status": p.status
+    }
+
+def _outfit_to_dict(o: Outfit, req=None):
+    r = req or request
+    medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
+    media_urls = [f"{r.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}" for m in medias]
+    videos = [u for m, u in zip(medias, media_urls) if m.is_video]
+    images = [u for m, u in zip(medias, media_urls) if not m.is_video]
+    try:
+        tags = json.loads(o.tags_json) if o.tags_json else []
+    except Exception:
+        tags = []
+    return {
+        "id": o.id,
+        "created_at": o.created_at.isoformat(),
+        "author_email": o.author_email,
+        "author_name": o.author_name,
+        "title": o.title,
+        "desc": o.desc,
+        "tags": tags,
+        "images": images,
+        "videos": videos,
+        "likes": o.likes or 0,
+        "comments": o.comments or 0,
+        "status": o.status or "active"
     }
 
 # -------------------- Health --------------------
@@ -266,7 +346,7 @@ def products_add():
     sizes = _safe_json_loads(f.get("sizes"), [])
     colors = _safe_json_loads(f.get("colors"), [])
 
-    # 新增：变体 JSON（可选），格式：
+    # 新增：变体 JSON（可选）
     # variant_prices: '[{"size":"M","color":"Black","price":12000,"stock":10}, ...]'
     variant_prices = _safe_json_loads(f.get("variant_prices"), [])
 
@@ -431,6 +511,94 @@ def product_delete(pid):
         db.session.commit()
         return jsonify({"ok": True, "id": pid, "deleted": "soft"})
 
+# ==================== Outfit APIs ====================
+
+@app.post("/api/outfits/add")
+def outfits_add():
+    """发布穿搭：支持 1~5 张图片 或 1 个视频（不能混合）。"""
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+
+    f = request.form
+    email = (f.get("author_email") or "").strip().lower()
+    if not email:
+        return jsonify({"message": "author_email 不能为空"}), 400
+
+    title = (f.get("title") or "").strip()
+    desc  = (f.get("desc") or "").strip()
+    author_name = (f.get("author_name") or "").strip()
+    tags_raw = f.get("tags") or "[]"
+
+    tags = _safe_json_loads(tags_raw, [])
+    tags_json = _json_dumps(tags)
+
+    files = request.files.getlist("media")
+    if not files:
+        return jsonify({"message": "请至少上传 1 个文件"}), 400
+
+    is_videos = [(file.mimetype or "").startswith("video/") for file in files]
+    if any(is_videos) and not all(is_videos):
+        return jsonify({"message": "不能混合图片和视频。只支持 1 个视频 或 1~5 张图片"}), 400
+
+    if all(is_videos):
+        if len(files) != 1:
+            return jsonify({"message": "视频只能上传 1 个"}), 400
+    else:
+        if len(files) > 5:
+            return jsonify({"message": "图片最多 5 张"}), 400
+
+    o = Outfit(
+        author_email=email, author_name=author_name, title=title,
+        desc=desc, tags_json=tags_json, status="active"
+    )
+    db.session.add(o)
+    db.session.flush()
+
+    for i, file in enumerate(files):
+        if not file:
+            continue
+        file.seek(0, os.SEEK_END); size = file.tell(); file.seek(0)
+        if size > 20 * 1024 * 1024:
+            db.session.rollback()
+            return jsonify({"message": f"第{i+1}个文件超过 20MB"}), 400
+        mimetype = file.mimetype or "application/octet-stream"
+        is_video = mimetype.startswith("video/")
+        m = OutfitMedia(
+            outfit_id=o.id,
+            filename=secure_filename(file.filename or f"o{o.id}_{i+1}"),
+            mimetype=mimetype,
+            data=file.read(),
+            is_video=is_video
+        )
+        db.session.add(m)
+
+    db.session.commit()
+    return jsonify(_outfit_to_dict(o)), 201
+
+
+@app.get("/api/outfits")
+def outfits_list():
+    """穿搭流：支持 ?author_email= 过滤；默认按时间倒序"""
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    email = (request.args.get("author_email") or "").strip().lower()
+    q = Outfit.query.filter_by(status="active")
+    if email:
+        q = q.filter(Outfit.author_email == email)
+    rows = q.order_by(Outfit.created_at.desc()).limit(200).all()
+    return jsonify([_outfit_to_dict(r) for r in rows])
+
+
+@app.get("/api/outfits/<int:oid>/media/<int:mid>")
+def outfit_media(oid, mid):
+    m = OutfitMedia.query.filter_by(id=mid, outfit_id=oid).first_or_404()
+    return send_file(
+        BytesIO(m.data),
+        mimetype=m.mimetype or "application/octet-stream",
+        as_attachment=False,
+        download_name=m.filename or f"o{oid}_{mid}"
+    )
+
 # 方便一次性补表的迁移端点（可选）
 @app.post("/api/admin/migrate")
 def admin_migrate():
@@ -447,6 +615,26 @@ def admin_migrate():
             color VARCHAR(50),
             price INTEGER,
             stock INTEGER
+        )""",
+        """CREATE TABLE IF NOT EXISTS outfits (
+            id INTEGER PRIMARY KEY,
+            created_at TIMESTAMP,
+            author_email VARCHAR(200),
+            author_name VARCHAR(200),
+            title VARCHAR(200),
+            desc TEXT,
+            tags_json TEXT,
+            likes INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0,
+            status VARCHAR(20) DEFAULT 'active'
+        )""",
+        """CREATE TABLE IF NOT EXISTS outfit_media (
+            id INTEGER PRIMARY KEY,
+            outfit_id INTEGER,
+            filename VARCHAR(255),
+            mimetype VARCHAR(128),
+            data BLOB,
+            is_video BOOLEAN DEFAULT 0
         )"""
     ]
     results = []
