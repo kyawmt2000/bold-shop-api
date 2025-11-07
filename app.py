@@ -1,11 +1,12 @@
 import os
+import json
+from datetime import datetime
+from io import BytesIO
+
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from datetime import datetime
-from io import BytesIO
 from werkzeug.utils import secure_filename
-import json
 
 app = Flask(__name__)
 
@@ -98,54 +99,109 @@ class OutfitMedia(db.Model):
     is_video  = db.Column(db.Boolean, default=False)
 
 
+# -------------------- 初始化：按方言兜底建表 --------------------
 with app.app_context():
     db.create_all()
-    # 兜底增加缺失字段/表
     try:
         with db.engine.connect() as conn:
-            conn.execute(db.text("ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"))
-            conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)"))
-            conn.execute(db.text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'"))
-            conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)"))
-            conn.execute(db.text("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"))
-            # 创建 product_variants 表（SQLite 忽略 IF NOT EXISTS）
-            conn.execute(db.text("""
-                CREATE TABLE IF NOT EXISTS product_variants (
-                    id INTEGER PRIMARY KEY,
-                    product_id INTEGER,
-                    size VARCHAR(50),
-                    color VARCHAR(50),
-                    price INTEGER,
-                    stock INTEGER
-                )
-            """))
-            # Outfit 相关表
-            conn.execute(db.text("""
-                CREATE TABLE IF NOT EXISTS outfits (
-                    id INTEGER PRIMARY KEY,
-                    created_at TIMESTAMP,
-                    author_email VARCHAR(200),
-                    author_name VARCHAR(200),
-                    title VARCHAR(200),
-                    desc TEXT,
-                    tags_json TEXT,
-                    likes INTEGER DEFAULT 0,
-                    comments INTEGER DEFAULT 0,
-                    status VARCHAR(20) DEFAULT 'active'
-                )
-            """))
-            conn.execute(db.text("""
-                CREATE TABLE IF NOT EXISTS outfit_media (
-                    id INTEGER PRIMARY KEY,
-                    outfit_id INTEGER,
-                    filename VARCHAR(255),
-                    mimetype VARCHAR(128),
-                    data BLOB,
-                    is_video BOOLEAN DEFAULT 0
-                )
-            """))
+            dialect = conn.engine.dialect.name.lower()
+            is_pg = 'postgres' in dialect
+
+            # 公共列兜底
+            conn.execute(db.text(
+                "ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)"
+            ))
+            conn.execute(db.text(
+                "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"
+            ))
+
+            # product_variants
+            if is_pg:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS product_variants (
+                        id SERIAL PRIMARY KEY,
+                        product_id INTEGER,
+                        size VARCHAR(50),
+                        color VARCHAR(50),
+                        price INTEGER,
+                        stock INTEGER
+                    )
+                """))
+            else:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS product_variants (
+                        id INTEGER PRIMARY KEY,
+                        product_id INTEGER,
+                        size VARCHAR(50),
+                        color VARCHAR(50),
+                        price INTEGER,
+                        stock INTEGER
+                    )
+                """))
+
+            # outfits / outfit_media
+            if is_pg:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS outfits (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMP,
+                        author_email VARCHAR(200),
+                        author_name VARCHAR(200),
+                        title VARCHAR(200),
+                        desc TEXT,
+                        tags_json TEXT,
+                        likes INTEGER DEFAULT 0,
+                        comments INTEGER DEFAULT 0,
+                        status VARCHAR(20) DEFAULT 'active'
+                    )
+                """))
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS outfit_media (
+                        id SERIAL PRIMARY KEY,
+                        outfit_id INTEGER,
+                        filename VARCHAR(255),
+                        mimetype VARCHAR(128),
+                        data BYTEA,
+                        is_video BOOLEAN DEFAULT FALSE
+                    )
+                """))
+            else:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS outfits (
+                        id INTEGER PRIMARY KEY,
+                        created_at TIMESTAMP,
+                        author_email VARCHAR(200),
+                        author_name VARCHAR(200),
+                        title VARCHAR(200),
+                        desc TEXT,
+                        tags_json TEXT,
+                        likes INTEGER DEFAULT 0,
+                        comments INTEGER DEFAULT 0,
+                        status VARCHAR(20) DEFAULT 'active'
+                    )
+                """))
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS outfit_media (
+                        id INTEGER PRIMARY KEY,
+                        outfit_id INTEGER,
+                        filename VARCHAR(255),
+                        mimetype VARCHAR(128),
+                        data BLOB,
+                        is_video BOOLEAN DEFAULT 0
+                    )
+                """))
             conn.commit()
     except Exception:
+        # 兜底，不中断启动
         pass
 
 # -------------------- Utilities --------------------
@@ -599,56 +655,105 @@ def outfit_media(oid, mid):
         download_name=m.filename or f"o{oid}_{mid}"
     )
 
-# 方便一次性补表的迁移端点（可选）
+# ==================== 迁移端点：按方言执行 ====================
 @app.post("/api/admin/migrate")
 def admin_migrate():
-    if not check_key(request): return jsonify({"message": "Unauthorized"}), 401
-    stmts = [
-        "ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)",
-        "ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'",
-        "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)",
-        "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)",
-        """CREATE TABLE IF NOT EXISTS product_variants (
-            id INTEGER PRIMARY KEY,
-            product_id INTEGER,
-            size VARCHAR(50),
-            color VARCHAR(50),
-            price INTEGER,
-            stock INTEGER
-        )""",
-        """CREATE TABLE IF NOT EXISTS outfits (
-            id INTEGER PRIMARY KEY,
-            created_at TIMESTAMP,
-            author_email VARCHAR(200),
-            author_name VARCHAR(200),
-            title VARCHAR(200),
-            desc TEXT,
-            tags_json TEXT,
-            likes INTEGER DEFAULT 0,
-            comments INTEGER DEFAULT 0,
-            status VARCHAR(20) DEFAULT 'active'
-        )""",
-        """CREATE TABLE IF NOT EXISTS outfit_media (
-            id INTEGER PRIMARY KEY,
-            outfit_id INTEGER,
-            filename VARCHAR(255),
-            mimetype VARCHAR(128),
-            data BLOB,
-            is_video BOOLEAN DEFAULT 0
-        )"""
-    ]
-    results = []
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+
     try:
         with db.engine.begin() as conn:
-            for sql in stmts:
+            dialect = conn.engine.dialect.name.lower()
+            is_pg = 'postgres' in dialect
+            results = []
+
+            def run(sql):
                 try:
                     conn.execute(db.text(sql))
                     results.append({"sql": sql, "ok": True})
                 except Exception as e:
                     results.append({"sql": sql, "ok": False, "error": str(e)})
+
+            # 通用列兜底
+            run("ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)")
+            run("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'")
+            run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)")
+            run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)")
+
+            if is_pg:
+                run("""
+                    CREATE TABLE IF NOT EXISTS product_variants (
+                        id SERIAL PRIMARY KEY,
+                        product_id INTEGER,
+                        size VARCHAR(50),
+                        color VARCHAR(50),
+                        price INTEGER,
+                        stock INTEGER
+                    )
+                """)
+                run("""
+                    CREATE TABLE IF NOT EXISTS outfits (
+                        id SERIAL PRIMARY KEY,
+                        created_at TIMESTAMP,
+                        author_email VARCHAR(200),
+                        author_name VARCHAR(200),
+                        title VARCHAR(200),
+                        desc TEXT,
+                        tags_json TEXT,
+                        likes INTEGER DEFAULT 0,
+                        comments INTEGER DEFAULT 0,
+                        status VARCHAR(20) DEFAULT 'active'
+                    )
+                """)
+                run("""
+                    CREATE TABLE IF NOT EXISTS outfit_media (
+                        id SERIAL PRIMARY KEY,
+                        outfit_id INTEGER,
+                        filename VARCHAR(255),
+                        mimetype VARCHAR(128),
+                        data BYTEA,
+                        is_video BOOLEAN DEFAULT FALSE
+                    )
+                """)
+            else:
+                run("""
+                    CREATE TABLE IF NOT EXISTS product_variants (
+                        id INTEGER PRIMARY KEY,
+                        product_id INTEGER,
+                        size VARCHAR(50),
+                        color VARCHAR(50),
+                        price INTEGER,
+                        stock INTEGER
+                    )
+                """)
+                run("""
+                    CREATE TABLE IF NOT EXISTS outfits (
+                        id INTEGER PRIMARY KEY,
+                        created_at TIMESTAMP,
+                        author_email VARCHAR(200),
+                        author_name VARCHAR(200),
+                        title VARCHAR(200),
+                        desc TEXT,
+                        tags_json TEXT,
+                        likes INTEGER DEFAULT 0,
+                        comments INTEGER DEFAULT 0,
+                        status VARCHAR(20) DEFAULT 'active'
+                    )
+                """)
+                run("""
+                    CREATE TABLE IF NOT EXISTS outfit_media (
+                        id INTEGER PRIMARY KEY,
+                        outfit_id INTEGER,
+                        filename VARCHAR(255),
+                        mimetype VARCHAR(128),
+                        data BLOB,
+                        is_video BOOLEAN DEFAULT 0
+                    )
+                """)
         return jsonify({"ok": True, "results": results})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
