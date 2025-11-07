@@ -15,11 +15,10 @@ db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "s
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# CORS：只开放 /api/*，便于前端调用
+# 只开放 /api/*，便于前端调用
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 API_KEY = os.getenv("API_KEY", "")  # 在 Render 的环境变量里设置
-
 db = SQLAlchemy(app)
 
 # -------------------- Models --------------------
@@ -44,13 +43,12 @@ class Product(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     merchant_email = db.Column(db.String(200), index=True, nullable=False)
     title   = db.Column(db.String(200), nullable=False)
-    # 基础价：为了向下兼容（当没有传变体时使用）
-    price   = db.Column(db.Integer, default=0)
-    gender  = db.Column(db.String(10))         # women / men
-    category= db.Column(db.String(20))         # clothes / pants / shoes
+    price   = db.Column(db.Integer, default=0)          # 基础价：为了向下兼容（当没有传变体时使用）
+    gender  = db.Column(db.String(10))                  # women / men
+    category= db.Column(db.String(20))                  # clothes / pants / shoes
     desc    = db.Column(db.Text)
-    sizes_json  = db.Column(db.Text)           # '["M","L"]'  兼容老前端
-    colors_json = db.Column(db.Text)           # '["Black","White"]' 兼容老前端
+    sizes_json  = db.Column(db.Text)                    # '["M","L"]'  兼容老前端
+    colors_json = db.Column(db.Text)                    # '["Black","White"]' 兼容老前端
     status  = db.Column(db.String(20), default="active")  # active/removed
 
 
@@ -78,7 +76,6 @@ class Outfit(db.Model):
     __tablename__ = "outfits"
     id = db.Column(db.Integer, primary_key=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-
     author_email = db.Column(db.String(200), index=True, nullable=False)
     author_name  = db.Column(db.String(200))
     title        = db.Column(db.String(200))
@@ -234,13 +231,7 @@ def _is_approved_merchant(email: str) -> bool:
     return bool(row)
 
 def _variant_to_dict(v: ProductVariant):
-    return {
-        "id": v.id,
-        "size": v.size,
-        "color": v.color,
-        "price": v.price,
-        "stock": v.stock
-    }
+    return {"id": v.id, "size": v.size, "color": v.color, "price": v.price, "stock": v.stock}
 
 def _product_to_dict(p: Product, req=None):
     r = req or request
@@ -256,10 +247,10 @@ def _product_to_dict(p: Product, req=None):
         "gender": p.gender,
         "category": p.category,
         "desc": p.desc,
-        "sizes": _safe_json_loads(p.sizes_json, []),   # 保留给老前端
-        "colors": _safe_json_loads(p.colors_json, []), # 保留给老前端
+        "sizes": _safe_json_loads(p.sizes_json, []),     # 保留给老前端
+        "colors": _safe_json_loads(p.colors_json, []),   # 保留给老前端
         "images": urls,
-        "variants": [_variant_to_dict(v) for v in variants],  # 新增
+        "variants": [_variant_to_dict(v) for v in variants],
         "status": p.status
     }
 
@@ -375,7 +366,6 @@ def products_list():
 
 @app.get("/api/products/<int:pid>")
 def products_get_one(pid):
-    """查询单个商品详情（含 variants 与 images）"""
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     row = Product.query.get_or_404(pid)
     return jsonify(_product_to_dict(row))
@@ -393,7 +383,6 @@ def products_add():
     category = (f.get("category") or "").strip()
     desc = (f.get("desc") or "").strip()
 
-    # 兼容老字段
     try:
         base_price = int(f.get("price") or 0)
     except Exception:
@@ -401,9 +390,6 @@ def products_add():
 
     sizes = _safe_json_loads(f.get("sizes"), [])
     colors = _safe_json_loads(f.get("colors"), [])
-
-    # 新增：变体 JSON（可选）
-    # variant_prices: '[{"size":"M","color":"Black","price":12000,"stock":10}, ...]'
     variant_prices = _safe_json_loads(f.get("variant_prices"), [])
 
     if not title: return jsonify({"message":"title 不能为空"}), 400
@@ -412,7 +398,6 @@ def products_add():
     if gender not in {"women","men"}:
         return jsonify({"message":"gender 必须是 women/men"}), 400
 
-    # 创建商品
     p = Product(
         merchant_email=email, title=title, price=base_price,
         gender=gender, category=category, desc=desc,
@@ -420,9 +405,8 @@ def products_add():
         status="active"
     )
     db.session.add(p)
-    db.session.flush()  # 得到 p.id
+    db.session.flush()
 
-    # 处理变体
     created_any_variant = False
     if isinstance(variant_prices, list) and len(variant_prices) > 0:
         for i, v in enumerate(variant_prices):
@@ -437,22 +421,20 @@ def products_add():
             db.session.add(ProductVariant(product_id=p.id, size=size, color=color, price=price, stock=stock))
         created_any_variant = True
     else:
-        # 如果未提供 variant_prices，就用 sizes × colors 生成笛卡尔积，价格使用 base_price
         if sizes and colors:
             for si in sizes:
                 for co in colors:
                     db.session.add(ProductVariant(product_id=p.id, size=str(si), color=str(co), price=base_price, stock=0))
             created_any_variant = True
-        elif sizes:  # 只有尺码
+        elif sizes:
             for si in sizes:
                 db.session.add(ProductVariant(product_id=p.id, size=str(si), color="", price=base_price, stock=0))
             created_any_variant = True
-        elif colors: # 只有颜色
+        elif colors:
             for co in colors:
                 db.session.add(ProductVariant(product_id=p.id, size="", color=str(co), price=base_price, stock=0))
             created_any_variant = True
 
-    # 图片
     files = request.files.getlist("images")
     for i, file in enumerate(files[:5]):
         if not file:
@@ -471,7 +453,6 @@ def products_add():
 
     db.session.commit()
     data = _product_to_dict(p)
-    # 如果没有任何变体，至少返回一个默认变体（给前端兜底），价格取 base_price
     if not created_any_variant:
         data["variants"] = [{"id": None, "size": "", "color": "", "price": base_price, "stock": 0}]
     return jsonify(data), 201
@@ -479,16 +460,11 @@ def products_add():
 @app.get("/api/products/<int:pid>/image/<int:iid>")
 def product_image(pid, iid):
     im = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
-    return send_file(
-        BytesIO(im.data),
-        mimetype=im.mimetype or "application/octet-stream",
-        as_attachment=False,
-        download_name=im.filename or f"p{pid}_{iid}.bin"
-    )
+    return send_file(BytesIO(im.data), mimetype=im.mimetype or "application/octet-stream",
+                     as_attachment=False, download_name=im.filename or f"p{pid}_{iid}.bin")
 
 @app.delete("/api/products/<int:pid>/image/<int:iid>")
 def product_image_delete(pid, iid):
-    """删除某张图片"""
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     row = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
     db.session.delete(row)
@@ -515,9 +491,6 @@ def product_update(pid):
 
 @app.put("/api/products/<int:pid>/variants")
 def product_replace_variants(pid):
-    """一次性替换商品的全部变体
-       body: {"merchant_email":"...","variants":[{"size":"M","color":"Black","price":12000,"stock":10}, ...]}
-    """
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("merchant_email") or "").strip().lower()
@@ -525,9 +498,7 @@ def product_replace_variants(pid):
     row = Product.query.get_or_404(pid)
     if email != (row.merchant_email or "").lower():
         return jsonify({"message":"forbidden"}), 403
-    # 清空旧变体
     ProductVariant.query.filter_by(product_id=pid).delete()
-    # 写入新变体
     for i, v in enumerate(variants):
         try:
             size  = (v.get("size") or "").strip()
@@ -543,19 +514,13 @@ def product_replace_variants(pid):
 
 @app.delete("/api/products/<int:pid>")
 def product_delete(pid):
-    """支持两种删除：
-       - 软删除（默认）：status = 'removed'
-       - 硬删除（body: {"hard": true}）：同时删除产品与其所有图片与变体
-    """
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("merchant_email") or "").strip().lower()
     hard  = bool(data.get("hard"))
-
     row = Product.query.get_or_404(pid)
     if email != (row.merchant_email or "").lower():
         return jsonify({"message":"forbidden"}), 403
-
     if hard:
         ProductImage.query.filter_by(product_id=pid).delete()
         ProductVariant.query.filter_by(product_id=pid).delete()
@@ -655,42 +620,96 @@ def outfit_media(oid, mid):
         download_name=m.filename or f"o{oid}_{mid}"
     )
 
-# ---- 新增：点赞 & 评论计数 ----
+# ===== 新增：Feed（供 outfit.js 使用） =====
+@app.get("/api/outfit/feed")
+def outfit_feed():
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+
+    tab = (request.args.get("tab") or "recommend").strip()
+    qstr = (request.args.get("q") or "").strip().lower()
+    try:
+        offset = int(request.args.get("offset") or 0)
+        limit  = min(50, int(request.args.get("limit") or 12))
+    except Exception:
+        offset, limit = 0, 12
+
+    q = Outfit.query.filter_by(status="active")
+    if qstr:
+        # 简单搜索：title/desc/tags_json 里包含关键词
+        like = f"%{qstr}%"
+        q = q.filter(
+            db.or_(
+                Outfit.title.ilike(like),
+                Outfit.desc.ilike(like),
+                Outfit.tags_json.ilike(like)
+            )
+        )
+    # tab=follow 这里可按你的逻辑过滤关注作者；先与 recommend 同源
+    q = q.order_by(Outfit.created_at.desc())
+
+    total = q.count()
+    rows = q.offset(offset).limit(limit).all()
+
+    def to_card(o: Outfit):
+        # 取第一张图/视频做封面（视频也先当封面图展示）
+        medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
+        for m in medias:
+            url = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
+            # 优先图片
+            if not m.is_video:
+                cover = url
+                break
+        else:
+            cover = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{medias[0].id}" if medias else ""
+
+        return {
+            "id": o.id,
+            "title": o.title or "OOTD",
+            "cover": cover,
+            "likes": o.likes or 0,
+            "comments": o.comments or 0,
+            "user": {"name": o.author_name or (o.author_email or "")}
+        }
+
+    items = [to_card(o) for o in rows]
+    has_more = (offset + len(items) < total)
+    return jsonify({"items": items, "has_more": has_more})
+
+# ===== 新增：点赞/评论计数 =====
 @app.post("/api/outfits/<int:oid>/like")
 def outfit_like(oid):
-    """点赞：默认 +1；JSON body 可传 {"delta": n} 指定增加数量（仅正数生效）"""
     if not check_key(request):
         return jsonify({"message": "Unauthorized"}), 401
-    row = Outfit.query.get_or_404(oid)
-    data = request.get_json(silent=True) or {}
+    delta = 1
     try:
-        delta = int(data.get("delta", 1))
+        body = request.get_json(silent=True) or {}
+        if "delta" in body:
+            delta = int(body["delta"])
     except Exception:
-        delta = 1
-    if delta < 0:
-        delta = 0
-    row.likes = (row.likes or 0) + delta
+        pass
+    row = Outfit.query.get_or_404(oid)
+    row.likes = max(0, (row.likes or 0) + delta)
     db.session.commit()
-    return jsonify({"ok": True, "id": oid, "likes": row.likes})
+    return jsonify({"id": oid, "likes": row.likes})
 
 @app.post("/api/outfits/<int:oid>/comment")
-def outfit_comment_inc(oid):
-    """评论计数：默认 +1；JSON body 可传 {"delta": n} 指定增加数量（仅正数生效）"""
+def outfit_comment(oid):
     if not check_key(request):
         return jsonify({"message": "Unauthorized"}), 401
-    row = Outfit.query.get_or_404(oid)
-    data = request.get_json(silent=True) or {}
+    delta = 1
     try:
-        delta = int(data.get("delta", 1))
+        body = request.get_json(silent=True) or {}
+        if "delta" in body:
+            delta = int(body["delta"])
     except Exception:
-        delta = 1
-    if delta < 0:
-        delta = 0
-    row.comments = (row.comments or 0) + delta
+        pass
+    row = Outfit.query.get_or_404(oid)
+    row.comments = max(0, (row.comments or 0) + delta)
     db.session.commit()
-    return jsonify({"ok": True, "id": oid, "comments": row.comments})
+    return jsonify({"id": oid, "comments": row.comments})
 
-# ==================== 迁移端点：按方言执行 ====================
+# ==================== 迁移端点（按方言执行） ====================
 @app.post("/api/admin/migrate")
 def admin_migrate():
     if not check_key(request):
