@@ -1,4 +1,4 @@
-import os
+import os 
 import json
 from datetime import datetime
 from io import BytesIO
@@ -15,8 +15,21 @@ db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "s
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# 只开放 /api/*，便于前端调用
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+# ✅ CORS：放行你的站点 & 需要的方法/请求头（包含预检）
+CORS(
+    app,
+    resources={r"/api/*": {"origins": [
+        "https://boldmm.shop",           # 线上
+        "http://localhost:3000",         # 本地开发（可按需保留）
+        "http://127.0.0.1:3000",
+        "http://localhost:5500",
+        "http://127.0.0.1:5500",
+        "*",                             # 兜底；如需更严格可去掉
+    ]}},
+    supports_credentials=False,
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"]
+)
 
 API_KEY = os.getenv("API_KEY", "")  # 在 Render 的环境变量里设置
 db = SQLAlchemy(app)
@@ -43,13 +56,13 @@ class Product(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     merchant_email = db.Column(db.String(200), index=True, nullable=False)
     title   = db.Column(db.String(200), nullable=False)
-    price   = db.Column(db.Integer, default=0)          # 基础价：为了向下兼容（当没有传变体时使用）
-    gender  = db.Column(db.String(10))                  # women / men
-    category= db.Column(db.String(20))                  # clothes / pants / shoes
+    price   = db.Column(db.Integer, default=0)
+    gender  = db.Column(db.String(10))
+    category= db.Column(db.String(20))
     desc    = db.Column(db.Text)
-    sizes_json  = db.Column(db.Text)                    # '["M","L"]'  兼容老前端
-    colors_json = db.Column(db.Text)                    # '["Black","White"]' 兼容老前端
-    status  = db.Column(db.String(20), default="active")  # active/removed
+    sizes_json  = db.Column(db.Text)
+    colors_json = db.Column(db.Text)
+    status  = db.Column(db.String(20), default="active")
 
 
 class ProductVariant(db.Model):
@@ -59,7 +72,7 @@ class ProductVariant(db.Model):
     size   = db.Column(db.String(50))
     color  = db.Column(db.String(50))
     price  = db.Column(db.Integer, nullable=False, default=0)
-    stock  = db.Column(db.Integer, nullable=False, default=0)  # 可选库存，默认0表示未维护
+    stock  = db.Column(db.Integer, nullable=False, default=0)
 
 
 class ProductImage(db.Model):
@@ -80,10 +93,10 @@ class Outfit(db.Model):
     author_name  = db.Column(db.String(200))
     title        = db.Column(db.String(200))
     desc         = db.Column(db.Text)
-    tags_json    = db.Column(db.Text)                    # '["日常","运动"]'
+    tags_json    = db.Column(db.Text)
     likes        = db.Column(db.Integer, default=0)
     comments     = db.Column(db.Integer, default=0)
-    status       = db.Column(db.String(20), default="active")  # active/removed
+    status       = db.Column(db.String(20), default="active")
 
 
 class OutfitMedia(db.Model):
@@ -247,8 +260,8 @@ def _product_to_dict(p: Product, req=None):
         "gender": p.gender,
         "category": p.category,
         "desc": p.desc,
-        "sizes": _safe_json_loads(p.sizes_json, []),     # 保留给老前端
-        "colors": _safe_json_loads(p.colors_json, []),   # 保留给老前端
+        "sizes": _safe_json_loads(p.sizes_json, []),
+        "colors": _safe_json_loads(p.colors_json, []),
         "images": urls,
         "variants": [_variant_to_dict(v) for v in variants],
         "status": p.status
@@ -609,7 +622,6 @@ def outfits_list():
     rows = q.order_by(Outfit.created_at.desc()).limit(200).all()
     return jsonify([_outfit_to_dict(r) for r in rows])
 
-
 @app.get("/api/outfits/<int:oid>/media/<int:mid>")
 def outfit_media(oid, mid):
     m = OutfitMedia.query.filter_by(id=mid, outfit_id=oid).first_or_404()
@@ -619,6 +631,52 @@ def outfit_media(oid, mid):
         as_attachment=False,
         download_name=m.filename or f"o{oid}_{mid}"
     )
+
+# ✅ 新增：显式预检，保证 200/204
+@app.options("/api/outfits/<int:oid>")
+def outfits_preflight(oid):
+    return ("", 204)
+
+# ✅ 新增：更新穿搭（仅作者本人才可）
+@app.put("/api/outfits/<int:oid>")
+def outfits_update(oid):
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    author_email = (data.get("author_email") or "").strip().lower()
+    if not author_email:
+        return jsonify({"message": "author_email required"}), 400
+
+    row = Outfit.query.get_or_404(oid)
+    if (row.author_email or "").strip().lower() != author_email:
+        return jsonify({"message": "forbidden"}), 403
+
+    # 可改项：标题、正文
+    if "title" in data:
+        row.title = (data.get("title") or "").strip()
+    if "desc" in data:
+        row.desc = (data.get("desc") or "").strip()
+    db.session.commit()
+    return jsonify(_outfit_to_dict(row))
+
+# ✅ 新增：删除穿搭（仅作者本人才可；连带删除媒体）
+@app.delete("/api/outfits/<int:oid>")
+def outfits_delete(oid):
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    author_email = (data.get("author_email") or "").strip().lower()
+    if not author_email:
+        return jsonify({"message": "author_email required"}), 400
+
+    row = Outfit.query.get_or_404(oid)
+    if (row.author_email or "").strip().lower() != author_email:
+        return jsonify({"message": "forbidden"}), 403
+
+    OutfitMedia.query.filter_by(outfit_id=oid).delete()
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({"ok": True, "deleted_id": oid})
 
 # ===== 新增：Feed（供 outfit.js 使用） =====
 @app.get("/api/outfit/feed")
@@ -636,7 +694,6 @@ def outfit_feed():
 
     q = Outfit.query.filter_by(status="active")
     if qstr:
-        # 简单搜索：title/desc/tags_json 里包含关键词
         like = f"%{qstr}%"
         q = q.filter(
             db.or_(
@@ -645,23 +702,21 @@ def outfit_feed():
                 Outfit.tags_json.ilike(like)
             )
         )
-    # tab=follow 这里可按你的逻辑过滤关注作者；先与 recommend 同源
     q = q.order_by(Outfit.created_at.desc())
 
     total = q.count()
     rows = q.offset(offset).limit(limit).all()
 
     def to_card(o: Outfit):
-        # 取第一张图/视频做封面（视频也先当封面图展示）
         medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
+        cover = ""
         for m in medias:
             url = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
-            # 优先图片
             if not m.is_video:
                 cover = url
                 break
-        else:
-            cover = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{medias[0].id}" if medias else ""
+        if not cover and medias:
+            cover = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{medias[0].id}"
 
         return {
             "id": o.id,
