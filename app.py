@@ -633,7 +633,7 @@ def outfit_media(oid, mid):
     )
 
 # ✅ 新增：显式预检，保证 200/204
-@app.options("/api/outfits/<int:oid>")
+@app.route("/api/outfits/<int:oid>", methods=["OPTIONS"])
 def outfits_preflight(oid):
     return ("", 204)
 
