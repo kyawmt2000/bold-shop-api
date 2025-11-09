@@ -1,4 +1,4 @@
-import os 
+import os  
 import json
 from datetime import datetime
 from io import BytesIO
@@ -7,6 +7,7 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
+from sqlalchemy import func  # ← 新增：用于不区分大小写查询
 
 app = Flask(__name__)
 
@@ -297,6 +298,37 @@ def _outfit_to_dict(o: Outfit, req=None):
 def health(): return ok()
 
 # ==================== Merchant APIs ====================
+
+# ⭐️ 新增：审核状态查询（前端在 myaccount.html 轮询用）
+@app.route("/api/merchants/status", methods=["GET", "OPTIONS"])
+def merchant_status():
+    # 预检直接放行
+    if request.method == "OPTIONS":
+        return ("", 204)
+
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"error": "missing email"}), 400
+
+    # 按邮箱忽略大小写，取最近一条申请
+    row = (
+        MerchantApplication.query
+        .filter(func.lower(MerchantApplication.email) == email)
+        .order_by(MerchantApplication.id.desc())
+        .first()
+    )
+    if not row:
+        return jsonify({"status": "none"}), 200
+
+    return jsonify({
+        "status": row.status or "pending",          # pending/approved/rejected
+        "shop_name": row.shop_name or "",
+        "account_name": row.account_name or "",
+        "id": row.id,
+        "created_at": (row.created_at.isoformat() if row.created_at else None)
+    }), 200
+
+
 @app.post("/api/merchants/apply")
 def apply_merchant():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
@@ -632,12 +664,12 @@ def outfit_media(oid, mid):
         download_name=m.filename or f"o{oid}_{mid}"
     )
 
-# ✅ 新增：显式预检，保证 200/204
+# ✅ 显式预检，保证 200/204
 @app.route("/api/outfits/<int:oid>", methods=["OPTIONS"])
 def outfits_preflight(oid):
     return ("", 204)
 
-# ✅ 新增：更新穿搭（仅作者本人才可）
+# ✅ 更新穿搭（仅作者）
 @app.put("/api/outfits/<int:oid>")
 def outfits_update(oid):
     if not check_key(request):
@@ -651,7 +683,6 @@ def outfits_update(oid):
     if (row.author_email or "").strip().lower() != author_email:
         return jsonify({"message": "forbidden"}), 403
 
-    # 可改项：标题、正文
     if "title" in data:
         row.title = (data.get("title") or "").strip()
     if "desc" in data:
@@ -659,7 +690,7 @@ def outfits_update(oid):
     db.session.commit()
     return jsonify(_outfit_to_dict(row))
 
-# ✅ 新增：删除穿搭（仅作者本人才可；连带删除媒体）
+# ✅ 删除穿搭（仅作者）
 @app.delete("/api/outfits/<int:oid>")
 def outfits_delete(oid):
     if not check_key(request):
@@ -678,7 +709,7 @@ def outfits_delete(oid):
     db.session.commit()
     return jsonify({"ok": True, "deleted_id": oid})
 
-# ===== 新增：Feed（供 outfit.js 使用） =====
+# ===== Outfit feed & 点评计数 =====
 @app.get("/api/outfit/feed")
 def outfit_feed():
     if not check_key(request):
@@ -731,7 +762,6 @@ def outfit_feed():
     has_more = (offset + len(items) < total)
     return jsonify({"items": items, "has_more": has_more})
 
-# ===== 新增：点赞/评论计数 =====
 @app.post("/api/outfits/<int:oid>/like")
 def outfit_like(oid):
     if not check_key(request):
