@@ -118,13 +118,13 @@ class UserSetting(db.Model):
     show_following = db.Column(db.Boolean, default=True)
     show_followers = db.Column(db.Boolean, default=True)
     dm_who = db.Column(db.String(16), default="all")  # all | following
-    blacklist_json = db.Column(db.Text)
+    blacklist_json = db.Column(db.Text)  # JSON 数组
     lang = db.Column(db.String(8), default="zh")
-    bio = db.Column(db.String(200))  # ✅ 新增：个人简介（服务端长度上限给 200，前端仍限制 30）
+    bio  = db.Column(db.Text)  # 简介（前端 30 字，这里不强制长度，仅裁剪）
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-# -------------------- 初始化：按方言兜底建表 --------------------
+# -------------------- 初始化：按方言兜底建表/补列 --------------------
 with app.app_context():
     db.create_all()
     try:
@@ -134,7 +134,8 @@ with app.app_context():
 
             # 公共列兜底
             conn.execute(db.text(
-                "ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"
+                "ALTER TABLE merchant_applications "
+                "ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"
             ))
             conn.execute(db.text(
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)"
@@ -225,44 +226,42 @@ with app.app_context():
                     )
                 """))
 
-            # === user_settings 表（含 bio 字段） ===
+            # user_settings（带 bio）
             if is_pg:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS user_settings (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(200) UNIQUE,
-    phone VARCHAR(64),
-    public_profile BOOLEAN DEFAULT TRUE,
-    show_following BOOLEAN DEFAULT TRUE,
-    show_followers BOOLEAN DEFAULT TRUE,
-    dm_who VARCHAR(16) DEFAULT 'all',
-    blacklist_json TEXT,
-    lang VARCHAR(8) DEFAULT 'zh',
-    bio VARCHAR(200),               -- ✅ 新增
-    updated_at TIMESTAMP
-)
+                        id SERIAL PRIMARY KEY,
+                        email VARCHAR(200) UNIQUE,
+                        phone VARCHAR(64),
+                        public_profile BOOLEAN DEFAULT TRUE,
+                        show_following BOOLEAN DEFAULT TRUE,
+                        show_followers BOOLEAN DEFAULT TRUE,
+                        dm_who VARCHAR(16) DEFAULT 'all',
+                        blacklist_json TEXT,
+                        lang VARCHAR(8) DEFAULT 'zh',
+                        bio TEXT,
+                        updated_at TIMESTAMP
+                    )
                 """))
-                # 兜底补列
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
+                # 兼容老表补列
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio TEXT"))
             else:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS user_settings (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(200) UNIQUE,
-    phone VARCHAR(64),
-    public_profile BOOLEAN DEFAULT TRUE,
-    show_following BOOLEAN DEFAULT TRUE,
-    show_followers BOOLEAN DEFAULT TRUE,
-    dm_who VARCHAR(16) DEFAULT 'all',
-    blacklist_json TEXT,
-    lang VARCHAR(8) DEFAULT 'zh',
-    bio VARCHAR(200),               -- ✅ 新增
-    updated_at TIMESTAMP
-)
-
+                        id INTEGER PRIMARY KEY,
+                        email VARCHAR(200) UNIQUE,
+                        phone VARCHAR(64),
+                        public_profile BOOLEAN DEFAULT 1,
+                        show_following BOOLEAN DEFAULT 1,
+                        show_followers BOOLEAN DEFAULT 1,
+                        dm_who VARCHAR(16) DEFAULT 'all',
+                        blacklist_json TEXT,
+                        lang VARCHAR(8) DEFAULT 'zh',
+                        bio TEXT,
+                        updated_at TIMESTAMP
+                    )
                 """))
-                # 兜底补列
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio TEXT"))
             conn.commit()
     except Exception:
         # 兜底，不中断启动
@@ -346,9 +345,16 @@ def _outfit_to_dict(o: Outfit, req=None):
         "status": o.status or "active"
     }
 
-# -------------------- Health --------------------
+# -------------------- Health & DB Info --------------------
 @app.route("/health")
 def health(): return ok()
+
+@app.get("/api/dbinfo")
+def dbinfo():
+    """查看当前数据库方言（postgres / sqlite 等）"""
+    with db.engine.connect() as conn:
+        name = conn.engine.dialect.name
+    return jsonify({"dialect": name})
 
 # ==================== Merchant APIs ====================
 @app.route("/api/merchants/status", methods=["GET", "OPTIONS"])
@@ -550,32 +556,9 @@ def products_add():
 
 @app.get("/api/products/<int:pid>/image/<int:iid>")
 def product_image(pid, iid):
-    try:
-        im = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
-        # 数据为空/损坏时，返回占位 1x1 PNG（HTTP 200），避免 500
-        if not im.data:
-            # 透明 1x1 PNG
-            tiny_png = (
-                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-                b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01"
-                b"\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
-            )
-            return send_file(
-                BytesIO(tiny_png),
-                mimetype="image/png",
-                as_attachment=False,
-                download_name=f"p{pid}_{iid}.png",
-            )
-        return send_file(
-            BytesIO(im.data),
-            mimetype=(im.mimetype or "application/octet-stream"),
-            as_attachment=False,
-            download_name=(im.filename or f"p{pid}_{iid}.bin"),
-        )
-    except Exception as e:
-        # 最坏情况返回 404，避免 500 污染日志
-        return jsonify({"message": "image_not_available", "detail": str(e)}), 404
-
+    im = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
+    return send_file(BytesIO(im.data), mimetype=im.mimetype or "application/octet-stream",
+                     as_attachment=False, download_name=im.filename or f"p{pid}_{iid}.bin")
 
 @app.delete("/api/products/<int:pid>/image/<int:iid>")
 def product_image_delete(pid, iid):
@@ -874,13 +857,8 @@ def get_settings():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     email = (request.args.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
-    try:
-        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-        return jsonify(_settings_to_dict(s) or _default_settings(email))
-    except Exception as e:
-        # 表不存在或其它数据库错误时，先给默认，不让前端炸
-        return jsonify(_default_settings(email) | {"_warning":"fallback","_detail":str(e)}), 200
-
+    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+    return jsonify(_settings_to_dict(s) or _default_settings(email))
 
 @app.put("/api/settings")
 def put_settings():
@@ -888,22 +866,29 @@ def put_settings():
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
-    try:
-        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-        if not s: s = UserSetting(email=email)
-        s.phone = (data.get("phone") or "").strip()
-        s.public_profile = bool(data.get("public_profile", s.public_profile if s.public_profile is not None else True))
-        s.show_following = bool(data.get("show_following", s.show_following if s.show_following is not None else True))
-        s.show_followers = bool(data.get("show_followers", s.show_followers if s.show_followers is not None else True))
+
+    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+    if not s:
+        s = UserSetting(email=email)
+
+    # 允许“选择性”更新
+    if "phone" in data: s.phone = (data.get("phone") or "").strip()
+    if "public_profile" in data: s.public_profile = bool(data.get("public_profile"))
+    if "show_following" in data: s.show_following = bool(data.get("show_following"))
+    if "show_followers" in data: s.show_followers = bool(data.get("show_followers"))
+    if "dm_who" in data:
         dm = (data.get("dm_who") or "all").strip().lower()
         s.dm_who = dm if dm in {"all","following"} else "all"
-        s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
+    if "blacklist" in data:
+        s.blacklist_json = _json_dumps(data.get("blacklist") or [])
+    if "lang" in data:
         s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
-        db.session.add(s); db.session.commit()
-        return jsonify(_settings_to_dict(s))
-    except Exception as e:
-        return jsonify({"message":"db_error","detail":str(e)}), 500
+    if "bio" in data:
+        s.bio = (data.get("bio") or "").strip()[:30]  # 服务器也裁剪到 30
 
+    db.session.add(s)
+    db.session.commit()
+    return jsonify(_settings_to_dict(s))
 
 @app.post("/api/settings/blacklist")
 def settings_blacklist():
@@ -928,31 +913,6 @@ def settings_blacklist():
     db.session.add(s)
     db.session.commit()
     return jsonify(_settings_to_dict(s))
-
-# === 简化的 profile bio 端点（可选用） ===
-@app.get("/api/profile/bio")
-def get_bio():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
-    email = (request.args.get("email") or "").strip().lower()
-    if not email: return jsonify({"message":"missing email"}), 400
-    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-    return jsonify({"email": email, "bio": (s.bio if s else "")})
-
-@app.post("/api/profile/bio")
-def set_bio():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
-    data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    bio = (data.get("bio") or "")[:30]
-    if not email:
-        return jsonify({"message":"missing email"}), 400
-    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-    if not s:
-        s = UserSetting(email=email)
-    s.bio = bio
-    db.session.add(s)
-    db.session.commit()
-    return jsonify({"ok": True, "email": email, "bio": s.bio or ""})
 
 # ==================== 迁移端点（按方言执行） ====================
 @app.post("/api/admin/migrate")
@@ -1024,11 +984,11 @@ def admin_migrate():
                         dm_who VARCHAR(16) DEFAULT 'all',
                         blacklist_json TEXT,
                         lang VARCHAR(8) DEFAULT 'zh',
-                        bio VARCHAR(120),
+                        bio TEXT,
                         updated_at TIMESTAMP
                     )
                 """)
-                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio TEXT")
             else:
                 run("""
                     CREATE TABLE IF NOT EXISTS product_variants (
@@ -1066,21 +1026,20 @@ def admin_migrate():
                 """)
                 run("""
                     CREATE TABLE IF NOT EXISTS user_settings (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(200) UNIQUE,
-    phone VARCHAR(64),
-    public_profile BOOLEAN DEFAULT TRUE,
-    show_following BOOLEAN DEFAULT TRUE,
-    show_followers BOOLEAN DEFAULT TRUE,
-    dm_who VARCHAR(16) DEFAULT 'all',
-    blacklist_json TEXT,
-    lang VARCHAR(8) DEFAULT 'zh',
-    bio VARCHAR(200),               -- ✅ 新增
-    updated_at TIMESTAMP
-)
-
+                        id INTEGER PRIMARY KEY,
+                        email VARCHAR(200) UNIQUE,
+                        phone VARCHAR(64),
+                        public_profile BOOLEAN DEFAULT 1,
+                        show_following BOOLEAN DEFAULT 1,
+                        show_followers BOOLEAN DEFAULT 1,
+                        dm_who VARCHAR(16) DEFAULT 'all',
+                        blacklist_json TEXT,
+                        lang VARCHAR(8) DEFAULT 'zh',
+                        bio TEXT,
+                        updated_at TIMESTAMP
+                    )
                 """)
-                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio TEXT")
         return jsonify({"ok": True, "results": results})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
