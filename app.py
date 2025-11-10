@@ -549,9 +549,32 @@ def products_add():
 
 @app.get("/api/products/<int:pid>/image/<int:iid>")
 def product_image(pid, iid):
-    im = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
-    return send_file(BytesIO(im.data), mimetype=im.mimetype or "application/octet-stream",
-                     as_attachment=False, download_name=im.filename or f"p{pid}_{iid}.bin")
+    try:
+        im = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
+        # 数据为空/损坏时，返回占位 1x1 PNG（HTTP 200），避免 500
+        if not im.data:
+            # 透明 1x1 PNG
+            tiny_png = (
+                b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+                b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0cIDATx\x9cc``\x00\x00\x00\x02\x00\x01"
+                b"\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            return send_file(
+                BytesIO(tiny_png),
+                mimetype="image/png",
+                as_attachment=False,
+                download_name=f"p{pid}_{iid}.png",
+            )
+        return send_file(
+            BytesIO(im.data),
+            mimetype=(im.mimetype or "application/octet-stream"),
+            as_attachment=False,
+            download_name=(im.filename or f"p{pid}_{iid}.bin"),
+        )
+    except Exception as e:
+        # 最坏情况返回 404，避免 500 污染日志
+        return jsonify({"message": "image_not_available", "detail": str(e)}), 404
+
 
 @app.delete("/api/products/<int:pid>/image/<int:iid>")
 def product_image_delete(pid, iid):
