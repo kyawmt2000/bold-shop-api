@@ -108,7 +108,7 @@ class OutfitMedia(db.Model):
     is_video  = db.Column(db.Boolean, default=False)
 
 
-# === User Setting（扩展：加入 bio） ===
+# === User Setting（新增 bio 字段） ===
 class UserSetting(db.Model):
     __tablename__ = "user_settings"
     id = db.Column(db.Integer, primary_key=True)
@@ -120,7 +120,7 @@ class UserSetting(db.Model):
     dm_who = db.Column(db.String(16), default="all")  # all | following
     blacklist_json = db.Column(db.Text)  # JSON 数组
     lang = db.Column(db.String(8), default="zh")
-    bio = db.Column(db.String(120))  # 新增：个人简介
+    bio  = db.Column(db.String(120))  # ✅ 新增，存放简介（我们会限制为最多 30 字）
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -242,6 +242,7 @@ with app.app_context():
                         updated_at TIMESTAMP
                     )
                 """))
+                # 兜底补列
                 conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
             else:
                 conn.execute(db.text("""
@@ -259,8 +260,8 @@ with app.app_context():
                         updated_at TIMESTAMP
                     )
                 """))
+                # 兜底补列
                 conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
-
             conn.commit()
     except Exception:
         # 兜底，不中断启动
@@ -814,7 +815,7 @@ def outfit_comment(oid):
     db.session.commit()
     return jsonify({"id": oid, "comments": row.comments})
 
-# ==================== Settings & Profile APIs（含 bio） ====================
+# ==================== Settings APIs（含 bio） ====================
 def _default_settings(email: str):
     return {
         "email": (email or "").lower(),
@@ -840,7 +841,7 @@ def _settings_to_dict(s: UserSetting):
         "dm_who": s.dm_who or "all",
         "blacklist": _safe_json_loads(s.blacklist_json, []),
         "lang": s.lang or "zh",
-        "bio": s.bio or "",
+        "bio": (s.bio or ""),
         "updated_at": s.updated_at.isoformat() if s.updated_at else None
     }
 
@@ -871,12 +872,10 @@ def put_settings():
     s.dm_who = dm if dm in {"all","following"} else "all"
     s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
     s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
-    # 同时允许通过 /api/settings 写 bio（可选）
+
+    # ✅ bio: 若传入则更新，最多 30 字
     if "bio" in data:
-        bio = (data.get("bio") or "").strip()
-        if len(bio) > 30:
-            return jsonify({"message": "bio 最多 30 个字符"}), 400
-        s.bio = bio
+        s.bio = (data.get("bio") or "")[:30]
 
     db.session.add(s)
     db.session.commit()
@@ -906,34 +905,30 @@ def settings_blacklist():
     db.session.commit()
     return jsonify(_settings_to_dict(s))
 
-# —— 仅用于 Bio 的极简接口 —— #
-@app.get("/api/profile")
-def profile_get():
-    """GET /api/profile?email=...  -> {email, bio}"""
+# === 简化的 profile bio 端点（可选用） ===
+@app.get("/api/profile/bio")
+def get_bio():
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     email = (request.args.get("email") or "").strip().lower()
-    if not email:
-        return jsonify({"message": "missing email"}), 400
+    if not email: return jsonify({"message":"missing email"}), 400
     s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-    bio = s.bio if s and s.bio else ""
-    return jsonify({"email": email, "bio": bio})
+    return jsonify({"email": email, "bio": (s.bio if s else "")})
 
-@app.put("/api/profile")
-def profile_put():
-    """PUT /api/profile  {email, bio}  (需 X-API-Key)，bio<=30 字"""
+@app.post("/api/profile/bio")
+def set_bio():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
-    bio = (data.get("bio") or "").strip()
+    bio = (data.get("bio") or "")[:30]
     if not email:
         return jsonify({"message":"missing email"}), 400
-    if len(bio) > 30:
-        return jsonify({"message":"bio 最多 30 个字符"}), 400
     s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-    if not s: s = UserSetting(email=email)
+    if not s:
+        s = UserSetting(email=email)
     s.bio = bio
     db.session.add(s)
     db.session.commit()
-    return jsonify({"email": email, "bio": s.bio or ""})
+    return jsonify({"ok": True, "email": email, "bio": s.bio or ""})
 
 # ==================== 迁移端点（按方言执行） ====================
 @app.post("/api/admin/migrate")
