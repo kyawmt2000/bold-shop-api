@@ -873,8 +873,13 @@ def get_settings():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     email = (request.args.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
-    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-    return jsonify(_settings_to_dict(s) or _default_settings(email))
+    try:
+        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+        return jsonify(_settings_to_dict(s) or _default_settings(email))
+    except Exception as e:
+        # 表不存在或其它数据库错误时，先给默认，不让前端炸
+        return jsonify(_default_settings(email) | {"_warning":"fallback","_detail":str(e)}), 200
+
 
 @app.put("/api/settings")
 def put_settings():
@@ -882,27 +887,22 @@ def put_settings():
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
+    try:
+        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+        if not s: s = UserSetting(email=email)
+        s.phone = (data.get("phone") or "").strip()
+        s.public_profile = bool(data.get("public_profile", s.public_profile if s.public_profile is not None else True))
+        s.show_following = bool(data.get("show_following", s.show_following if s.show_following is not None else True))
+        s.show_followers = bool(data.get("show_followers", s.show_followers if s.show_followers is not None else True))
+        dm = (data.get("dm_who") or "all").strip().lower()
+        s.dm_who = dm if dm in {"all","following"} else "all"
+        s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
+        s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
+        db.session.add(s); db.session.commit()
+        return jsonify(_settings_to_dict(s))
+    except Exception as e:
+        return jsonify({"message":"db_error","detail":str(e)}), 500
 
-    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-    if not s:
-        s = UserSetting(email=email)
-
-    s.phone = (data.get("phone") or "").strip()
-    s.public_profile = bool(data.get("public_profile", s.public_profile if s.public_profile is not None else True))
-    s.show_following = bool(data.get("show_following", s.show_following if s.show_following is not None else True))
-    s.show_followers = bool(data.get("show_followers", s.show_followers if s.show_followers is not None else True))
-    dm = (data.get("dm_who") or "all").strip().lower()
-    s.dm_who = dm if dm in {"all","following"} else "all"
-    s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
-    s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
-
-    # ✅ bio: 若传入则更新，最多 30 字
-    if "bio" in data:
-        s.bio = (data.get("bio") or "")[:30]
-
-    db.session.add(s)
-    db.session.commit()
-    return jsonify(_settings_to_dict(s))
 
 @app.post("/api/settings/blacklist")
 def settings_blacklist():
