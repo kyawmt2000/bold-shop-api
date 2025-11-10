@@ -108,7 +108,7 @@ class OutfitMedia(db.Model):
     is_video  = db.Column(db.Boolean, default=False)
 
 
-# === User Setting（新增） ===
+# === User Setting（扩展：加入 bio） ===
 class UserSetting(db.Model):
     __tablename__ = "user_settings"
     id = db.Column(db.Integer, primary_key=True)
@@ -120,6 +120,7 @@ class UserSetting(db.Model):
     dm_who = db.Column(db.String(16), default="all")  # all | following
     blacklist_json = db.Column(db.Text)  # JSON 数组
     lang = db.Column(db.String(8), default="zh")
+    bio = db.Column(db.String(120))  # 新增：个人简介
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -224,7 +225,7 @@ with app.app_context():
                     )
                 """))
 
-            # === user_settings 表（新增） ===
+            # === user_settings 表（含 bio 字段） ===
             if is_pg:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS user_settings (
@@ -237,9 +238,11 @@ with app.app_context():
                         dm_who VARCHAR(16) DEFAULT 'all',
                         blacklist_json TEXT,
                         lang VARCHAR(8) DEFAULT 'zh',
+                        bio VARCHAR(120),
                         updated_at TIMESTAMP
                     )
                 """))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
             else:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS user_settings (
@@ -252,9 +255,12 @@ with app.app_context():
                         dm_who VARCHAR(16) DEFAULT 'all',
                         blacklist_json TEXT,
                         lang VARCHAR(8) DEFAULT 'zh',
+                        bio VARCHAR(120),
                         updated_at TIMESTAMP
                     )
                 """))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
+
             conn.commit()
     except Exception:
         # 兜底，不中断启动
@@ -808,7 +814,7 @@ def outfit_comment(oid):
     db.session.commit()
     return jsonify({"id": oid, "comments": row.comments})
 
-# ==================== Settings APIs（新增） ====================
+# ==================== Settings & Profile APIs（含 bio） ====================
 def _default_settings(email: str):
     return {
         "email": (email or "").lower(),
@@ -819,6 +825,7 @@ def _default_settings(email: str):
         "dm_who": "all",
         "blacklist": [],
         "lang": "zh",
+        "bio": "",
         "updated_at": None
     }
 
@@ -833,6 +840,7 @@ def _settings_to_dict(s: UserSetting):
         "dm_who": s.dm_who or "all",
         "blacklist": _safe_json_loads(s.blacklist_json, []),
         "lang": s.lang or "zh",
+        "bio": s.bio or "",
         "updated_at": s.updated_at.isoformat() if s.updated_at else None
     }
 
@@ -863,6 +871,12 @@ def put_settings():
     s.dm_who = dm if dm in {"all","following"} else "all"
     s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
     s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
+    # 同时允许通过 /api/settings 写 bio（可选）
+    if "bio" in data:
+        bio = (data.get("bio") or "").strip()
+        if len(bio) > 30:
+            return jsonify({"message": "bio 最多 30 个字符"}), 400
+        s.bio = bio
 
     db.session.add(s)
     db.session.commit()
@@ -891,6 +905,35 @@ def settings_blacklist():
     db.session.add(s)
     db.session.commit()
     return jsonify(_settings_to_dict(s))
+
+# —— 仅用于 Bio 的极简接口 —— #
+@app.get("/api/profile")
+def profile_get():
+    """GET /api/profile?email=...  -> {email, bio}"""
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"message": "missing email"}), 400
+    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+    bio = s.bio if s and s.bio else ""
+    return jsonify({"email": email, "bio": bio})
+
+@app.put("/api/profile")
+def profile_put():
+    """PUT /api/profile  {email, bio}  (需 X-API-Key)，bio<=30 字"""
+    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    bio = (data.get("bio") or "").strip()
+    if not email:
+        return jsonify({"message":"missing email"}), 400
+    if len(bio) > 30:
+        return jsonify({"message":"bio 最多 30 个字符"}), 400
+    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+    if not s: s = UserSetting(email=email)
+    s.bio = bio
+    db.session.add(s)
+    db.session.commit()
+    return jsonify({"email": email, "bio": s.bio or ""})
 
 # ==================== 迁移端点（按方言执行） ====================
 @app.post("/api/admin/migrate")
@@ -962,9 +1005,11 @@ def admin_migrate():
                         dm_who VARCHAR(16) DEFAULT 'all',
                         blacklist_json TEXT,
                         lang VARCHAR(8) DEFAULT 'zh',
+                        bio VARCHAR(120),
                         updated_at TIMESTAMP
                     )
                 """)
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)")
             else:
                 run("""
                     CREATE TABLE IF NOT EXISTS product_variants (
@@ -1011,9 +1056,11 @@ def admin_migrate():
                         dm_who VARCHAR(16) DEFAULT 'all',
                         blacklist_json TEXT,
                         lang VARCHAR(8) DEFAULT 'zh',
+                        bio VARCHAR(120),
                         updated_at TIMESTAMP
                     )
                 """)
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)")
         return jsonify({"ok": True, "results": results})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
