@@ -118,9 +118,9 @@ class UserSetting(db.Model):
     show_following = db.Column(db.Boolean, default=True)
     show_followers = db.Column(db.Boolean, default=True)
     dm_who = db.Column(db.String(16), default="all")  # all | following
-    blacklist_json = db.Column(db.Text)  # JSON 数组
+    blacklist_json = db.Column(db.Text)
     lang = db.Column(db.String(8), default="zh")
-    bio  = db.Column(db.String(120))  # ✅ 新增，存放简介（我们会限制为最多 30 字）
+    bio = db.Column(db.String(200))  # ✅ 新增：个人简介（服务端长度上限给 200，前端仍限制 30）
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -229,36 +229,37 @@ with app.app_context():
             if is_pg:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS user_settings (
-                        id SERIAL PRIMARY KEY,
-                        email VARCHAR(200) UNIQUE,
-                        phone VARCHAR(64),
-                        public_profile BOOLEAN DEFAULT TRUE,
-                        show_following BOOLEAN DEFAULT TRUE,
-                        show_followers BOOLEAN DEFAULT TRUE,
-                        dm_who VARCHAR(16) DEFAULT 'all',
-                        blacklist_json TEXT,
-                        lang VARCHAR(8) DEFAULT 'zh',
-                        bio VARCHAR(120),
-                        updated_at TIMESTAMP
-                    )
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(200) UNIQUE,
+    phone VARCHAR(64),
+    public_profile BOOLEAN DEFAULT TRUE,
+    show_following BOOLEAN DEFAULT TRUE,
+    show_followers BOOLEAN DEFAULT TRUE,
+    dm_who VARCHAR(16) DEFAULT 'all',
+    blacklist_json TEXT,
+    lang VARCHAR(8) DEFAULT 'zh',
+    bio VARCHAR(200),               -- ✅ 新增
+    updated_at TIMESTAMP
+)
                 """))
                 # 兜底补列
                 conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
             else:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS user_settings (
-                        id INTEGER PRIMARY KEY,
-                        email VARCHAR(200) UNIQUE,
-                        phone VARCHAR(64),
-                        public_profile BOOLEAN DEFAULT 1,
-                        show_following BOOLEAN DEFAULT 1,
-                        show_followers BOOLEAN DEFAULT 1,
-                        dm_who VARCHAR(16) DEFAULT 'all',
-                        blacklist_json TEXT,
-                        lang VARCHAR(8) DEFAULT 'zh',
-                        bio VARCHAR(120),
-                        updated_at TIMESTAMP
-                    )
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(200) UNIQUE,
+    phone VARCHAR(64),
+    public_profile BOOLEAN DEFAULT TRUE,
+    show_following BOOLEAN DEFAULT TRUE,
+    show_followers BOOLEAN DEFAULT TRUE,
+    dm_who VARCHAR(16) DEFAULT 'all',
+    blacklist_json TEXT,
+    lang VARCHAR(8) DEFAULT 'zh',
+    bio VARCHAR(200),               -- ✅ 新增
+    updated_at TIMESTAMP
+)
+
                 """))
                 # 兜底补列
                 conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
@@ -1065,18 +1066,19 @@ def admin_migrate():
                 """)
                 run("""
                     CREATE TABLE IF NOT EXISTS user_settings (
-                        id INTEGER PRIMARY KEY,
-                        email VARCHAR(200) UNIQUE,
-                        phone VARCHAR(64),
-                        public_profile BOOLEAN DEFAULT 1,
-                        show_following BOOLEAN DEFAULT 1,
-                        show_followers BOOLEAN DEFAULT 1,
-                        dm_who VARCHAR(16) DEFAULT 'all',
-                        blacklist_json TEXT,
-                        lang VARCHAR(8) DEFAULT 'zh',
-                        bio VARCHAR(120),
-                        updated_at TIMESTAMP
-                    )
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(200) UNIQUE,
+    phone VARCHAR(64),
+    public_profile BOOLEAN DEFAULT TRUE,
+    show_following BOOLEAN DEFAULT TRUE,
+    show_followers BOOLEAN DEFAULT TRUE,
+    dm_who VARCHAR(16) DEFAULT 'all',
+    blacklist_json TEXT,
+    lang VARCHAR(8) DEFAULT 'zh',
+    bio VARCHAR(200),               -- ✅ 新增
+    updated_at TIMESTAMP
+)
+
                 """)
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)")
         return jsonify({"ok": True, "results": results})
