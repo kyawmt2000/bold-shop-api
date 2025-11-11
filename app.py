@@ -710,6 +710,51 @@ def outfits_list():
     rows = q.order_by(Outfit.created_at.desc()).limit(200).all()
     return jsonify([_outfit_to_dict(r) for r in rows])
 
+# --- 单条 outfit 获取：/api/outfits/<id> ---
+from flask import jsonify, request
+import json, logging
+
+log = logging.getLogger(__name__)
+
+def _parse_media(v):
+    """把 images/videos 字段稳健地转成 list[str]。"""
+    if not v:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v]
+    try:
+        data = json.loads(v)
+        if isinstance(data, list):
+            return [str(x) for x in data]
+    except Exception:
+        pass
+    return [s.strip() for s in str(v).split(",") if s.strip()]
+
+@app.route("/api/outfits/<int:oid>", methods=["GET"])
+def api_get_outfit(oid: int):
+    try:
+        o = db.session.get(Outfit, oid) if hasattr(db.session, "get") else Outfit.query.get(oid)
+        if not o:
+            return jsonify({"error": "not found"}), 404
+
+        payload = {
+            "id": o.id,
+            "title": getattr(o, "title", "") or "",
+            "desc": getattr(o, "desc", "") or getattr(o, "caption", "") or "",
+            "author_email": getattr(o, "author_email", "") or getattr(o, "merchant_email", "") or "",
+            "author_name": getattr(o, "author_name", "") or "",
+            "images": _parse_media(getattr(o, "images", [])),
+            "videos": _parse_media(getattr(o, "videos", [])),
+            "cover_url": getattr(o, "cover_url", None),
+            "created_at": getattr(o, "created_at", None).isoformat()
+                          if getattr(o, "created_at", None) else None,
+        }
+        return jsonify(payload), 200
+    except Exception as e:
+        log.exception("get_outfit failed for id=%s", oid)
+        return jsonify({"error": "internal", "detail": str(e)}), 500
+
+
 @app.get("/api/outfits/<int:oid>/media/<int:mid>")
 def outfit_media(oid, mid):
     m = OutfitMedia.query.filter_by(id=mid, outfit_id=oid).first_or_404()
