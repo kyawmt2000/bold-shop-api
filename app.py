@@ -30,14 +30,7 @@ CORS(
     allow_headers=["Content-Type", "X-API-Key"]
 )
 
-API_KEY = os.getenv("API_KEY", "")\n
-# -------------------- 上传目录（来自补充.txt） --------------------
-# 说明：用于保存通过表单上传的临时文件（开发 / 测试环境使用）。
-# - 环境变量 UPLOAD_DIR 可覆盖默认路径。
-# - 生产环境建议使用对象存储（S3 / OSS / GCS 等）并返回 CDN 链接；此处仅作调试用途。
-UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/tmp/bold_uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
+API_KEY = os.getenv("API_KEY", "")
 db = SQLAlchemy(app)
 
 # -------------------- Models --------------------
