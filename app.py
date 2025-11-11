@@ -1,39 +1,46 @@
-# app.py  —— BOLD SHOP 后端（含 Settings + Bio 后端存储）
-
-import os, json
+import os
+import json
 from datetime import datetime
 from io import BytesIO
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy import func
 from werkzeug.utils import secure_filename
+from sqlalchemy import func  # 不区分大小写查询
 
 app = Flask(__name__)
 
-# -------------------- DB CONFIG --------------------
+# -------------------- Database config --------------------
 db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "sqlite:///data.db"
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+# ✅ CORS
 CORS(
     app,
     resources={r"/api/*": {"origins": [
         "https://boldmm.shop",
-        "http://localhost:3000","http://127.0.0.1:3000",
-        "http://localhost:5500","http://127.0.0.1:5500",
-        "*"
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:5500", "http://127.0.0.1:5500",
+        "*",
     ]}},
     supports_credentials=False,
-    methods=["GET","POST","PUT","DELETE","OPTIONS"],
-    allow_headers=["Content-Type","X-API-Key"]
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"]
 )
 
-API_KEY = os.getenv("API_KEY", "")
+API_KEY = os.getenv("API_KEY", "")\n
+# -------------------- 上传目录（来自补充.txt） --------------------
+# 说明：用于保存通过表单上传的临时文件（开发 / 测试环境使用）。
+# - 环境变量 UPLOAD_DIR 可覆盖默认路径。
+# - 生产环境建议使用对象存储（S3 / OSS / GCS 等）并返回 CDN 链接；此处仅作调试用途。
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/tmp/bold_uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 db = SQLAlchemy(app)
 
-# -------------------- MODELS --------------------
+# -------------------- Models --------------------
 class MerchantApplication(db.Model):
     __tablename__ = "merchant_applications"
     id = db.Column(db.Integer, primary_key=True)
@@ -46,7 +53,8 @@ class MerchantApplication(db.Model):
     license_image_name = db.Column(db.String(255))
     license_image_type = db.Column(db.String(128))
     license_image_data = db.Column(db.LargeBinary)
-    status       = db.Column(db.String(32), default="pending", nullable=False)
+    status       = db.Column(db.String(32), default="pending", nullable=False)  # pending/approved/rejected
+
 
 class Product(db.Model):
     __tablename__ = "products"
@@ -62,14 +70,16 @@ class Product(db.Model):
     colors_json = db.Column(db.Text)
     status  = db.Column(db.String(20), default="active")
 
+
 class ProductVariant(db.Model):
     __tablename__ = "product_variants"
     id = db.Column(db.Integer, primary_key=True)
     product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False, index=True)
-    size  = db.Column(db.String(50))
-    color = db.Column(db.String(50))
-    price = db.Column(db.Integer, nullable=False, default=0)
-    stock = db.Column(db.Integer, nullable=False, default=0)
+    size   = db.Column(db.String(50))
+    color  = db.Column(db.String(50))
+    price  = db.Column(db.Integer, nullable=False, default=0)
+    stock  = db.Column(db.Integer, nullable=False, default=0)
+
 
 class ProductImage(db.Model):
     __tablename__ = "product_images"
@@ -79,7 +89,8 @@ class ProductImage(db.Model):
     mimetype   = db.Column(db.String(128))
     data       = db.Column(db.LargeBinary)
 
-# ---- OUTFIT ----
+
+# === Outfit(穿搭) ===
 class Outfit(db.Model):
     __tablename__ = "outfits"
     id = db.Column(db.Integer, primary_key=True)
@@ -93,6 +104,7 @@ class Outfit(db.Model):
     comments     = db.Column(db.Integer, default=0)
     status       = db.Column(db.String(20), default="active")
 
+
 class OutfitMedia(db.Model):
     __tablename__ = "outfit_media"
     id = db.Column(db.Integer, primary_key=True)
@@ -102,7 +114,8 @@ class OutfitMedia(db.Model):
     data      = db.Column(db.LargeBinary)
     is_video  = db.Column(db.Boolean, default=False)
 
-# ---- SETTINGS（含 bio）----
+
+# === User Setting（新增 bio 字段） ===
 class UserSetting(db.Model):
     __tablename__ = "user_settings"
     id = db.Column(db.Integer, primary_key=True)
@@ -111,13 +124,14 @@ class UserSetting(db.Model):
     public_profile = db.Column(db.Boolean, default=True)
     show_following = db.Column(db.Boolean, default=True)
     show_followers = db.Column(db.Boolean, default=True)
-    dm_who = db.Column(db.String(16), default="all")   # all | following
-    blacklist_json = db.Column(db.Text)                # JSON list
+    dm_who = db.Column(db.String(16), default="all")  # all | following
+    blacklist_json = db.Column(db.Text)  # JSON 数组
     lang = db.Column(db.String(8), default="zh")
-    bio  = db.Column(db.Text)                          # <= 30 chars enforced in code
+    bio  = db.Column(db.Text)  # 简介（前端 30 字，这里不强制长度，仅裁剪）
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-# -------------------- STARTUP: CREATE / PATCH --------------------
+
+# -------------------- 初始化：按方言兜底建表/补列 --------------------
 with app.app_context():
     db.create_all()
     try:
@@ -125,9 +139,10 @@ with app.app_context():
             dialect = conn.engine.dialect.name.lower()
             is_pg = 'postgres' in dialect
 
-            # 通用补列
+            # 公共列兜底
             conn.execute(db.text(
-                "ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"
+                "ALTER TABLE merchant_applications "
+                "ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"
             ))
             conn.execute(db.text(
                 "ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)"
@@ -142,7 +157,7 @@ with app.app_context():
                 "ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)"
             ))
 
-            # 建变体/穿搭表
+            # product_variants
             if is_pg:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS product_variants (
@@ -154,6 +169,20 @@ with app.app_context():
                         stock INTEGER
                     )
                 """))
+            else:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS product_variants (
+                        id INTEGER PRIMARY KEY,
+                        product_id INTEGER,
+                        size VARCHAR(50),
+                        color VARCHAR(50),
+                        price INTEGER,
+                        stock INTEGER
+                    )
+                """))
+
+            # outfits / outfit_media
+            if is_pg:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS outfits (
                         id SERIAL PRIMARY KEY,
@@ -178,34 +207,7 @@ with app.app_context():
                         is_video BOOLEAN DEFAULT FALSE
                     )
                 """))
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS user_settings (
-                        id SERIAL PRIMARY KEY,
-                        email VARCHAR(200) UNIQUE,
-                        phone VARCHAR(64),
-                        public_profile BOOLEAN DEFAULT TRUE,
-                        show_following BOOLEAN DEFAULT TRUE,
-                        show_followers BOOLEAN DEFAULT TRUE,
-                        dm_who VARCHAR(16) DEFAULT 'all',
-                        blacklist_json TEXT,
-                        lang VARCHAR(8) DEFAULT 'zh',
-                        bio TEXT,
-                        updated_at TIMESTAMP
-                    )
-                """))
-                # 补列（老表无 bio 的情况）
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio TEXT"))
             else:
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS product_variants (
-                        id INTEGER PRIMARY KEY,
-                        product_id INTEGER,
-                        size VARCHAR(50),
-                        color VARCHAR(50),
-                        price INTEGER,
-                        stock INTEGER
-                    )
-                """))
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS outfits (
                         id INTEGER PRIMARY KEY,
@@ -230,6 +232,27 @@ with app.app_context():
                         is_video BOOLEAN DEFAULT 0
                     )
                 """))
+
+            # user_settings（带 bio）
+            if is_pg:
+                conn.execute(db.text("""
+                    CREATE TABLE IF NOT EXISTS user_settings (
+                        id SERIAL PRIMARY KEY,
+                        email VARCHAR(200) UNIQUE,
+                        phone VARCHAR(64),
+                        public_profile BOOLEAN DEFAULT TRUE,
+                        show_following BOOLEAN DEFAULT TRUE,
+                        show_followers BOOLEAN DEFAULT TRUE,
+                        dm_who VARCHAR(16) DEFAULT 'all',
+                        blacklist_json TEXT,
+                        lang VARCHAR(8) DEFAULT 'zh',
+                        bio TEXT,
+                        updated_at TIMESTAMP
+                    )
+                """))
+                # 兼容老表补列
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio TEXT"))
+            else:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS user_settings (
                         id INTEGER PRIMARY KEY,
@@ -248,13 +271,14 @@ with app.app_context():
                 conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio TEXT"))
             conn.commit()
     except Exception:
-        # 忽略启动期补表失败，保证服务能继续
+        # 兜底，不中断启动
         pass
 
-# -------------------- UTILS --------------------
+# -------------------- Utilities --------------------
 def ok(): return {"ok": True}
 
 def check_key(req):
+    """允许 X-API-Key 头、?key=、或 JSON body 里提供 key"""
     key = req.headers.get("X-API-Key") or req.args.get("key")
     if not key and req.is_json:
         data = req.get_json(silent=True) or {}
@@ -271,7 +295,8 @@ def _json_dumps(o):
     return json.dumps(o, ensure_ascii=False)
 
 def _is_approved_merchant(email: str) -> bool:
-    if not email: return False
+    if not email:
+        return False
     row = MerchantApplication.query.filter(
         MerchantApplication.email == email,
         MerchantApplication.status == "approved"
@@ -308,37 +333,60 @@ def _outfit_to_dict(o: Outfit, req=None):
     media_urls = [f"{r.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}" for m in medias]
     videos = [u for m, u in zip(medias, media_urls) if m.is_video]
     images = [u for m, u in zip(medias, media_urls) if not m.is_video]
-    tags = _safe_json_loads(o.tags_json, [])
+    try:
+        tags = json.loads(o.tags_json) if o.tags_json else []
+    except Exception:
+        tags = []
     return {
-        "id": o.id, "created_at": o.created_at.isoformat(),
-        "author_email": o.author_email, "author_name": o.author_name,
-        "title": o.title, "desc": o.desc, "tags": tags,
-        "images": images, "videos": videos,
-        "likes": o.likes or 0, "comments": o.comments or 0,
+        "id": o.id,
+        "created_at": o.created_at.isoformat(),
+        "author_email": o.author_email,
+        "author_name": o.author_name,
+        "title": o.title,
+        "desc": o.desc,
+        "tags": tags,
+        "images": images,
+        "videos": videos,
+        "likes": o.likes or 0,
+        "comments": o.comments or 0,
         "status": o.status or "active"
     }
 
-# -------------------- HEALTH --------------------
-@app.get("/health")
+# -------------------- Health & DB Info --------------------
+@app.route("/health")
 def health(): return ok()
 
-# ==================== MERCHANT ====================
-@app.get("/api/merchants/status")
+@app.get("/api/dbinfo")
+def dbinfo():
+    """查看当前数据库方言（postgres / sqlite 等）"""
+    with db.engine.connect() as conn:
+        name = conn.engine.dialect.name
+    return jsonify({"dialect": name})
+
+# ==================== Merchant APIs ====================
+@app.route("/api/merchants/status", methods=["GET", "OPTIONS"])
 def merchant_status():
+    if request.method == "OPTIONS":
+        return ("", 204)
     email = (request.args.get("email") or "").strip().lower()
-    if not email: return jsonify({"error":"missing email"}), 400
-    row = (MerchantApplication.query
-           .filter(func.lower(MerchantApplication.email)==email)
-           .order_by(MerchantApplication.id.desc())
-           .first())
-    if not row: return jsonify({"status":"none"}), 200
+    if not email:
+        return jsonify({"error": "missing email"}), 400
+    row = (
+        MerchantApplication.query
+        .filter(func.lower(MerchantApplication.email) == email)
+        .order_by(MerchantApplication.id.desc())
+        .first()
+    )
+    if not row:
+        return jsonify({"status": "none"}), 200
     return jsonify({
         "status": row.status or "pending",
         "shop_name": row.shop_name or "",
         "account_name": row.account_name or "",
         "id": row.id,
-        "created_at": row.created_at.isoformat() if row.created_at else None
-    })
+        "created_at": (row.created_at.isoformat() if row.created_at else None)
+    }), 200
+
 
 @app.post("/api/merchants/apply")
 def apply_merchant():
@@ -364,7 +412,8 @@ def apply_merchant():
         license_image_type=file.mimetype or "application/octet-stream",
         license_image_data=file.read(), status="pending"
     )
-    db.session.add(row); db.session.commit()
+    db.session.add(row)
+    db.session.commit()
     return jsonify({"message":"ok","id":row.id})
 
 @app.get("/api/admin/merchants")
@@ -372,10 +421,10 @@ def admin_list():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     q = MerchantApplication.query.order_by(MerchantApplication.created_at.desc()).all()
     items = [{
-        "id":r.id,"created_at":r.created_at.isoformat(),
-        "account_name":r.account_name,"shop_name":r.shop_name,
-        "license_id":r.license_id,"phone":r.phone,"email":r.email,
-        "status":r.status or "pending","license_image_name":r.license_image_name
+        "id":r.id, "created_at":r.created_at.isoformat(),
+        "account_name":r.account_name, "shop_name":r.shop_name,
+        "license_id":r.license_id, "phone":r.phone, "email":r.email,
+        "status":r.status or "pending", "license_image_name":r.license_image_name
     } for r in q]
     return jsonify({"items": items})
 
@@ -386,21 +435,25 @@ def admin_set_status(rid):
     status = (request.json or {}).get("status","").strip().lower()
     if status not in {"pending","approved","rejected"}:
         return jsonify({"message":"status 必须是 pending/approved/rejected"}), 400
-    r.status = status; db.session.commit()
+    r.status = status
+    db.session.commit()
     return jsonify({"message":"ok"})
 
 @app.get("/api/admin/merchants/<int:rid>/license_image")
 def admin_image(rid):
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     r = MerchantApplication.query.get_or_404(rid)
-    return send_file(BytesIO(r.license_image_data),
+    return send_file(
+        BytesIO(r.license_image_data),
         mimetype=r.license_image_type or "application/octet-stream",
         as_attachment=False,
-        download_name=r.license_image_name or f"license_{rid}.bin")
+        download_name=r.license_image_name or f"license_{rid}.bin"
+    )
 
-# ==================== PRODUCTS ====================
+# ==================== Product APIs ====================
 @app.get("/api/products/ping")
-def products_ping(): return jsonify({"ok": True})
+def products_ping():
+    return jsonify({"ok": True})
 
 @app.get("/api/products")
 def products_list():
@@ -408,11 +461,12 @@ def products_list():
     try:
         email = (request.args.get("merchant_email") or "").strip().lower()
         q = Product.query
-        if email: q = q.filter_by(merchant_email=email)
+        if email:
+            q = q.filter_by(merchant_email=email)
         rows = q.order_by(Product.id.desc()).all()
         return jsonify([_product_to_dict(r) for r in rows])
     except Exception as e:
-        return jsonify({"message":"server_error","detail":str(e)}), 500
+        return jsonify({"message":"server_error", "detail": str(e)}), 500
 
 @app.get("/api/products/<int:pid>")
 def products_get_one(pid):
@@ -427,16 +481,18 @@ def products_add():
     email = (f.get("merchant_email") or "").strip().lower()
     if not _is_approved_merchant(email):
         return jsonify({"message":"not approved"}), 403
+
     title = (f.get("title") or "").strip()
     gender = (f.get("gender") or "").strip()
     category = (f.get("category") or "").strip()
     desc = (f.get("desc") or "").strip()
+
     try:
         base_price = int(f.get("price") or 0)
     except Exception:
         return jsonify({"message":"price 不合法"}), 400
 
-    sizes  = _safe_json_loads(f.get("sizes"), [])
+    sizes = _safe_json_loads(f.get("sizes"), [])
     colors = _safe_json_loads(f.get("colors"), [])
     variant_prices = _safe_json_loads(f.get("variant_prices"), [])
 
@@ -452,38 +508,41 @@ def products_add():
         sizes_json=_json_dumps(sizes), colors_json=_json_dumps(colors),
         status="active"
     )
-    db.session.add(p); db.session.flush()
+    db.session.add(p)
+    db.session.flush()
 
     created_any_variant = False
-    if isinstance(variant_prices, list) and len(variant_prices)>0:
-        for i,v in enumerate(variant_prices):
+    if isinstance(variant_prices, list) and len(variant_prices) > 0:
+        for i, v in enumerate(variant_prices):
             try:
-                size=(v.get("size") or "").strip()
-                color=(v.get("color") or "").strip()
-                price=int(v.get("price")); stock=int(v.get("stock") or 0)
+                size  = (v.get("size") or "").strip()
+                color = (v.get("color") or "").strip()
+                price = int(v.get("price"))
+                stock = int(v.get("stock") or 0)
             except Exception:
                 db.session.rollback()
                 return jsonify({"message": f"第 {i+1} 个变体参数不合法"}), 400
-            db.session.add(ProductVariant(product_id=p.id,size=size,color=color,price=price,stock=stock))
+            db.session.add(ProductVariant(product_id=p.id, size=size, color=color, price=price, stock=stock))
         created_any_variant = True
     else:
         if sizes and colors:
             for si in sizes:
                 for co in colors:
-                    db.session.add(ProductVariant(product_id=p.id,size=str(si),color=str(co),price=base_price,stock=0))
+                    db.session.add(ProductVariant(product_id=p.id, size=str(si), color=str(co), price=base_price, stock=0))
             created_any_variant = True
         elif sizes:
             for si in sizes:
-                db.session.add(ProductVariant(product_id=p.id,size=str(si),color="",price=base_price,stock=0))
+                db.session.add(ProductVariant(product_id=p.id, size=str(si), color="", price=base_price, stock=0))
             created_any_variant = True
         elif colors:
             for co in colors:
-                db.session.add(ProductVariant(product_id=p.id,size="",color=str(co),price=base_price,stock=0))
+                db.session.add(ProductVariant(product_id=p.id, size="", color=str(co), price=base_price, stock=0))
             created_any_variant = True
 
     files = request.files.getlist("images")
-    for i,file in enumerate(files[:5]):
-        if not file: continue
+    for i, file in enumerate(files[:5]):
+        if not file:
+            continue
         file.seek(0, os.SEEK_END); size=file.tell(); file.seek(0)
         if size > 5*1024*1024:
             db.session.rollback()
@@ -499,7 +558,7 @@ def products_add():
     db.session.commit()
     data = _product_to_dict(p)
     if not created_any_variant:
-        data["variants"] = [{"id":None,"size":"","color":"","price":base_price,"stock":0}]
+        data["variants"] = [{"id": None, "size": "", "color": "", "price": base_price, "stock": 0}]
     return jsonify(data), 201
 
 @app.get("/api/products/<int:pid>/image/<int:iid>")
@@ -512,7 +571,8 @@ def product_image(pid, iid):
 def product_image_delete(pid, iid):
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     row = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
-    db.session.delete(row); db.session.commit()
+    db.session.delete(row)
+    db.session.commit()
     return jsonify({"ok": True, "pid": pid, "iid": iid})
 
 @app.put("/api/products/<int:pid>")
@@ -525,8 +585,10 @@ def product_update(pid):
         return jsonify({"message":"forbidden"}), 403
     if "title" in data: row.title = (data["title"] or "").strip()
     if "price" in data:
-        try: row.price = int(data["price"] or 0)
-        except Exception: return jsonify({"message":"price 不合法"}), 400
+        try:
+            row.price = int(data["price"] or 0)
+        except Exception:
+            return jsonify({"message":"price 不合法"}), 400
     if "desc" in data:  row.desc  = (data["desc"] or "").strip()
     db.session.commit()
     return jsonify(_product_to_dict(row))
@@ -541,11 +603,12 @@ def product_replace_variants(pid):
     if email != (row.merchant_email or "").lower():
         return jsonify({"message":"forbidden"}), 403
     ProductVariant.query.filter_by(product_id=pid).delete()
-    for i,v in enumerate(variants):
+    for i, v in enumerate(variants):
         try:
-            size=(v.get("size") or "").strip()
-            color=(v.get("color") or "").strip()
-            price=int(v.get("price")); stock=int(v.get("stock") or 0)
+            size  = (v.get("size") or "").strip()
+            color = (v.get("color") or "").strip()
+            price = int(v.get("price"))
+            stock = int(v.get("stock") or 0)
         except Exception:
             db.session.rollback()
             return jsonify({"message": f"第 {i+1} 个变体参数不合法"}), 400
@@ -565,99 +628,208 @@ def product_delete(pid):
     if hard:
         ProductImage.query.filter_by(product_id=pid).delete()
         ProductVariant.query.filter_by(product_id=pid).delete()
-        db.session.delete(row); db.session.commit()
+        db.session.delete(row)
+        db.session.commit()
         return jsonify({"ok": True, "id": pid, "deleted": "hard"})
     else:
-        row.status = "removed"; db.session.commit()
+        row.status = "removed"
+        db.session.commit()
         return jsonify({"ok": True, "id": pid, "deleted": "soft"})
 
-# ==================== OUTFITS ====================
+# ==================== Outfit APIs ====================
 @app.post("/api/outfits/add")
 def outfits_add():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
     f = request.form
     email = (f.get("author_email") or "").strip().lower()
-    if not email: return jsonify({"message":"author_email 不能为空"}), 400
+    if not email:
+        return jsonify({"message": "author_email 不能为空"}), 400
     title = (f.get("title") or "").strip()
     desc  = (f.get("desc") or "").strip()
     author_name = (f.get("author_name") or "").strip()
-    tags = _safe_json_loads(f.get("tags") or "[]", [])
+    tags_raw = f.get("tags") or "[]"
+    tags = _safe_json_loads(tags_raw, [])
+    tags_json = _json_dumps(tags)
     files = request.files.getlist("media")
-    if not files: return jsonify({"message":"请至少上传 1 个文件"}), 400
+    if not files:
+        return jsonify({"message": "请至少上传 1 个文件"}), 400
     is_videos = [(file.mimetype or "").startswith("video/") for file in files]
     if any(is_videos) and not all(is_videos):
-        return jsonify({"message":"不能混合图片和视频。只支持 1 个视频 或 1~5 张图片"}), 400
-    if all(is_videos) and len(files)!=1:
-        return jsonify({"message":"视频只能上传 1 个"}), 400
-    if not all(is_videos) and len(files)>5:
-        return jsonify({"message":"图片最多 5 张"}), 400
-
-    o = Outfit(author_email=email, author_name=author_name, title=title,
-               desc=desc, tags_json=_json_dumps(tags), status="active")
-    db.session.add(o); db.session.flush()
-    for i,file in enumerate(files):
-        if not file: continue
-        file.seek(0, os.SEEK_END); size=file.tell(); file.seek(0)
-        if size > 20*1024*1024:
-            db.session.rollback(); return jsonify({"message": f"第{i+1}个文件超过 20MB"}), 400
+        return jsonify({"message": "不能混合图片和视频。只支持 1 个视频 或 1~5 张图片"}), 400
+    if all(is_videos):
+        if len(files) != 1:
+            return jsonify({"message": "视频只能上传 1 个"}), 400
+    else:
+        if len(files) > 5:
+            return jsonify({"message": "图片最多 5 张"}), 400
+    o = Outfit(
+        author_email=email, author_name=author_name, title=title,
+        desc=desc, tags_json=tags_json, status="active"
+    )
+    db.session.add(o)
+    db.session.flush()
+    for i, file in enumerate(files):
+        if not file:
+            continue
+        file.seek(0, os.SEEK_END); size = file.tell(); file.seek(0)
+        if size > 20 * 1024 * 1024:
+            db.session.rollback()
+            return jsonify({"message": f"第{i+1}个文件超过 20MB"}), 400
         mimetype = file.mimetype or "application/octet-stream"
-        db.session.add(OutfitMedia(
+        is_video = mimetype.startswith("video/")
+        m = OutfitMedia(
             outfit_id=o.id,
             filename=secure_filename(file.filename or f"o{o.id}_{i+1}"),
             mimetype=mimetype,
             data=file.read(),
-            is_video=mimetype.startswith("video/")
-        ))
+            is_video=is_video
+        )
+        db.session.add(m)
     db.session.commit()
     return jsonify(_outfit_to_dict(o)), 201
 
+
 @app.get("/api/outfits")
 def outfits_list():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
     email = (request.args.get("author_email") or "").strip().lower()
     q = Outfit.query.filter_by(status="active")
-    if email: q = q.filter(Outfit.author_email==email)
+    if email:
+        q = q.filter(Outfit.author_email == email)
     rows = q.order_by(Outfit.created_at.desc()).limit(200).all()
     return jsonify([_outfit_to_dict(r) for r in rows])
 
 @app.get("/api/outfits/<int:oid>/media/<int:mid>")
 def outfit_media(oid, mid):
     m = OutfitMedia.query.filter_by(id=mid, outfit_id=oid).first_or_404()
-    return send_file(BytesIO(m.data),
+    return send_file(
+        BytesIO(m.data),
         mimetype=m.mimetype or "application/octet-stream",
-        as_attachment=False, download_name=m.filename or f"o{oid}_{mid}")
+        as_attachment=False,
+        download_name=m.filename or f"o{oid}_{mid}"
+    )
 
 @app.route("/api/outfits/<int:oid>", methods=["OPTIONS"])
-def outfits_preflight(oid): return ("", 204)
+def outfits_preflight(oid):
+    return ("", 204)
 
 @app.put("/api/outfits/<int:oid>")
 def outfits_update(oid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     author_email = (data.get("author_email") or "").strip().lower()
-    if not author_email: return jsonify({"message":"author_email required"}), 400
+    if not author_email:
+        return jsonify({"message": "author_email required"}), 400
     row = Outfit.query.get_or_404(oid)
     if (row.author_email or "").strip().lower() != author_email:
-        return jsonify({"message":"forbidden"}), 403
-    if "title" in data: row.title = (data.get("title") or "").strip()
-    if "desc"  in data: row.desc  = (data.get("desc")  or "").strip()
+        return jsonify({"message": "forbidden"}), 403
+    if "title" in data:
+        row.title = (data.get("title") or "").strip()
+    if "desc" in data:
+        row.desc = (data.get("desc") or "").strip()
     db.session.commit()
     return jsonify(_outfit_to_dict(row))
 
 @app.delete("/api/outfits/<int:oid>")
 def outfits_delete(oid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     author_email = (data.get("author_email") or "").strip().lower()
-    if not author_email: return jsonify({"message":"author_email required"}), 400
+    if not author_email:
+        return jsonify({"message": "author_email required"}), 400
     row = Outfit.query.get_or_404(oid)
     if (row.author_email or "").strip().lower() != author_email:
-        return jsonify({"message":"forbidden"}), 403
+        return jsonify({"message": "forbidden"}), 403
     OutfitMedia.query.filter_by(outfit_id=oid).delete()
-    db.session.delete(row); db.session.commit()
+    db.session.delete(row)
+    db.session.commit()
     return jsonify({"ok": True, "deleted_id": oid})
 
-# ==================== SETTINGS ====================
+@app.get("/api/outfit/feed")
+def outfit_feed():
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    tab = (request.args.get("tab") or "recommend").strip()
+    qstr = (request.args.get("q") or "").strip().lower()
+    try:
+        offset = int(request.args.get("offset") or 0)
+        limit  = min(50, int(request.args.get("limit") or 12))
+    except Exception:
+        offset, limit = 0, 12
+    q = Outfit.query.filter_by(status="active")
+    if qstr:
+        like = f"%{qstr}%"
+        q = q.filter(
+            db.or_(
+                Outfit.title.ilike(like),
+                Outfit.desc.ilike(like),
+                Outfit.tags_json.ilike(like)
+            )
+        )
+    q = q.order_by(Outfit.created_at.desc())
+    total = q.count()
+    rows = q.offset(offset).limit(limit).all()
+
+    def to_card(o: Outfit):
+        medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
+        cover = ""
+        for m in medias:
+            url = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
+            if not m.is_video:
+                cover = url
+                break
+        if not cover and medias:
+            cover = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{medias[0].id}"
+        return {
+            "id": o.id,
+            "title": o.title or "OOTD",
+            "cover": cover,
+            "likes": o.likes or 0,
+            "comments": o.comments or 0,
+            "user": {"name": o.author_name or (o.author_email or "")}
+        }
+
+    items = [to_card(o) for o in rows]
+    has_more = (offset + len(items) < total)
+    return jsonify({"items": items, "has_more": has_more})
+
+@app.post("/api/outfits/<int:oid>/like")
+def outfit_like(oid):
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    delta = 1
+    try:
+        body = request.get_json(silent=True) or {}
+        if "delta" in body:
+            delta = int(body["delta"])
+    except Exception:
+        pass
+    row = Outfit.query.get_or_404(oid)
+    row.likes = max(0, (row.likes or 0) + delta)
+    db.session.commit()
+    return jsonify({"id": oid, "likes": row.likes})
+
+@app.post("/api/outfits/<int:oid>/comment")
+def outfit_comment(oid):
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+    delta = 1
+    try:
+        body = request.get_json(silent=True) or {}
+        if "delta" in body:
+            delta = int(body["delta"])
+    except Exception:
+        pass
+    row = Outfit.query.get_or_404(oid)
+    row.comments = max(0, (row.comments or 0) + delta)
+    db.session.commit()
+    return jsonify({"id": oid, "comments": row.comments})
+
+# ==================== Settings APIs（含 bio） ====================
 def _default_settings(email: str):
     return {
         "email": (email or "").lower(),
@@ -683,7 +855,7 @@ def _settings_to_dict(s: UserSetting):
         "dm_who": s.dm_who or "all",
         "blacklist": _safe_json_loads(s.blacklist_json, []),
         "lang": s.lang or "zh",
-        "bio": (s.bio or "")[:30],
+        "bio": (s.bio or ""),
         "updated_at": s.updated_at.isoformat() if s.updated_at else None
     }
 
@@ -692,7 +864,7 @@ def get_settings():
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     email = (request.args.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
-    s = UserSetting.query.filter(func.lower(UserSetting.email)==email).first()
+    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
     return jsonify(_settings_to_dict(s) or _default_settings(email))
 
 @app.put("/api/settings")
@@ -702,35 +874,40 @@ def put_settings():
     email = (data.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
 
-    s = UserSetting.query.filter(func.lower(UserSetting.email)==email).first()
-    if not s: s = UserSetting(email=email)
+    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+    if not s:
+        s = UserSetting(email=email)
 
-    s.phone = (data.get("phone") or "").strip()
-    s.public_profile = bool(data.get("public_profile", s.public_profile if s.public_profile is not None else True))
-    s.show_following = bool(data.get("show_following", s.show_following if s.show_following is not None else True))
-    s.show_followers = bool(data.get("show_followers", s.show_followers if s.show_followers is not None else True))
-    dm = (data.get("dm_who") or "all").strip().lower()
-    s.dm_who = dm if dm in {"all","following"} else "all"
-    s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
-    s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
-
-    # Bio 强制 ≤ 30 字
+    # 允许“选择性”更新
+    if "phone" in data: s.phone = (data.get("phone") or "").strip()
+    if "public_profile" in data: s.public_profile = bool(data.get("public_profile"))
+    if "show_following" in data: s.show_following = bool(data.get("show_following"))
+    if "show_followers" in data: s.show_followers = bool(data.get("show_followers"))
+    if "dm_who" in data:
+        dm = (data.get("dm_who") or "all").strip().lower()
+        s.dm_who = dm if dm in {"all","following"} else "all"
+    if "blacklist" in data:
+        s.blacklist_json = _json_dumps(data.get("blacklist") or [])
+    if "lang" in data:
+        s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
     if "bio" in data:
-        s.bio = (data.get("bio") or "")[:30]
+        s.bio = (data.get("bio") or "").strip()[:30]  # 服务器也裁剪到 30
 
-    db.session.add(s); db.session.commit()
+    db.session.add(s)
+    db.session.commit()
     return jsonify(_settings_to_dict(s))
 
 @app.post("/api/settings/blacklist")
 def settings_blacklist():
+    """body: {email, op: add|remove, value: 'someone@example.com'}"""
     if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     body = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
-    op    = (body.get("op") or "").strip().lower()
+    op = (body.get("op") or "").strip().lower()
     value = (body.get("value") or "").strip()
     if not email or not op or not value:
         return jsonify({"message":"missing params"}), 400
-    s = UserSetting.query.filter(func.lower(UserSetting.email)==email).first()
+    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
     if not s: s = UserSetting(email=email)
     lst = _safe_json_loads(s.blacklist_json, [])
     if op == "add":
@@ -740,13 +917,15 @@ def settings_blacklist():
     else:
         return jsonify({"message":"op must be add/remove"}), 400
     s.blacklist_json = _json_dumps(lst)
-    db.session.add(s); db.session.commit()
+    db.session.add(s)
+    db.session.commit()
     return jsonify(_settings_to_dict(s))
 
-# ==================== ADMIN MIGRATE ====================
+# ==================== 迁移端点（按方言执行） ====================
 @app.post("/api/admin/migrate")
 def admin_migrate():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
     try:
         with db.engine.begin() as conn:
             dialect = conn.engine.dialect.name.lower()
@@ -755,10 +934,12 @@ def admin_migrate():
 
             def run(sql):
                 try:
-                    conn.execute(db.text(sql)); results.append({"sql": sql, "ok": True})
+                    conn.execute(db.text(sql))
+                    results.append({"sql": sql, "ok": True})
                 except Exception as e:
                     results.append({"sql": sql, "ok": False, "error": str(e)})
 
+            # 通用列兜底
             run("ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)")
             run("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)")
@@ -870,6 +1051,6 @@ def admin_migrate():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# -------------------- MAIN --------------------
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT","5000")), debug=True)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
