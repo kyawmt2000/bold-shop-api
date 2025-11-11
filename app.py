@@ -1,9 +1,10 @@
 import os
 import json
+import logging
 from datetime import datetime
 from io import BytesIO
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
@@ -16,7 +17,7 @@ db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "s
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# ✅ CORS
+# ✅ CORS（统一允许 /api/* 的预检与常见方法 + 自定义头）
 CORS(
     app,
     resources={r"/api/*": {"origins": [
@@ -26,7 +27,7 @@ CORS(
         "*",
     ]}},
     supports_credentials=False,
-    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-API-Key"]
 )
 
@@ -90,12 +91,19 @@ class Outfit(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     author_email = db.Column(db.String(200), index=True, nullable=False)
     author_name  = db.Column(db.String(200))
-    title        = db.Column(db.String(200))
+    title        = db.Column(db.String(200), default="OOTD")
     desc         = db.Column(db.Text)
-    tags_json    = db.Column(db.Text)
+    tags_json    = db.Column(db.Text)   # 原有 JSON 数组（字符串）
     likes        = db.Column(db.Integer, default=0)
     comments     = db.Column(db.Integer, default=0)
     status       = db.Column(db.String(20), default="active")
+
+    # === 新增的最小侵入式列：便于直接存 URL 数组（JSON 字符串）与元信息 ===
+    tags       = db.Column(db.String(200))              # 允许简单字符串标签
+    location   = db.Column(db.String(200))
+    visibility = db.Column(db.String(20), default="public")  # public/private
+    images_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
+    videos_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
 
 
 class OutfitMedia(db.Model):
@@ -120,7 +128,7 @@ class UserSetting(db.Model):
     dm_who = db.Column(db.String(16), default="all")  # all | following
     blacklist_json = db.Column(db.Text)  # JSON 数组
     lang = db.Column(db.String(8), default="zh")
-    bio  = db.Column(db.String(120))  # ✅ 新增，存放简介（我们会限制为最多 30 字）
+    bio  = db.Column(db.String(120))  # 简介
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -225,6 +233,13 @@ with app.app_context():
                     )
                 """))
 
+            # === outfits 表补列：兼容 1–5 改动 ===
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS tags VARCHAR(200)"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS location VARCHAR(200)"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
+
             # === user_settings 表（含 bio 字段） ===
             if is_pg:
                 conn.execute(db.text("""
@@ -269,6 +284,13 @@ with app.app_context():
 
 # -------------------- Utilities --------------------
 def ok(): return {"ok": True}
+
+def _ok():
+    resp = make_response(("", 204))
+    resp.headers["Access-Control-Allow-Origin"]  = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+    return resp
 
 def check_key(req):
     """允许 X-API-Key 头、?key=、或 JSON body 里提供 key"""
@@ -320,30 +342,67 @@ def _product_to_dict(p: Product, req=None):
         "status": p.status
     }
 
+def _loads_arr(v):
+    """把任意输入稳健转成 list[str]"""
+    if not v:
+        return []
+    if isinstance(v, (list, tuple)):
+        return [str(x) for x in v]
+    try:
+        j = json.loads(v)
+        if isinstance(j, list):
+            return [str(x) for x in j]
+    except Exception:
+        pass
+    return [s.strip() for s in str(v).split(",") if s.strip()]
+
 def _outfit_to_dict(o: Outfit, req=None):
     r = req or request
-    medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
-    media_urls = [f"{r.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}" for m in medias]
-    videos = [u for m, u in zip(medias, media_urls) if m.is_video]
-    images = [u for m, u in zip(medias, media_urls) if not m.is_video]
+
+    # 1) 优先：列里直接存的 URL 数组（JSON 字符串）
+    imgs_col = _safe_json_loads(getattr(o, "images_json", None), [])
+    vids_col = _safe_json_loads(getattr(o, "videos_json", None), [])
+
+    images, videos = imgs_col, vids_col
+    if not images and not videos:
+        # 2) 回落：二进制表 outfit_media
+        medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
+        media_urls = [f"{r.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}" for m in medias]
+        videos = [u for m, u in zip(medias, media_urls) if m.is_video]
+        images = [u for m, u in zip(medias, media_urls) if not m.is_video]
+
     try:
-        tags = json.loads(o.tags_json) if o.tags_json else []
+        tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
     except Exception:
         tags = []
+
     return {
         "id": o.id,
-        "created_at": o.created_at.isoformat(),
+        "created_at": (o.created_at.isoformat() if o.created_at else None),
         "author_email": o.author_email,
         "author_name": o.author_name,
-        "title": o.title,
+        "title": o.title or "OOTD",
         "desc": o.desc,
-        "tags": tags,
+        "tags": tags if tags else (_loads_arr(getattr(o, "tags", "")) if getattr(o, "tags", None) else []),
         "images": images,
         "videos": videos,
         "likes": o.likes or 0,
         "comments": o.comments or 0,
-        "status": o.status or "active"
+        "status": o.status or "active",
+        "location": getattr(o, "location", None),
+        "visibility": getattr(o, "visibility", "public"),
     }
+
+# -------------------- 全局 API-Key 兜底 --------------------
+@app.before_request
+def _enforce_api_key():
+    # 健康检查不拦
+    if request.path == "/health":
+        return None
+    # 只对 /api/* 生效，且放行预检
+    if request.path.startswith("/api/") and request.method != "OPTIONS":
+        if not check_key(request):
+            return jsonify({"message": "Unauthorized"}), 401
 
 # -------------------- Health --------------------
 @app.route("/health")
@@ -353,7 +412,7 @@ def health(): return ok()
 @app.route("/api/merchants/status", methods=["GET", "OPTIONS"])
 def merchant_status():
     if request.method == "OPTIONS":
-        return ("", 204)
+        return _ok()
     email = (request.args.get("email") or "").strip().lower()
     if not email:
         return jsonify({"error": "missing email"}), 400
@@ -376,7 +435,6 @@ def merchant_status():
 
 @app.post("/api/merchants/apply")
 def apply_merchant():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     f = request.form
     account_name = (f.get("account_name") or "").strip()
     shop_name    = (f.get("shop_name") or "").strip()
@@ -404,7 +462,6 @@ def apply_merchant():
 
 @app.get("/api/admin/merchants")
 def admin_list():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     q = MerchantApplication.query.order_by(MerchantApplication.created_at.desc()).all()
     items = [{
         "id":r.id, "created_at":r.created_at.isoformat(),
@@ -416,7 +473,6 @@ def admin_list():
 
 @app.post("/api/admin/merchants/<int:rid>/status")
 def admin_set_status(rid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     r = MerchantApplication.query.get_or_404(rid)
     status = (request.json or {}).get("status","").strip().lower()
     if status not in {"pending","approved","rejected"}:
@@ -427,7 +483,6 @@ def admin_set_status(rid):
 
 @app.get("/api/admin/merchants/<int:rid>/license_image")
 def admin_image(rid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     r = MerchantApplication.query.get_or_404(rid)
     return send_file(
         BytesIO(r.license_image_data),
@@ -443,7 +498,6 @@ def products_ping():
 
 @app.get("/api/products")
 def products_list():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     try:
         email = (request.args.get("merchant_email") or "").strip().lower()
         q = Product.query
@@ -456,13 +510,11 @@ def products_list():
 
 @app.get("/api/products/<int:pid>")
 def products_get_one(pid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     row = Product.query.get_or_404(pid)
     return jsonify(_product_to_dict(row))
 
 @app.post("/api/products/add")
 def products_add():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     f = request.form
     email = (f.get("merchant_email") or "").strip().lower()
     if not _is_approved_merchant(email):
@@ -578,7 +630,6 @@ def product_image(pid, iid):
 
 @app.delete("/api/products/<int:pid>/image/<int:iid>")
 def product_image_delete(pid, iid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     row = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
     db.session.delete(row)
     db.session.commit()
@@ -586,7 +637,6 @@ def product_image_delete(pid, iid):
 
 @app.put("/api/products/<int:pid>")
 def product_update(pid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("merchant_email") or "").strip().lower()
     row = Product.query.get_or_404(pid)
@@ -604,7 +654,6 @@ def product_update(pid):
 
 @app.put("/api/products/<int:pid>/variants")
 def product_replace_variants(pid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("merchant_email") or "").strip().lower()
     variants = data.get("variants") or []
@@ -627,7 +676,6 @@ def product_replace_variants(pid):
 
 @app.delete("/api/products/<int:pid>")
 def product_delete(pid):
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("merchant_email") or "").strip().lower()
     hard  = bool(data.get("hard"))
@@ -646,10 +694,10 @@ def product_delete(pid):
         return jsonify({"ok": True, "id": pid, "deleted": "soft"})
 
 # ==================== Outfit APIs ====================
+
+# 旧的二进制上传通道，保留
 @app.post("/api/outfits/add")
 def outfits_add():
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
     f = request.form
     email = (f.get("author_email") or "").strip().lower()
     if not email:
@@ -673,7 +721,7 @@ def outfits_add():
         if len(files) > 5:
             return jsonify({"message": "图片最多 5 张"}), 400
     o = Outfit(
-        author_email=email, author_name=author_name, title=title,
+        author_email=email, author_name=author_name, title=title or "OOTD",
         desc=desc, tags_json=tags_json, status="active"
     )
     db.session.add(o)
@@ -698,62 +746,63 @@ def outfits_add():
     db.session.commit()
     return jsonify(_outfit_to_dict(o)), 201
 
+# ✅ 新增：集合路由，修复 405（支持 GET/POST/OPTIONS）
+@app.route("/api/outfits", methods=["GET", "POST", "OPTIONS"])
+def outfits_collection():
+    # 预检
+    if request.method == "OPTIONS":
+        return _ok()
 
-@app.get("/api/outfits")
-def outfits_list():
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
-    email = (request.args.get("author_email") or "").strip().lower()
-    q = Outfit.query.filter_by(status="active")
-    if email:
-        q = q.filter(Outfit.author_email == email)
-    rows = q.order_by(Outfit.created_at.desc()).limit(200).all()
-    return jsonify([_outfit_to_dict(r) for r in rows])
+    if request.method == "GET":
+        email = (request.args.get("author_email") or "").strip().lower()
+        q = Outfit.query.filter_by(status="active")
+        if email:
+            q = q.filter(Outfit.author_email == email)
+        rows = q.order_by(Outfit.created_at.desc()).limit(200).all()
+        return jsonify({"outfits": [_outfit_to_dict(r) for r in rows]})
 
-# --- 单条 outfit 获取：/api/outfits/<id> ---
-from flask import jsonify, request
-import json, logging
-
-log = logging.getLogger(__name__)
-
-def _parse_media(v):
-    """把 images/videos 字段稳健地转成 list[str]。"""
-    if not v:
-        return []
-    if isinstance(v, (list, tuple)):
-        return [str(x) for x in v]
+    # POST：JSON 创建文本贴（只收真实 URL，不接收 blob）
     try:
-        data = json.loads(v)
-        if isinstance(data, list):
-            return [str(x) for x in data]
-    except Exception:
-        pass
-    return [s.strip() for s in str(v).split(",") if s.strip()]
+        data = request.get_json(force=True) or {}
+        o = Outfit(
+            author_email=(data.get("author_email") or "").strip().lower(),
+            author_name =(data.get("author_name") or "").strip(),
+            title       =(data.get("title") or "OOTD").strip(),
+            desc        = data.get("desc") or "",
+            status      ="active",
+            location    =(data.get("location") or "").strip() or None,
+            visibility  =(data.get("visibility") or "public").strip() or "public",
+        )
+        # tags：字符串或数组均可
+        tags = data.get("tags")
+        if isinstance(tags, list):
+            o.tags_json = json.dumps(tags, ensure_ascii=False)
+        elif isinstance(tags, str) and tags.strip():
+            o.tags = tags.strip()
 
-@app.route("/api/outfits/<int:oid>", methods=["GET"])
-def api_get_outfit(oid: int):
-    try:
-        o = db.session.get(Outfit, oid) if hasattr(db.session, "get") else Outfit.query.get(oid)
-        if not o:
-            return jsonify({"error": "not found"}), 404
+        # images/videos：只存 URL 数组（JSON 字符串）
+        imgs = _loads_arr(data.get("images"))
+        vids = _loads_arr(data.get("videos"))
+        o.images_json = json.dumps(imgs, ensure_ascii=False) if imgs else None
+        o.videos_json = json.dumps(vids, ensure_ascii=False) if vids else None
 
-        payload = {
-            "id": o.id,
-            "title": getattr(o, "title", "") or "",
-            "desc": getattr(o, "desc", "") or getattr(o, "caption", "") or "",
-            "author_email": getattr(o, "author_email", "") or getattr(o, "merchant_email", "") or "",
-            "author_name": getattr(o, "author_name", "") or "",
-            "images": _parse_media(getattr(o, "images", [])),
-            "videos": _parse_media(getattr(o, "videos", [])),
-            "cover_url": getattr(o, "cover_url", None),
-            "created_at": getattr(o, "created_at", None).isoformat()
-                          if getattr(o, "created_at", None) else None,
-        }
-        return jsonify(payload), 200
+        if not o.author_email:
+            return jsonify({"message":"author_email 不能为空"}), 400
+
+        db.session.add(o)
+        db.session.commit()
+        return jsonify(o=_outfit_to_dict(o)), 201
     except Exception as e:
-        log.exception("get_outfit failed for id=%s", oid)
-        return jsonify({"error": "internal", "detail": str(e)}), 500
+        db.session.rollback()
+        return jsonify({"error":"create_failed","detail":str(e)}), 500
 
+# ✅ 单条获取：合并去重 + OPTIONS
+@app.route("/api/outfits/<int:oid>", methods=["GET", "OPTIONS"])
+def outfits_one(oid):
+    if request.method == "OPTIONS":
+        return _ok()
+    row = Outfit.query.get_or_404(oid)
+    return jsonify(_outfit_to_dict(row))
 
 @app.get("/api/outfits/<int:oid>/media/<int:mid>")
 def outfit_media(oid, mid):
@@ -765,26 +814,8 @@ def outfit_media(oid, mid):
         download_name=m.filename or f"o{oid}_{mid}"
     )
 
-# --- 单条 outfit 获取 ---
-@app.route('/api/outfits/<int:oid>', methods=['GET'])
-def get_outfit(oid):
-    outfit = Outfit.query.get_or_404(oid)
-    return jsonify({
-        "id": outfit.id,
-        "title": outfit.title,
-        "desc": outfit.desc,
-        "author_email": outfit.merchant_email,
-        "author_name": outfit.author_name,
-        "images": outfit.images or [],
-        "cover_url": outfit.cover_url or "",
-        "created_at": outfit.created_at.isoformat() if hasattr(outfit, "created_at") else None
-    })
-
-
 @app.put("/api/outfits/<int:oid>")
 def outfits_update(oid):
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     author_email = (data.get("author_email") or "").strip().lower()
     if not author_email:
@@ -801,8 +832,6 @@ def outfits_update(oid):
 
 @app.delete("/api/outfits/<int:oid>")
 def outfits_delete(oid):
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     author_email = (data.get("author_email") or "").strip().lower()
     if not author_email:
@@ -817,8 +846,6 @@ def outfits_delete(oid):
 
 @app.get("/api/outfit/feed")
 def outfit_feed():
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
     tab = (request.args.get("tab") or "recommend").strip()
     qstr = (request.args.get("q") or "").strip().lower()
     try:
@@ -841,15 +868,18 @@ def outfit_feed():
     rows = q.offset(offset).limit(limit).all()
 
     def to_card(o: Outfit):
-        medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
-        cover = ""
-        for m in medias:
-            url = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
-            if not m.is_video:
-                cover = url
-                break
-        if not cover and medias:
-            cover = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{medias[0].id}"
+        # 优先列图，否则取媒体表作为封面
+        imgs = _safe_json_loads(getattr(o, "images_json", None), [])
+        cover = imgs[0] if imgs else ""
+        if not cover:
+            medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
+            for m in medias:
+                url = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
+                if not m.is_video:
+                    cover = url
+                    break
+            if not cover and medias:
+                cover = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{medias[0].id}"
         return {
             "id": o.id,
             "title": o.title or "OOTD",
@@ -865,8 +895,6 @@ def outfit_feed():
 
 @app.post("/api/outfits/<int:oid>/like")
 def outfit_like(oid):
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
     delta = 1
     try:
         body = request.get_json(silent=True) or {}
@@ -881,8 +909,6 @@ def outfit_like(oid):
 
 @app.post("/api/outfits/<int:oid>/comment")
 def outfit_comment(oid):
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
     delta = 1
     try:
         body = request.get_json(silent=True) or {}
@@ -927,7 +953,6 @@ def _settings_to_dict(s: UserSetting):
 
 @app.get("/api/settings")
 def get_settings():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     email = (request.args.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
     try:
@@ -940,7 +965,6 @@ def get_settings():
 
 @app.put("/api/settings")
 def put_settings():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
@@ -964,7 +988,6 @@ def put_settings():
 @app.post("/api/settings/blacklist")
 def settings_blacklist():
     """body: {email, op: add|remove, value: 'someone@example.com'}"""
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     body = request.get_json(silent=True) or {}
     email = (body.get("email") or "").strip().lower()
     op = (body.get("op") or "").strip().lower()
@@ -988,7 +1011,6 @@ def settings_blacklist():
 # === 简化的 profile bio 端点（可选用） ===
 @app.get("/api/profile/bio")
 def get_bio():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     email = (request.args.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
     s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
@@ -996,7 +1018,6 @@ def get_bio():
 
 @app.post("/api/profile/bio")
 def set_bio():
-    if not check_key(request): return jsonify({"message":"Unauthorized"}), 401
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     bio = (data.get("bio") or "")[:30]
@@ -1013,8 +1034,6 @@ def set_bio():
 # ==================== 迁移端点（按方言执行） ====================
 @app.post("/api/admin/migrate")
 def admin_migrate():
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
     try:
         with db.engine.begin() as conn:
             dialect = conn.engine.dialect.name.lower()
@@ -1033,6 +1052,13 @@ def admin_migrate():
             run("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)")
+
+            # outfits 补列（1–5 改动）
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS tags VARCHAR(200)")
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS location VARCHAR(200)")
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'")
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT")
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT")
 
             if is_pg:
                 run("""
