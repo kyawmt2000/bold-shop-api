@@ -720,9 +720,21 @@ def outfit_media(oid, mid):
         download_name=m.filename or f"o{oid}_{mid}"
     )
 
-@app.route("/api/outfits/<int:oid>", methods=["OPTIONS"])
-def outfits_preflight(oid):
-    return ("", 204)
+# --- 单条 outfit 获取 ---
+@app.route('/api/outfits/<int:oid>', methods=['GET'])
+def get_outfit(oid):
+    outfit = Outfit.query.get_or_404(oid)
+    return jsonify({
+        "id": outfit.id,
+        "title": outfit.title,
+        "desc": outfit.desc,
+        "author_email": outfit.merchant_email,
+        "author_name": outfit.author_name,
+        "images": outfit.images or [],
+        "cover_url": outfit.cover_url or "",
+        "created_at": outfit.created_at.isoformat() if hasattr(outfit, "created_at") else None
+    })
+
 
 @app.put("/api/outfits/<int:oid>")
 def outfits_update(oid):
