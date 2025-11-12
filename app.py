@@ -393,15 +393,15 @@ def _outfit_to_dict(o: Outfit, req=None):
         "visibility": getattr(o, "visibility", "public"),
     }
 
-# -------------------- 全局 API-Key 兜底 --------------------
+# --- 只在设置了 API_KEY 时才启用强校验 ---
 @app.before_request
 def _enforce_api_key():
-    # 健康检查不拦
     if request.path == "/health":
         return None
-    # 只对 /api/* 生效，且放行预检
-    if request.path.startswith("/api/") and request.method != "OPTIONS":
-        if not check_key(request):
+    if request.method == "OPTIONS":   # 预检一律放行
+        return None
+    if request.path.startswith("/api/") and API_KEY:
+        if not check_key(request):    # 只有设置了 API_KEY 才会进入校验
             return jsonify({"message": "Unauthorized"}), 401
 
 # -------------------- Health --------------------
