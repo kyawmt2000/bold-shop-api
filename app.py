@@ -1169,3 +1169,99 @@ def admin_migrate():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
+
+# ------------------- Additive Outfit helpers (non-breaking) -------------------
+from datetime import datetime, timezone, timedelta
+
+@app.get("/api/outfits/by-ts/<int:ts_ms>")
+def outfits_by_ts(ts_ms: int):
+    """
+    Resolve a local timestamp id (milliseconds) to the nearest created outfit.
+    Searches within +/- 3 days around the timestamp.
+    Useful when front-end used Date.now() as an id before DB insert.
+    """
+    try:
+        # ts_ms may be seconds or milliseconds — normalize
+        if ts_ms > 10_000_000_000:  # looks like milliseconds
+            dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc).replace(tzinfo=None)
+        else:
+            dt = datetime.fromtimestamp(ts_ms, tz=timezone.utc).replace(tzinfo=None)
+        lo = dt - timedelta(days=3)
+        hi = dt + timedelta(days=3)
+        row = (Outfit.query
+               .filter(Outfit.created_at >= lo, Outfit.created_at <= hi)
+               .order_by(Outfit.created_at.asc(), Outfit.id.asc())
+               .first())
+        if not row:
+            return jsonify({"message": "Not Found"}), 404
+        return jsonify({"item": _outfit_to_dict(row)})
+    except Exception as e:
+        return jsonify({"message": "server_error", "detail": str(e)}), 500
+
+
+@app.post("/api/outfits/import_draft")
+def outfits_import_draft():
+    """
+    Persist a local draft into DB.
+    body JSON fields (all optional except author_email & images when provided):
+      - title, desc, author_name, author_email
+      - images: list[str]   (supports http(s), data:, blob: — saved as-is in JSON)
+      - tags:   list[str] or "a,b,c"
+      - location, visibility
+      - created_at_ms: number (use local draft Date.now(); server will set created_at accordingly)
+    """
+    data = request.get_json(silent=True) or {}
+    author_email = (data.get("author_email") or "").strip().lower()
+    if not author_email:
+        return jsonify({"message": "author_email 不能为空"}), 400
+
+    def _as_list(v):
+        if v is None or v == "":
+            return []
+        if isinstance(v, (list, tuple)):
+            return [str(x) for x in v if x is not None]
+        if isinstance(v, str):
+            try:
+                j = json.loads(v)
+                if isinstance(j, list):
+                    return [str(x) for x in j if x is not None]
+            except Exception:
+                pass
+            return [s for s in [x.strip() for x in v.replace("，", ",").split(",")] if s]
+        return []
+
+    # Build row
+    o = Outfit(
+        author_email=author_email,
+        author_name=(data.get("author_name") or "").strip(),
+        title=(data.get("title") or "OOTD").strip(),
+        desc=data.get("desc") or "",
+        status="active",
+        location=(data.get("location") or "").strip() or None,
+        visibility=(data.get("visibility") or "public").strip() or "public",
+    )
+
+    tags = _as_list(data.get("tags"))
+    if tags:
+        o.tags_json = json.dumps(tags, ensure_ascii=False)
+
+    images = _as_list(data.get("images"))
+    videos = _as_list(data.get("videos"))
+    if images:
+        o.images_json = json.dumps(images, ensure_ascii=False)
+    if videos:
+        o.videos_json = json.dumps(videos, ensure_ascii=False)
+
+    # Optional: created_at from client draft timestamp
+    try:
+        ts = int(data.get("created_at_ms") or data.get("draft_ts") or 0)
+        if ts:
+            if ts > 10_000_000_000:  # ms
+                o.created_at = datetime.fromtimestamp(ts / 1000.0)
+            else:
+                o.created_at = datetime.fromtimestamp(ts)
+    except Exception:
+        pass
+
+    db.session.add(o); db.session.commit()
+    return jsonify({"id": o.id, "item": _outfit_to_dict(o)}), 201
