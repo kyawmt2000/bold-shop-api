@@ -759,7 +759,7 @@ def outfits_collection():
         if email:
             q = q.filter(Outfit.author_email == email)
         rows = q.order_by(Outfit.created_at.desc()).limit(200).all()
-        return jsonify({"outfits": [_outfit_to_dict(r) for r in rows]})
+        return jsonify([_outfit_to_dict(r) for r in rows])
 
     # POST：JSON 创建文本贴（只收真实 URL，不接收 blob）
     try:
