@@ -733,56 +733,83 @@ def product_delete(pid):
 
 # ==================== Outfit APIs ====================
 
-# 旧的二进制上传通道，保留
 @app.post("/api/outfits/add")
 def outfits_add():
-    f = request.form
-    email = (f.get("author_email") or "").strip().lower()
-    if not email:
-        return jsonify({"message": "author_email 不能为空"}), 400
-    title = (f.get("title") or "").strip()
-    desc  = (f.get("desc") or "").strip()
-    author_name = (f.get("author_name") or "").strip()
-    tags_raw = f.get("tags") or "[]"
-    tags = _safe_json_loads(tags_raw, [])
-    tags_json = _json_dumps(tags)
-    files = request.files.getlist("media")
-    if not files:
-        return jsonify({"message": "请至少上传 1 个文件"}), 400
-    is_videos = [(file.mimetype or "").startswith("video/") for file in files]
-    if any(is_videos) and not all(is_videos):
-        return jsonify({"message": "不能混合图片和视频。只支持 1 个视频 或 1~5 张图片"}), 400
-    if all(is_videos):
-        if len(files) != 1:
-            return jsonify({"message": "视频只能上传 1 个"}), 400
-    else:
-        if len(files) > 5:
-            return jsonify({"message": "图片最多 5 张"}), 400
-    o = Outfit(
-        author_email=email, author_name=author_name, title=title or "OOTD",
-        desc=desc, tags_json=tags_json, status="active"
-    )
-    db.session.add(o)
-    db.session.flush()
-    for i, file in enumerate(files):
-        if not file:
-            continue
-        file.seek(0, os.SEEK_END); size = file.tell(); file.seek(0)
-        if size > 20 * 1024 * 1024:
-            db.session.rollback()
-            return jsonify({"message": f"第{i+1}个文件超过 20MB"}), 400
-        mimetype = file.mimetype or "application/octet-stream"
-        is_video = mimetype.startswith("video/")
-        m = OutfitMedia(
-            outfit_id=o.id,
-            filename=secure_filename(file.filename or f"o{o.id}_{i+1}"),
-            mimetype=mimetype,
-            data=file.read(),
-            is_video=is_video
+    """表单上传穿搭：支持 1~5 张图片 或 1 个视频"""
+    try:
+        f = request.form
+        email = (f.get("author_email") or "").strip().lower()
+        if not email:
+            return jsonify({"message": "author_email 不能为空"}), 400
+
+        title = (f.get("title") or "").strip() or "OOTD"
+        desc  = (f.get("desc") or "").strip()
+        author_name = (f.get("author_name") or "").strip()
+
+        # 标签：前端传 JSON 字符串
+        tags_raw = f.get("tags") or "[]"
+        tags = _safe_json_loads(tags_raw, [])
+        tags_json = _json_dumps(tags)
+
+        files = request.files.getlist("media")
+        if not files:
+            return jsonify({"message": "请至少上传 1 个文件"}), 400
+
+        # 判断是图片还是视频，不能混合
+        is_videos = [(file.mimetype or "").startswith("video/") for file in files]
+        if any(is_videos) and not all(is_videos):
+            return jsonify({"message": "不能混合图片和视频。只支持 1 个视频 或 1~5 张图片"}), 400
+        if all(is_videos):
+            if len(files) != 1:
+                return jsonify({"message": "视频只能上传 1 个"}), 400
+        else:
+            if len(files) > 5:
+                return jsonify({"message": "图片最多 5 张"}), 400
+
+        # 新建 outfit 记录
+        o = Outfit(
+            author_email=email,
+            author_name=author_name,
+            title=title,
+            desc=desc,
+            tags_json=tags_json,
+            status="active",
         )
-        db.session.add(m)
-    db.session.commit()
-    return jsonify(_outfit_to_dict(o)), 201
+        db.session.add(o)
+        db.session.flush()  # 拿到 o.id
+
+        # 保存媒体文件到 OutfitMedia（二进制），_outfit_to_dict 会自动读出来
+        for i, file in enumerate(files):
+            if not file:
+                continue
+            file.seek(0, os.SEEK_END)
+            size = file.tell()
+            file.seek(0)
+            if size > 20 * 1024 * 1024:
+                db.session.rollback()
+                return jsonify({"message": f"第{i+1}个文件超过 20MB"}), 400
+
+            mimetype = file.mimetype or "application/octet-stream"
+            is_video = mimetype.startswith("video/")
+
+            m = OutfitMedia(
+                outfit_id=o.id,
+                filename=secure_filename(file.filename or f"o{o.id}_{i+1}"),
+                mimetype=mimetype,
+                data=file.read(),
+                is_video=is_video,
+            )
+            db.session.add(m)
+
+        db.session.commit()
+        return jsonify(_outfit_to_dict(o)), 201
+
+    except Exception as e:
+        # 有异常时回滚并返回错误信息（方便前端看到具体原因）
+        db.session.rollback()
+        app.logger.exception("outfits_add error")
+        return jsonify({"message": "server error", "error": str(e)}), 500
+
 
 # ✅ 新增：集合路由，修复 405（支持 GET/POST/OPTIONS）
 @app.route("/api/outfits", methods=["GET", "POST", "OPTIONS"])
@@ -950,52 +977,33 @@ def api_outfits_feed_list():
 
 @app.get("/api/outfit/feed")
 def outfit_feed():
-    tab = (request.args.get("tab") or "recommend").strip()
-    qstr = (request.args.get("q") or "").strip().lower()
+    """
+    简化版 feed：
+    - 按 created_at 倒序
+    - 返回完整 outfit 数据（_outfit_to_dict），前端 outfit.html / myaccount.html 都可以用
+    """
     try:
-        offset = int(request.args.get("offset") or 0)
-        limit  = min(50, int(request.args.get("limit") or 12))
+        limit = min(50, int(request.args.get("limit") or 20))
     except Exception:
-        offset, limit = 0, 12
+        limit = 20
+
+    qstr = (request.args.get("q") or "").strip().lower()
     q = Outfit.query.filter_by(status="active")
+
     if qstr:
         like = f"%{qstr}%"
         q = q.filter(
             db.or_(
                 Outfit.title.ilike(like),
                 Outfit.desc.ilike(like),
-                Outfit.tags_json.ilike(like)
+                Outfit.tags_json.ilike(like),
             )
         )
-    q = q.order_by(Outfit.created_at.desc())
-    total = q.count()
-    rows = q.offset(offset).limit(limit).all()
 
-    def to_card(o: Outfit):
-        # 优先列图，否则取媒体表作为封面
-        imgs = _safe_json_loads(getattr(o, "images_json", None), [])
-        cover = imgs[0] if imgs else ""
-        if not cover:
-            medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
-            for m in medias:
-                url = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
-                if not m.is_video:
-                    cover = url
-                    break
-            if not cover and medias:
-                cover = f"{request.url_root.rstrip('/')}/api/outfits/{o.id}/media/{medias[0].id}"
-        return {
-            "id": o.id,
-            "title": o.title or "OOTD",
-            "cover": cover,
-            "likes": o.likes or 0,
-            "comments": o.comments or 0,
-            "user": {"name": o.author_name or (o.author_email or "")}
-        }
+    rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
+    items = [_outfit_to_dict(o) for o in rows]
+    return jsonify({"items": items, "has_more": False})
 
-    items = [to_card(o) for o in rows]
-    has_more = (offset + len(items) < total)
-    return jsonify({"items": items, "has_more": has_more})
 
 
 @app.post("/api/outfits/<int:oid>/like")
