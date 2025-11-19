@@ -137,15 +137,6 @@ class UserSetting(db.Model):
 with app.app_context():
     db.create_all()
 
-    # =============== outfits 表自动补列（每次启动检查一次） ===============
-with db.engine.begin() as conn:
-    conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)"))
-    conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS tags VARCHAR(200)"))
-    conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS location VARCHAR(200)"))
-    conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'"))
-    conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT"))
-    conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
-
     try:
         with db.engine.connect() as conn:
             dialect = conn.engine.dialect.name.lower()
