@@ -1166,6 +1166,52 @@ def admin_migrate():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# ========== REAL IMAGE UPLOAD FOR OUTFIT ==========
+UPLOAD_DIR = os.path.join(os.getcwd(), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+@app.post("/api/upload_image")
+def upload_image():
+    """
+    Upload image and return permanent URL:
+    Returns: {"url": "https://bold-shop-api-xxx.onrender.com/uploads/xxxx.jpg"}
+    """
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"error": "missing file"}), 400
+
+    @app.route("/uploads/<path:filename>")
+def uploaded_file(filename):
+    return send_file(os.path.join(UPLOAD_DIR, filename))
+
+    
+    # MIME check
+    mimetype = file.mimetype.lower()
+    if not (mimetype.startswith("image/")):
+        return jsonify({"error": "only image allowed"}), 400
+
+    # generate filename
+    ext = ""
+    if "jpeg" in mimetype or "jpg" in mimetype:
+        ext = ".jpg"
+    elif "png" in mimetype:
+        ext = ".png"
+    elif "webp" in mimetype:
+        ext = ".webp"
+    else:
+        ext = ".jpg"
+
+    fname = f"outfit_{int(datetime.utcnow().timestamp())}_{os.urandom(4).hex()}{ext}"
+    fpath = os.path.join(UPLOAD_DIR, fname)
+
+    # save file locally
+    file.save(fpath)
+
+    # return URL
+    base = request.url_root.rstrip("/")
+    url = f"{base}/uploads/{fname}"
+    return jsonify({"url": url})
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
