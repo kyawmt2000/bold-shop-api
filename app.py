@@ -360,16 +360,51 @@ def _outfit_to_dict(o: Outfit, req=None):
     r = req or request
 
     # 1) 优先：列里直接存的 URL 数组（JSON 字符串）
-    imgs_col = _safe_json_loads(getattr(o, "images_json", None), [])
-    vids_col = _safe_json_loads(getattr(o, "videos_json", None), [])
+    imgs_raw = _safe_json_loads(getattr(o, "images_json", None), [])
+    vids_raw = _safe_json_loads(getattr(o, "videos_json", None), [])
+
+    # 过滤掉旧数据里保存的 blob: 临时链接（这些在别的浏览器里是无效的）
+    imgs_col = [
+        u for u in imgs_raw
+        if isinstance(u, str) and not u.startswith("blob:")
+    ]
+    vids_col = [
+        u for u in vids_raw
+        if isinstance(u, str) and not u.startswith("blob:")
+    ]
 
     images, videos = imgs_col, vids_col
     if not images and not videos:
-        # 2) 回落：二进制表 outfit_media
+        # 2) 回落：二进制表 outfit_media（真正存到数据库的图片/视频）
         medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
-        media_urls = [f"{r.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}" for m in medias]
+        media_urls = [
+            f"{r.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
+            for m in medias
+        ]
         videos = [u for m, u in zip(medias, media_urls) if m.is_video]
         images = [u for m, u in zip(medias, media_urls) if not m.is_video]
+
+    try:
+        tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
+    except Exception:
+        tags = []
+
+    return {
+        "id": o.id,
+        "created_at": (o.created_at.isoformat() if o.created_at else None),
+        "author_email": o.author_email,
+        "author_name": o.author_name,
+        "title": o.title or "OOTD",
+        "desc": o.desc,
+        "tags": tags if tags else (_loads_arr(getattr(o, "tags", "")) if getattr(o, "tags", None) else []),
+        "images": images,
+        "videos": videos,
+        "likes": o.likes or 0,
+        "comments": o.comments or 0,
+        "status": o.status or "active",
+        "location": getattr(o, "location", None),
+        "visibility": getattr(o, "visibility", "public"),
+    }
 
     try:
         tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
