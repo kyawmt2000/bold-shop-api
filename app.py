@@ -235,13 +235,12 @@ with app.app_context():
                 """))
 
             # === outfits 表补列：兼容 1–5 改动 ===
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS tags VARCHAR(200)"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS location VARCHAR(200)"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
-            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)"))
-
 
             # === user_settings 表（含 bio 字段） ===
             if is_pg:
@@ -407,6 +406,7 @@ def _outfit_to_dict(o: Outfit, req=None):
         "status": o.status or "active",
         "location": getattr(o, "location", None),
         "visibility": getattr(o, "visibility", "public"),
+        "author_avatar": getattr(o, "author_avatar", None),
     }
 
     try:
