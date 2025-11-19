@@ -91,6 +91,7 @@ class Outfit(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     author_email = db.Column(db.String(200), index=True, nullable=False)
     author_name  = db.Column(db.String(200))
+    author_avatar = db.Column(db.String(500))
     title        = db.Column(db.String(200), default="OOTD")
     desc         = db.Column(db.Text)
     tags_json    = db.Column(db.Text)   # 原有 JSON 数组（字符串）
