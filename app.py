@@ -880,6 +880,26 @@ def outfits_delete(oid):
     db.session.commit()
     return jsonify({"ok": True, "deleted_id": oid})
 
+# ==================== New Feed API (Unified) ====================
+@app.get("/api/outfits/feed")
+@app.get("/api/outfit/feed2")
+def api_outfits_feed_list():
+    """
+    返回完整穿搭列表，用于 outfit.html / myaccount.html 推荐 & 关注
+    """
+    try:
+        limit = min(200, int(request.args.get("limit") or 50))
+    except:
+        limit = 50
+
+    q = Outfit.query.filter_by(status="active")
+    rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
+    return jsonify({
+        "items": [_outfit_to_dict(o) for o in rows],
+        "has_more": False
+    })
+
+
 @app.get("/api/outfit/feed")
 def outfit_feed():
     tab = (request.args.get("tab") or "recommend").strip()
@@ -928,6 +948,7 @@ def outfit_feed():
     items = [to_card(o) for o in rows]
     has_more = (offset + len(items) < total)
     return jsonify({"items": items, "has_more": has_more})
+
 
 @app.post("/api/outfits/<int:oid>/like")
 def outfit_like(oid):
