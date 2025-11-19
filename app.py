@@ -880,6 +880,52 @@ def outfits_delete(oid):
     db.session.commit()
     return jsonify({"ok": True, "deleted_id": oid})
 
+# ========= Outfit Feed =========
+# 兼容前端：/api/outfit/feed  和  /api/outfits/feed
+
+from flask import request, jsonify
+
+@app.route("/api/outfit/feed")
+@app.route("/api/outfits/feed")
+def outfits_feed():
+    """返回所有 outfit，按创建时间倒序"""
+    try:
+        limit = int(request.args.get("limit", 50))
+    except:
+        limit = 50
+
+    items = Outfit.query.order_by(Outfit.created_at.desc()).limit(limit).all()
+
+    def parse_field(v):
+        if not v:
+            return []
+        try:
+            return json.loads(v)
+        except:
+            if isinstance(v, str) and "," in v:
+                return [x.strip() for x in v.split(",")]
+            return [v]
+
+    def to_json(o: Outfit):
+        return {
+            "id": o.id,
+            "title": o.title,
+            "desc": o.desc,
+            "tags": parse_field(o.tags),
+            "location": o.location,
+            "images": parse_field(o.images),
+            "videos": parse_field(o.videos),
+            "author_email": o.author_email,
+            "author_name": o.author_name,
+            "author_avatar": o.author_avatar,
+            "created_at": o.created_at.isoformat() if o.created_at else None
+        }
+
+    return jsonify({
+        "items": [to_json(o) for o in items]
+    })
+
+
 # ==================== New Feed API (Unified) ====================
 @app.get("/api/outfits/feed")
 @app.get("/api/outfit/feed2")
