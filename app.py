@@ -200,22 +200,6 @@ with app.app_context():
                     )
                 """))
 
-            # outfits / outfit_media
-            if is_pg:
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS outfits (
-                        id SERIAL PRIMARY KEY,
-                        created_at TIMESTAMP,
-                        author_email VARCHAR(200),
-                        author_name VARCHAR(200),
-                        title VARCHAR(200),
-                        desc TEXT,
-                        tags_json TEXT,
-                        likes INTEGER DEFAULT 0,
-                        comments INTEGER DEFAULT 0,
-                        status VARCHAR(20) DEFAULT 'active'
-                    )
-                """))
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS outfit_media (
                         id SERIAL PRIMARY KEY,
@@ -1235,20 +1219,7 @@ def admin_migrate():
                         stock INTEGER
                     )
                 """)
-                run("""
-                    CREATE TABLE IF NOT EXISTS outfits (
-                        id SERIAL PRIMARY KEY,
-                        created_at TIMESTAMP,
-                        author_email VARCHAR(200),
-                        author_name VARCHAR(200),
-                        title VARCHAR(200),
-                        desc TEXT,
-                        tags_json TEXT,
-                        likes INTEGER DEFAULT 0,
-                        comments INTEGER DEFAULT 0,
-                        status VARCHAR(20) DEFAULT 'active'
-                    )
-                """)
+               
                 run("""
                     CREATE TABLE IF NOT EXISTS outfit_media (
                         id SERIAL PRIMARY KEY,
