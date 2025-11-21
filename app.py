@@ -464,6 +464,38 @@ def _enforce_api_key():
 @app.route("/health")
 def health(): return ok()
 
+# -------------------- 一次性修复 outfits 表字段 --------------------
+@app.get("/api/debug/fix_outfits_columns")
+def debug_fix_outfits_columns():
+    """
+    把 outfits 表需要的列全部补上：
+    - author_avatar
+    - tags
+    - location
+    - visibility
+    - images_json
+    - videos_json
+    调用一次就可以，之后可以不再访问。
+    """
+    try:
+        with db.engine.begin() as conn:
+            sql_list = [
+                "ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)",
+                "ALTER TABLE outfits ADD COLUMN IF NOT EXISTS tags VARCHAR(200)",
+                "ALTER TABLE outfits ADD COLUMN IF NOT EXISTS location VARCHAR(200)",
+                "ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'",
+                "ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT",
+                "ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT",
+            ]
+            for s in sql_list:
+                conn.execute(db.text(s))
+
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        app.logger.exception("debug_fix_outfits_columns error")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # ==================== Merchant APIs ====================
 @app.route("/api/merchants/status", methods=["GET", "OPTIONS"])
 def merchant_status():
