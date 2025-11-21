@@ -142,6 +142,23 @@ with app.app_context():
             dialect = conn.engine.dialect.name.lower()
             is_pg = 'postgres' in dialect
 
+            # outfits 表补充字段
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS tags VARCHAR(200)"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS location VARCHAR(200)"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
+
+    except Exception as e:
+        print("❌ outfits ALTER TABLE failed:", e)
+    
+
+    try:
+        with db.engine.connect() as conn:
+            dialect = conn.engine.dialect.name.lower()
+            is_pg = 'postgres' in dialect
+
             # 公共列兜底
             conn.execute(db.text(
                 "ALTER TABLE merchant_applications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'pending' NOT NULL"
