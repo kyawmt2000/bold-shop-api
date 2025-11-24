@@ -973,35 +973,13 @@ def outfits_feed():
     except:
         limit = 50
 
+    # 查询数据库
     items = Outfit.query.order_by(Outfit.created_at.desc()).limit(limit).all()
 
-    def parse_field(v):
-        if not v:
-            return []
-        try:
-            return json.loads(v)
-        except:
-            if isinstance(v, str) and "," in v:
-                return [x.strip() for x in v.split(",")]
-            return [v]
-
-    def to_json(o: Outfit):
-        return {
-            "id": o.id,
-            "title": o.title,
-            "desc": o.desc,
-            "tags": parse_field(o.tags),
-            "location": o.location,
-            "images": parse_field(o.images),
-            "videos": parse_field(o.videos),
-            "author_email": o.author_email,
-            "author_name": o.author_name,
-            "author_avatar": o.author_avatar,
-            "created_at": o.created_at.isoformat() if o.created_at else None
-        }
-
+    # 直接调用你上面写好的 _outfit_to_dict 工具函数
+    # 它会自动读取 images_json 并转换成前端需要的 images 数组
     return jsonify({
-        "items": [to_json(o) for o in items]
+        "items": [_outfit_to_dict(o) for o in items]
     })
 
 
