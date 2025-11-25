@@ -18,6 +18,48 @@ from google.cloud import storage
 
 # ... (保留你原有的 app 和 db 初始化)
 
+# app.py 中，请将这段代码粘贴到你删除的函数的位置（例如：在 db = SQLAlchemy(app) 之后）
+# -------------------- 最终正确的 Firebase 上传函数 (已修复权限和认证) --------------------
+def upload_file_to_firebase(file_obj, filename_prefix="outfits/"):
+    """将文件上传到 Firebase Storage (基于 Google Cloud Storage)"""
+    
+    # 1. 获取 Bucket 名称
+    # 修复：不再依赖不可靠的 os.getenv，提供回退值
+    bucket_name = os.getenv("FIREBASE_STORAGE_BUCKET") or "bold-shop-api-2dhu.appspot.com"
+    
+    # 2. 初始化客户端 (修复：使用显式路径，解决 Render 认证问题)
+    try:
+        # 核心修复：直接使用文件名，强制 Client 从项目根目录加载密钥文件
+        cred_path = "service-account-key.json" 
+        # 显式使用密钥文件路径初始化客户端
+        storage_client = storage.Client.from_service_account_json(cred_path)
+        
+    except Exception as e:
+        logging.error(f"Firebase Client initialization failed: {e}")
+        raise Exception(f"Firebase 密钥文件加载失败。")
+
+    # 3. 准备上传
+    bucket = storage_client.bucket(bucket_name)
+
+    # 4. 生成唯一的路径和文件名
+    ext = os.path.splitext(file_obj.filename)[1]
+    # 假设 uuid4 在文件顶部已导入
+    unique_filename = f"{filename_prefix}{uuid4().hex}{ext}"
+
+    # 5. 创建 Blob 并上传
+    blob = bucket.blob(unique_filename)
+    blob.content_type = file_obj.mimetype
+    file_obj.seek(0)
+    blob.upload_from_file(file_obj)
+    
+    # ⭐ 6. 关键修复：设置公开访问权限 (解决图片不显示的问题)
+    blob.make_public()
+
+    # 7. 返回公开访问 URL (使用标准 GCS URL)
+    return blob.public_url
+
+# -------------------- END Firebase Storage Logic --------------------
+
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
     __tablename__ = "merchant_applications"
