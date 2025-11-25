@@ -12,6 +12,11 @@ from sqlalchemy import func  # 不区分大小写查询
 from uuid import uuid4
 from google.cloud import storage
 
+API_KEY = os.getenv("API_KEY", "")
+
+# ⭐⭐⭐ 1. 必须在这里初始化 db ⭐⭐⭐
+db = SQLAlchemy(app) 
+# ⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐
 def upload_file_to_firebase(file_obj, filename_prefix="outfits/"):
     """将文件上传到 Firebase Storage (基于 Google Cloud Storage)"""
     
