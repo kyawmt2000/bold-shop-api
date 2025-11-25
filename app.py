@@ -446,27 +446,6 @@ def _outfit_to_dict(o: Outfit, req=None):
         "author_avatar": getattr(o, "author_avatar", None),
     }
 
-    try:
-        tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
-    except Exception:
-        tags = []
-
-    return {
-        "id": o.id,
-        "created_at": (o.created_at.isoformat() if o.created_at else None),
-        "author_email": o.author_email,
-        "author_name": o.author_name,
-        "title": o.title or "OOTD",
-        "desc": o.desc,
-        "tags": tags if tags else (_loads_arr(getattr(o, "tags", "")) if getattr(o, "tags", None) else []),
-        "images": images,
-        "videos": videos,
-        "likes": o.likes or 0,
-        "comments": o.comments or 0,
-        "status": o.status or "active",
-        "location": getattr(o, "location", None),
-        "visibility": getattr(o, "visibility", "public"),
-    }
 
 # --- 只在设置了 API_KEY 时才启用强校验 ---
 @app.before_request
