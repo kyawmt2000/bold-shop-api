@@ -12,6 +12,23 @@ from sqlalchemy import func  # 不区分大小写查询
 from uuid import uuid4
 from google.cloud import storage
 
+# app.py 约 10 行左右 (在所有 import 之后)
+
+# ⭐ 1. 必须先创建 Flask 应用实例 ⭐
+app = Flask(__name__) 
+
+# -------------------- Database config --------------------
+# ... (你的 app.config 设置，比如 SQLALCHEMY_DATABASE_URI)
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url 
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# ... (你的 CORS 设置)
+CORS(app, ...)
+
+API_KEY = os.getenv("API_KEY", "")
+
+# ⭐ 2. 然后才能用 app 来初始化 db ⭐
+db = SQLAlchemy(app)
 API_KEY = os.getenv("API_KEY", "")
 
 # ⭐⭐⭐ 1. 必须在这里初始化 db ⭐⭐⭐
