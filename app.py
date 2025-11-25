@@ -12,14 +12,6 @@ from sqlalchemy import func  # 不区分大小写查询
 from uuid import uuid4
 from google.cloud import storage
 
-# app.py 顶部导入 (请在现有导入后添加)
-from uuid import uuid4
-from google.cloud import storage
-
-# ... (保留你原有的 app 和 db 初始化)
-
-# app.py 中，请将这段代码粘贴到你删除的函数的位置（例如：在 db = SQLAlchemy(app) 之后）
-# -------------------- 最终正确的 Firebase 上传函数 (已修复权限和认证) --------------------
 def upload_file_to_firebase(file_obj, filename_prefix="outfits/"):
     """将文件上传到 Firebase Storage (基于 Google Cloud Storage)"""
     
