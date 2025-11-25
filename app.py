@@ -23,10 +23,6 @@ def upload_file_to_firebase(file_obj, filename_prefix="outfits/"):
     """将文件上传到 Firebase Storage (基于 Google Cloud Storage)"""
     # 1. 检查配置
     bucket_name = os.getenv("FIREBASE_STORAGE_BUCKET")
-    if not bucket_name:
-        logging.error("FIREBASE_STORAGE_BUCKET is not set.")
-        # 如果配置错误，抛出异常，阻止程序继续
-        raise Exception("Cloud storage not configured.")
 
     # 2. 初始化客户端 (它会自动读取 GOOGLE_APPLICATION_CREDENTIALS)
     storage_client = storage.Client()
@@ -79,9 +75,6 @@ def upload_file_to_firebase(file_obj, filename_prefix="outfits/"):
     """将文件上传到 Firebase Storage (基于 Google Cloud Storage)"""
     # 1. 检查配置
     bucket_name = os.getenv("FIREBASE_STORAGE_BUCKET")
-    if not bucket_name:
-        logging.error("FIREBASE_STORAGE_BUCKET is not set.")
-        raise Exception("Cloud storage not configured.")
 
     # 2. 初始化客户端 (它会自动读取 GOOGLE_APPLICATION_CREDENTIALS)
     storage_client = storage.Client()
