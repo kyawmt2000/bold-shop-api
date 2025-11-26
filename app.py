@@ -8,31 +8,31 @@ from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
-from sqlalchemy import func  # 不区分大小写查询
+from sqlalchemy import func
+from uuid import uuid4
+from google.cloud import storage
+
+# -----------------------------------------
+#          ⭐ 正确初始化 Flask + DB ⭐
+# -----------------------------------------
 
 app = Flask(__name__)
+CORS(app)
 
-# -------------------- Database config --------------------
-db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "sqlite:///data.db"
+# 从 Render 环境变量读取 DATABASE_URL
+db_url = os.getenv("DATABASE_URL")
+
+# Render 提供的是 postgres:// 前缀，需要替换成 postgresql:// 才能被 SQLAlchemy 识别
+if db_url and db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# ✅ CORS（统一允许 /api/* 的预检与常见方法 + 自定义头）
-CORS(
-    app,
-    resources={r"/api/*": {"origins": [
-        "https://boldmm.shop",
-        "http://localhost:3000", "http://127.0.0.1:3000",
-        "http://localhost:5500", "http://127.0.0.1:5500",
-        "*",
-    ]}},
-    supports_credentials=False,
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "X-API-Key"]
-)
+db = SQLAlchemy(app)
 
 API_KEY = os.getenv("API_KEY", "")
-db = SQLAlchemy(app)
+
 
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
