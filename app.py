@@ -90,7 +90,7 @@ class ProductImage(db.Model):
 
 class OutfitMedia(db.Model):
     __tablename__ = "outfit_media"
-    __table_args__ = {"extend_existing": True}  # ⭐ 关键一行，允许复用已经存在的表定义
+    __table_args__ = {"extend_existing": True}
 
     id = db.Column(db.Integer, primary_key=True)
     outfit_id = db.Column(
@@ -103,6 +103,7 @@ class OutfitMedia(db.Model):
     mimetype = db.Column(db.String(128))
     data = db.Column(db.LargeBinary)
     is_video = db.Column(db.Boolean, default=False)
+
 
 # === Outfit(穿搭) ===
 class Outfit(db.Model):
@@ -125,16 +126,6 @@ class Outfit(db.Model):
     visibility = db.Column(db.String(20), default="public")  # public/private
     images_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
     videos_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
-
-
-class OutfitMedia(db.Model):
-    __tablename__ = "outfit_media"
-    id = db.Column(db.Integer, primary_key=True)
-    outfit_id = db.Column(db.Integer, db.ForeignKey("outfits.id"), index=True, nullable=False)
-    filename  = db.Column(db.String(255))
-    mimetype  = db.Column(db.String(128))
-    data      = db.Column(db.LargeBinary)
-    is_video  = db.Column(db.Boolean, default=False)
 
 
 # === User Setting（新增 bio 字段） ===
