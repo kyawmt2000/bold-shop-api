@@ -9,70 +9,30 @@ from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.utils import secure_filename
 from sqlalchemy import func  # 不区分大小写查询
-from uuid import uuid4
-from google.cloud import storage
 
-# app.py 约 10 行左右 (在所有 import 之后)
-
-# ⭐ 1. 必须先创建 Flask 应用实例 ⭐
-app = Flask(__name__) 
+app = Flask(__name__)
 
 # -------------------- Database config --------------------
-# ... (你的 app.config 设置，比如 SQLALCHEMY_DATABASE_URI)
-app.config["SQLALCHEMY_DATABASE_URI"] = db_url 
+db_url = os.getenv("SQLALCHEMY_DATABASE_URI") or os.getenv("DATABASE_URL") or "sqlite:///data.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# ... (你的 CORS 设置)
-CORS(app, ...)
+# ✅ CORS（统一允许 /api/* 的预检与常见方法 + 自定义头）
+CORS(
+    app,
+    resources={r"/api/*": {"origins": [
+        "https://boldmm.shop",
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:5500", "http://127.0.0.1:5500",
+        "*",
+    ]}},
+    supports_credentials=False,
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"]
+)
 
 API_KEY = os.getenv("API_KEY", "")
-
-# ⭐ 2. 然后才能用 app 来初始化 db ⭐
 db = SQLAlchemy(app)
-API_KEY = os.getenv("API_KEY", "")
-
-# ⭐⭐⭐ 1. 必须在这里初始化 db ⭐⭐⭐
-db = SQLAlchemy(app) 
-# ⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐⭐
-def upload_file_to_firebase(file_obj, filename_prefix="outfits/"):
-    """将文件上传到 Firebase Storage (基于 Google Cloud Storage)"""
-    
-    # 1. 获取 Bucket 名称
-    # 修复：不再依赖不可靠的 os.getenv，提供回退值
-    bucket_name = os.getenv("FIREBASE_STORAGE_BUCKET") or "bold-shop-api-2dhu.appspot.com"
-    
-    # 2. 初始化客户端 (修复：使用显式路径，解决 Render 认证问题)
-    try:
-        # 核心修复：直接使用文件名，强制 Client 从项目根目录加载密钥文件
-        cred_path = "service-account-key.json" 
-        # 显式使用密钥文件路径初始化客户端
-        storage_client = storage.Client.from_service_account_json(cred_path)
-        
-    except Exception as e:
-        logging.error(f"Firebase Client initialization failed: {e}")
-        raise Exception(f"Firebase 密钥文件加载失败。")
-
-    # 3. 准备上传
-    bucket = storage_client.bucket(bucket_name)
-
-    # 4. 生成唯一的路径和文件名
-    ext = os.path.splitext(file_obj.filename)[1]
-    # 假设 uuid4 在文件顶部已导入
-    unique_filename = f"{filename_prefix}{uuid4().hex}{ext}"
-
-    # 5. 创建 Blob 并上传
-    blob = bucket.blob(unique_filename)
-    blob.content_type = file_obj.mimetype
-    file_obj.seek(0)
-    blob.upload_from_file(file_obj)
-    
-    # ⭐ 6. 关键修复：设置公开访问权限 (解决图片不显示的问题)
-    blob.make_public()
-
-    # 7. 返回公开访问 URL (使用标准 GCS URL)
-    return blob.public_url
-
-# -------------------- END Firebase Storage Logic --------------------
 
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
@@ -145,6 +105,16 @@ class Outfit(db.Model):
     visibility = db.Column(db.String(20), default="public")  # public/private
     images_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
     videos_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
+
+
+class OutfitMedia(db.Model):
+    __tablename__ = "outfit_media"
+    id = db.Column(db.Integer, primary_key=True)
+    outfit_id = db.Column(db.Integer, db.ForeignKey("outfits.id"), index=True, nullable=False)
+    filename  = db.Column(db.String(255))
+    mimetype  = db.Column(db.String(128))
+    data      = db.Column(db.LargeBinary)
+    is_video  = db.Column(db.Boolean, default=False)
 
 
 # === User Setting（新增 bio 字段） ===
@@ -406,18 +376,6 @@ def _loads_arr(v):
         pass
     return [s.strip() for s in str(v).split(",") if s.strip()]
 
-# ⭐ 新增的代码：安全地加载 JSON 字符串
-def _safe_json_loads(s, default=None):
-    """安全地将 JSON 字符串加载为 Python 对象，失败则返回默认值"""
-    if not s:
-        return default
-    try:
-        # 使用 json 库加载字符串
-        return json.loads(s)
-    except Exception as e:
-        logging.warning(f"Failed to load JSON: {e}, string: {s[:50]}...")
-        return default
-        
 def _outfit_to_dict(o: Outfit, req=None):
     r = req or request
 
@@ -436,6 +394,15 @@ def _outfit_to_dict(o: Outfit, req=None):
     ]
 
     images, videos = imgs_col, vids_col
+    if not images and not videos:
+        # 2) 回落：二进制表 outfit_media（真正存到数据库的图片/视频）
+        medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
+        media_urls = [
+            f"{r.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
+            for m in medias
+        ]
+        videos = [u for m, u in zip(medias, media_urls) if m.is_video]
+        images = [u for m, u in zip(medias, media_urls) if not m.is_video]
 
     try:
         tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
@@ -460,6 +427,27 @@ def _outfit_to_dict(o: Outfit, req=None):
         "author_avatar": getattr(o, "author_avatar", None),
     }
 
+    try:
+        tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
+    except Exception:
+        tags = []
+
+    return {
+        "id": o.id,
+        "created_at": (o.created_at.isoformat() if o.created_at else None),
+        "author_email": o.author_email,
+        "author_name": o.author_name,
+        "title": o.title or "OOTD",
+        "desc": o.desc,
+        "tags": tags if tags else (_loads_arr(getattr(o, "tags", "")) if getattr(o, "tags", None) else []),
+        "images": images,
+        "videos": videos,
+        "likes": o.likes or 0,
+        "comments": o.comments or 0,
+        "status": o.status or "active",
+        "location": getattr(o, "location", None),
+        "visibility": getattr(o, "visibility", "public"),
+    }
 
 # --- 只在设置了 API_KEY 时才启用强校验 ---
 @app.before_request
