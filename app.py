@@ -78,15 +78,27 @@ class ProductVariant(db.Model):
 class ProductImage(db.Model):
     __tablename__ = "product_images"
     id = db.Column(db.Integer, primary_key=True)
-    product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False, index=True)
-    filename   = db.Column(db.String(255))
-    mimetype   = db.Column(db.String(128))
-    data       = db.Column(db.LargeBinary)
+    product_id = db.Column(
+        db.Integer,
+        db.ForeignKey("products.id"),
+        nullable=False,
+        index=True,
+    )
+    filename = db.Column(db.String(255))
+    mimetype = db.Column(db.String(128))
+    data = db.Column(db.LargeBinary)
 
 class OutfitMedia(db.Model):
     __tablename__ = "outfit_media"
+    __table_args__ = {"extend_existing": True}  # ⭐ 关键一行，允许复用已经存在的表定义
+
     id = db.Column(db.Integer, primary_key=True)
-    outfit_id = db.Column(db.Integer, db.ForeignKey("outfits.id"), nullable=False, index=True)
+    outfit_id = db.Column(
+        db.Integer,
+        db.ForeignKey("outfits.id"),
+        nullable=False,
+        index=True,
+    )
     filename = db.Column(db.String(255))
     mimetype = db.Column(db.String(128))
     data = db.Column(db.LargeBinary)
