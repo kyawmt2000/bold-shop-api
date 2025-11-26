@@ -394,29 +394,42 @@ def _outfit_to_dict(o: Outfit, req=None):
     imgs_raw = _safe_json_loads(getattr(o, "images_json", None), [])
     vids_raw = _safe_json_loads(getattr(o, "videos_json", None), [])
 
-    # 过滤掉旧数据里保存的 blob: 临时链接（这些在别的浏览器里是无效的）
-    imgs_col = [
+    # 过滤掉 blob: 的临时链接
+    images = [
         u for u in imgs_raw
         if isinstance(u, str) and not u.startswith("blob:")
     ]
-    vids_col = [
+    videos = [
         u for u in vids_raw
         if isinstance(u, str) and not u.startswith("blob:")
     ]
 
-    images, videos = imgs_col, vids_col
-    if not images and not videos:
-        # 2) 回落：二进制表 outfit_media（真正存到数据库的图片/视频）
-        medias = OutfitMedia.query.filter_by(outfit_id=o.id).all()
-        media_urls = [
-            f"{r.url_root.rstrip('/')}/api/outfits/{o.id}/media/{m.id}"
-            for m in medias
-        ]
-        videos = [u for m, u in zip(medias, media_urls) if m.is_video]
-        images = [u for m, u in zip(medias, media_urls) if not m.is_video]
+    # 2) 如果列里没有 URL，再从 outfit_media 表里读出来，拼成可访问的 URL
+    if not images and not videos and getattr(o, "id", None):
+        from urllib.parse import urlencode
 
+        base = (r.url_root or "").rstrip("/")   # 例如 https://bold-api-sg.onrender.com
+        qs = {}
+        if API_KEY:
+            qs["key"] = API_KEY
+        qs_str = ("?" + urlencode(qs)) if qs else ""
+
+        media_rows = OutfitMedia.query.filter_by(
+            outfit_id=o.id
+        ).order_by(OutfitMedia.id).all()
+
+        for m in media_rows:
+            url = f"{base}/api/outfits/{o.id}/media/{m.id}{qs_str}"
+            if getattr(m, "is_video", False):
+                videos.append(url)
+            else:
+                images.append(url)
+
+    # 3) 标签
     try:
-        tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
+        tags = json.loads(getattr(o, "tags_json", "") or "[]")
+        if not isinstance(tags, list):
+            tags = []
     except Exception:
         tags = []
 
@@ -427,7 +440,7 @@ def _outfit_to_dict(o: Outfit, req=None):
         "author_name": o.author_name,
         "title": o.title or "OOTD",
         "desc": o.desc,
-        "tags": tags if tags else (_loads_arr(getattr(o, "tags", "")) if getattr(o, "tags", None) else []),
+        "tags": tags,
         "images": images,
         "videos": videos,
         "likes": o.likes or 0,
@@ -437,6 +450,7 @@ def _outfit_to_dict(o: Outfit, req=None):
         "visibility": getattr(o, "visibility", "public"),
         "author_avatar": getattr(o, "author_avatar", None),
     }
+
 
     try:
         tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
