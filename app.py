@@ -21,7 +21,8 @@ CORS(app)
 
 # 从 Render 环境变量读取 DATABASE_URL
 db_url = os.getenv("DATABASE_URL")
-
+if not db_url:
+    raise RuntimeError("DATABASE_URL is not set")
 # Render 提供的是 postgres:// 前缀，需要替换成 postgresql:// 才能被 SQLAlchemy 识别
 if db_url and db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
