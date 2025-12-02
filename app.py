@@ -34,6 +34,18 @@ db = SQLAlchemy(app)
 
 API_KEY = os.getenv("API_KEY", "")
 
+GCS_BUCKET   = (os.getenv("GCS_BUCKET") or "").strip()
+GCS_KEY_JSON = os.getenv("GCS_KEY_JSON")  # Render 里存整个 JSON
+
+# 如果提供了 JSON，就写到临时文件，并设置 GOOGLE_APPLICATION_CREDENTIALS
+if GCS_KEY_JSON and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    try:
+        key_path = "/tmp/gcs-key.json"
+        with open(key_path, "w") as f:
+            f.write(GCS_KEY_JSON)
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+    except Exception as e:
+        logging.exception("Failed to write GCS_KEY_JSON: %s", e)
 
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
@@ -811,7 +823,7 @@ def product_delete(pid):
 
 @app.post("/api/outfits/add")
 def outfits_add():
-    """表单上传穿搭：支持 1~5 张图片 或 1 个视频"""
+    """表单上传穿搭：支持 1~5 张图片 或 1 个视频；优先上传到 GCS"""
     try:
         f = request.form
         email = (f.get("author_email") or "").strip().lower()
@@ -842,7 +854,11 @@ def outfits_add():
             if len(files) > 5:
                 return jsonify({"message": "图片最多 5 张"}), 400
 
-        # 新建 outfit 记录
+        # 这里准备两个列表：存 GCS 的 URL
+        image_urls = []
+        video_urls = []
+
+        # 新建 outfit 记录（先不管图片）
         o = Outfit(
             author_email=email,
             author_name=author_name,
@@ -854,7 +870,7 @@ def outfits_add():
         db.session.add(o)
         db.session.flush()  # 拿到 o.id
 
-        # 保存媒体文件到 OutfitMedia（二进制），_outfit_to_dict 会自动读出来
+        # 优先：上传到 GCS，保存 URL；如果 GCS 不可用，再退回旧逻辑存数据库二进制
         for i, file in enumerate(files):
             if not file:
                 continue
@@ -868,14 +884,31 @@ def outfits_add():
             mimetype = file.mimetype or "application/octet-stream"
             is_video = mimetype.startswith("video/")
 
-            m = OutfitMedia(
-                outfit_id=o.id,
-                filename=secure_filename(file.filename or f"o{o.id}_{i+1}"),
-                mimetype=mimetype,
-                data=file.read(),
-                is_video=is_video,
-            )
-            db.session.add(m)
+            # ① 先尝试上传到 GCS
+            gcs_url = upload_file_to_gcs(file, folder="outfits")
+
+            if gcs_url:
+                # GCS 成功：只存 URL，后面 _outfit_to_dict 会直接用 images_json / videos_json
+                if is_video:
+                    video_urls.append(gcs_url)
+                else:
+                    image_urls.append(gcs_url)
+            else:
+                # ② 如果 GCS 没配置 / 出错，则退回旧逻辑：写二进制到 OutfitMedia
+                m = OutfitMedia(
+                    outfit_id=o.id,
+                    filename=secure_filename(file.filename or f"o{o.id}_{i+1}"),
+                    mimetype=mimetype,
+                    data=file.read(),
+                    is_video=is_video,
+                )
+                db.session.add(m)
+
+        # 把 GCS 的 URL 写回 Outfit 记录
+        if image_urls:
+            o.images_json = json.dumps(image_urls, ensure_ascii=False)
+        if video_urls:
+            o.videos_json = json.dumps(video_urls, ensure_ascii=False)
 
         db.session.commit()
         return jsonify(_outfit_to_dict(o)), 201
@@ -885,6 +918,7 @@ def outfits_add():
         db.session.rollback()
         app.logger.exception("outfits_add error")
         return jsonify({"message": "server error", "error": str(e)}), 500
+
 
 
 # ✅ 新增：集合路由，修复 405（支持 GET/POST/OPTIONS）
