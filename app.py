@@ -719,11 +719,12 @@ def products_get_one(pid):
     return jsonify(_product_to_dict(row))
 
 @app.post("/api/products/add")
+@app.post("/api/products/add")
 def products_add():
     f = request.form
     email = (f.get("merchant_email") or "").strip().lower()
     if not _is_approved_merchant(email):
-        return jsonify({"message":"not approved"}), 403
+        return jsonify({"message": "not approved"}), 403
 
     title = (f.get("title") or "").strip()
     gender = (f.get("gender") or "").strip()
@@ -733,23 +734,29 @@ def products_add():
     try:
         base_price = int(f.get("price") or 0)
     except Exception:
-        return jsonify({"message":"price 不合法"}), 400
+        return jsonify({"message": "price 不合法"}), 400
 
     sizes = _safe_json_loads(f.get("sizes"), [])
     colors = _safe_json_loads(f.get("colors"), [])
     variant_prices = _safe_json_loads(f.get("variant_prices"), [])
 
-    if not title: return jsonify({"message":"title 不能为空"}), 400
-    if category not in {"clothes","pants","shoes"}:
-        return jsonify({"message":"category 必须是 clothes/pants/shoes"}), 400
-    if gender not in {"women","men"}:
-        return jsonify({"message":"gender 必须是 women/men"}), 400
+    if not title:
+        return jsonify({"message": "title 不能为空"}), 400
+    if category not in {"clothes", "pants", "shoes"}:
+        return jsonify({"message": "category 必须是 clothes/pants/shoes"}), 400
+    if gender not in {"women", "men"}:
+        return jsonify({"message": "gender 必须是 women/men"}), 400
 
     p = Product(
-        merchant_email=email, title=title, price=base_price,
-        gender=gender, category=category, desc=desc,
-        sizes_json=_json_dumps(sizes), colors_json=_json_dumps(colors),
-        status="active"
+        merchant_email=email,
+        title=title,
+        price=base_price,
+        gender=gender,
+        category=category,
+        desc=desc,
+        sizes_json=_json_dumps(sizes),
+        colors_json=_json_dumps(colors),
+        status="active",
     )
     db.session.add(p)
     db.session.flush()
@@ -758,31 +765,64 @@ def products_add():
     if isinstance(variant_prices, list) and len(variant_prices) > 0:
         for i, v in enumerate(variant_prices):
             try:
-                size  = (v.get("size") or "").strip()
+                size = (v.get("size") or "").strip()
                 color = (v.get("color") or "").strip()
                 price = int(v.get("price"))
                 stock = int(v.get("stock") or 0)
             except Exception:
                 db.session.rollback()
                 return jsonify({"message": f"第 {i+1} 个变体参数不合法"}), 400
-            db.session.add(ProductVariant(product_id=p.id, size=size, color=color, price=price, stock=stock))
+            db.session.add(
+                ProductVariant(
+                    product_id=p.id,
+                    size=size,
+                    color=color,
+                    price=price,
+                    stock=stock,
+                )
+            )
         created_any_variant = True
     else:
         if sizes and colors:
             for si in sizes:
                 for co in colors:
-                    db.session.add(ProductVariant(product_id=p.id, size=str(si), color=str(co), price=base_price, stock=0))
+                    db.session.add(
+                        ProductVariant(
+                            product_id=p.id,
+                            size=str(si),
+                            color=str(co),
+                            price=base_price,
+                            stock=0,
+                        )
+                    )
             created_any_variant = True
         elif sizes:
             for si in sizes:
-                db.session.add(ProductVariant(product_id=p.id, size=str(si), color="", price=base_price, stock=0))
+                db.session.add(
+                    ProductVariant(
+                        product_id=p.id,
+                        size=str(si),
+                        color="",
+                        price=base_price,
+                        stock=0,
+                    )
+                )
             created_any_variant = True
         elif colors:
             for co in colors:
-                db.session.add(ProductVariant(product_id=p.id, size="", color=str(co), price=base_price, stock=0))
+                db.session.add(
+                    ProductVariant(
+                        product_id=p.id,
+                        size="",
+                        color=str(co),
+                        price=base_price,
+                        stock=0,
+                    )
+                )
             created_any_variant = True
 
-         files = request.files.getlist("images")
+    # ✅ 注意：这里的缩进和上面保持同一级（函数内部顶级）
+    files = request.files.getlist("images")
     if not files:
         db.session.rollback()
         return jsonify({"message": "至少上传一张图片"}), 400
@@ -814,7 +854,9 @@ def products_add():
             # ❗ GCS 失败：退回老逻辑，写二进制到数据库
             im = ProductImage(
                 product_id=p.id,
-                filename=secure_filename(file.filename or f"p{p.id}_{i}.jpg"),
+                filename=secure_filename(
+                    file.filename or f"p{p.id}_{i}.jpg"
+                ),
                 mimetype=file.mimetype or "application/octet-stream",
                 data=file.read(),
             )
@@ -823,7 +865,9 @@ def products_add():
     db.session.commit()
     data = _product_to_dict(p)
     if not created_any_variant:
-        data["variants"] = [{"id": None, "size": "", "color": "", "price": base_price, "stock": 0}]
+        data["variants"] = [
+            {"id": None, "size": "", "color": "", "price": base_price, "stock": 0}
+        ]
     return jsonify(data), 201
 
 @app.get("/api/products/<int:pid>/image/<int:iid>")
@@ -1340,10 +1384,10 @@ def admin_migrate():
         db.engine.dispose()
         with db.engine.begin() as conn:
             dialect = conn.engine.dialect.name.lower()
-            is_pg = 'postgres' in dialect
+            is_pg = "postgres" in dialect
             results = []
 
-            def run(sql):
+            def run(sql: str):
                 try:
                     conn.execute(db.text(sql))
                     results.append({"sql": sql, "ok": True})
@@ -1357,12 +1401,7 @@ def admin_migrate():
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)")
 
-            {
-    "sql": "ALTER TABLE products ADD COLUMN IF NOT EXISTS images_json TEXT"
-},
-
-            
-            # outfits 补列（1–5 改动）
+            # outfits 补列
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)")
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS tags VARCHAR(200)")
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS location VARCHAR(200)")
@@ -1472,9 +1511,11 @@ def admin_migrate():
                     )
                 """)
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)")
-        return jsonify({"ok": True, "results": results})
+
+        return jsonify({"ok": True, "results": results}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
