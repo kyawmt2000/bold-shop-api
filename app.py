@@ -757,7 +757,7 @@ def products_get_one(pid):
     return jsonify(_product_to_dict(row))
 
 @app.route("/api/products/add", methods=["POST"])
-@require_api_key
+@_enforce_api_key
 def add_product():
     merchant_email = request.form.get("merchant_email", "").strip().lower()
     title = request.form.get("title", "").strip()
