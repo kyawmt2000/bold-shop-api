@@ -411,39 +411,50 @@ def _variant_to_dict(v: ProductVariant):
     return {"id": v.id, "size": v.size, "color": v.color, "price": v.price, "stock": v.stock}
 
 def _product_to_dict(p: Product, req=None):
+    """把 Product 转成前端需要的结构，尽量防止旧数据导致 500"""
     r = req or request
 
-    # 优先使用 products.images_json 中直接存的 GCS URL 列表
-    img_urls = []
+    # created_at 可能是 None，用 try/except 包一下最安全
     try:
-        if getattr(p, "images_json", None):
-            img_urls = _safe_json_loads(p.images_json, [])
+        created_at = p.created_at.isoformat() if getattr(p, "created_at", None) else None
     except Exception:
-        img_urls = []
+        created_at = None
 
-    if img_urls:
-        urls = img_urls
-    else:
-        # 兼容旧数据：从 ProductImage 表构造后端图片 URL
+    # 商品图片：现在还是走 /api/products/<pid>/image/<iid> 的老逻辑
+    try:
         imgs = ProductImage.query.filter_by(product_id=p.id).all()
-        urls = [f"{r.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}" for im in imgs]
+    except Exception:
+        imgs = []
 
-    variants = ProductVariant.query.filter_by(product_id=p.id).all()
+    urls = []
+    for im in imgs:
+        try:
+            urls.append(f"{r.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}")
+        except Exception:
+            continue
+
+    # 变体列表
+    try:
+        variants = ProductVariant.query.filter_by(product_id=p.id).all()
+    except Exception:
+        variants = []
+
     return {
         "id": p.id,
-        "created_at": p.created_at.isoformat(),
-        "merchant_email": p.merchant_email,
+        "created_at": created_at,
+        "merchant_email": getattr(p, "merchant_email", "") or "",
         "title": p.title,
         "price": p.price,
         "gender": p.gender,
         "category": p.category,
         "desc": p.desc,
-        "sizes": _safe_json_loads(p.sizes_json, []),
-        "colors": _safe_json_loads(p.colors_json, []),
+        "sizes": _safe_json_loads(getattr(p, "sizes_json", None), []),
+        "colors": _safe_json_loads(getattr(p, "colors_json", None), []),
         "images": urls,
         "variants": [_variant_to_dict(v) for v in variants],
-        "status": p.status
+        "status": getattr(p, "status", "active") or "active",
     }
+
 
 def _loads_arr(v):
     """把任意输入稳健转成 list[str]"""
