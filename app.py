@@ -757,7 +757,6 @@ def products_get_one(pid):
     return jsonify(_product_to_dict(row))
 
 @app.route("/api/products/add", methods=["POST"])
-@_enforce_api_key
 def add_product():
     merchant_email = request.form.get("merchant_email", "").strip().lower()
     title = request.form.get("title", "").strip()
@@ -781,7 +780,7 @@ def add_product():
 
     for f in files:
         if f:
-            filename = uuid.uuid4().hex + os.path.splitext(f.filename)[1]
+            filename = uuid4().hex + os.path.splitext(f.filename)[1]
             url = upload_to_gcs_product(f, filename)
             image_urls.append(url)
 
