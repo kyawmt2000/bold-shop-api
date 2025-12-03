@@ -1314,7 +1314,7 @@ def set_bio():
     return jsonify({"ok": True, "email": email, "bio": s.bio or ""})
 
 # ==================== 迁移端点（按方言执行） ====================
-@app.post("/api/admin/migrate")
+@app.route("/api/admin/migrate", methods=["GET", "POST"])
 def admin_migrate():
     try:
         with db.engine.begin() as conn:
