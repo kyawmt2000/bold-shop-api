@@ -1328,6 +1328,7 @@ def set_bio():
 @app.route("/api/admin/migrate", methods=["GET", "POST"])
 def admin_migrate():
     try:
+        db.engine.dispose()
         with db.engine.begin() as conn:
             dialect = conn.engine.dialect.name.lower()
             is_pg = 'postgres' in dialect
