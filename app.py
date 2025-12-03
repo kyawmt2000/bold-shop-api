@@ -75,6 +75,7 @@ class Product(db.Model):
     desc    = db.Column(db.Text)
     sizes_json  = db.Column(db.Text)
     colors_json = db.Column(db.Text)
+    images_json = db.Column(db.Text)
     status  = db.Column(db.String(20), default="active")
 
 
@@ -355,12 +356,32 @@ def _json_dumps(o):
     return json.dumps(o, ensure_ascii=False)
 
 def upload_to_gcs_product(file, filename):
-    bucket = storage_client.bucket(GCS_BUCKET)
-    blob = bucket.blob(f"products/{filename}")  # 存放在 products 文件夹
-    blob.upload_from_file(file, content_type=file.content_type)
+    """上传商品图片到 GCS，返回公开 URL；失败返回 None"""
+    if not GCS_BUCKET:
+        return None
 
-    blob.make_public()
-    return blob.public_url
+    try:
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(f"products/{filename}")  # 存放在 products/ 目录下
+
+        file.seek(0)
+        blob.upload_from_file(
+            file,
+            content_type=(file.content_type or "application/octet-stream"),
+        )
+
+        try:
+            blob.make_public()
+        except Exception:
+            # 设公开失败也不致命，只是可能用不了匿名访问
+            pass
+
+        return blob.public_url
+    except Exception as e:
+        app.logger.exception("upload_to_gcs_product failed: %s", e)
+        return None
+
 
 def upload_file_to_gcs(file, folder="outfits"):
     """
@@ -437,6 +458,15 @@ def _product_to_dict(p: Product, req=None):
         imgs = []
 
     urls = []
+    imgs_from_product = _safe_json_loads(getattr(p, "images_json", None), [])
+    if imgs_from_product:
+        urls = [u for u in imgs_from_product if isinstance(u, str) and u]
+    else:
+        # 2) 旧逻辑：从 product_images 表拼 URL
+        try:
+            imgs = ProductImage.query.filter_by(product_id=p.id).all()
+        except Exception:
+            imgs = []
     base = (r.url_root or "").rstrip("/")
     for im in imgs:
         try:
@@ -774,6 +804,7 @@ def add_product():
     db.session.commit()
 
     return jsonify({"ok": True, "id": p.id, "images": image_urls})
+
 
 
 @app.get("/api/products/<int:pid>/image/<int:iid>")
