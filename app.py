@@ -353,6 +353,49 @@ def _safe_json_loads(s, default):
 def _json_dumps(o):
     return json.dumps(o, ensure_ascii=False)
 
+def upload_file_to_gcs(file, folder="outfits"):
+    """
+    上传单个文件到 GCS：
+    - 成功：返回公开 URL
+    - 失败或未配置 GCS：返回 None
+    """
+    # 如果没配置 bucket，直接跳过，用旧逻辑
+    if not GCS_BUCKET:
+        return None
+
+    try:
+        # 初始化 GCS client
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+
+        # 生成一个干净的文件名 + 路径
+        raw_name = secure_filename(file.filename or "upload")
+        _, ext = os.path.splitext(raw_name)
+        # 路径：outfits/2025/02/05/uuid.jpg
+        today = datetime.utcnow().strftime("%Y/%m/%d")
+        blob_name = f"{folder}/{today}/{uuid4().hex}{ext}"
+
+        blob = bucket.blob(blob_name)
+
+        # 重新把文件指针移到开头
+        file.seek(0)
+        blob.upload_from_file(
+            file,
+            content_type=(file.mimetype or "application/octet-stream"),
+        )
+
+        # 设为公开可读（你 bucket 那边必须没有开启“Enforce public access prevention”）
+        try:
+            blob.make_public()
+        except Exception:
+            # 即使设公开失败，也不影响主流程，只是可能需要签名 URL
+            pass
+
+        return blob.public_url
+    except Exception as e:
+        app.logger.exception("upload_file_to_gcs failed: %s", e)
+        return None
+
 def _is_approved_merchant(email: str) -> bool:
     if not email:
         return False
