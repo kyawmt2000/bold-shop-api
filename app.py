@@ -75,7 +75,6 @@ class Product(db.Model):
     desc    = db.Column(db.Text)
     sizes_json  = db.Column(db.Text)
     colors_json = db.Column(db.Text)
-    images_json = db.Column(db.Text)  # 新增：商品图片 URL 数组(JSON)
     status  = db.Column(db.String(20), default="active")
 
 
@@ -421,17 +420,27 @@ def _product_to_dict(p: Product, req=None):
         created_at = None
 
     # 商品图片：现在还是走 /api/products/<pid>/image/<iid> 的老逻辑
+        # 商品图片：
+    # - 如果 filename 是 http(s) 开头 => 直接当成 GCS URL
+    # - 否则还是走 /api/products/<pid>/image/<iid> 老逻辑
     try:
         imgs = ProductImage.query.filter_by(product_id=p.id).all()
     except Exception:
         imgs = []
 
     urls = []
+    base = (r.url_root or "").rstrip("/")
     for im in imgs:
         try:
-            urls.append(f"{r.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}")
+            if im.filename and isinstance(im.filename, str) and im.filename.startswith("http"):
+                # GCS URL 直接返回
+                urls.append(im.filename)
+            else:
+                # 老的二进制图片走本地接口
+                urls.append(f"{base}/api/products/{p.id}/image/{im.id}")
         except Exception:
             continue
+
 
     # 变体列表
     try:
@@ -773,18 +782,16 @@ def products_add():
                 db.session.add(ProductVariant(product_id=p.id, size="", color=str(co), price=base_price, stock=0))
             created_any_variant = True
 
-        files = request.files.getlist("images")
+         files = request.files.getlist("images")
     if not files:
         db.session.rollback()
         return jsonify({"message": "至少上传一张图片"}), 400
-
-    image_urls = []
 
     for i, file in enumerate(files[:5], start=1):
         if not file:
             continue
 
-        # 先检查大小
+        # 检查大小
         file.seek(0, os.SEEK_END)
         size = file.tell()
         file.seek(0)
@@ -792,12 +799,19 @@ def products_add():
             db.session.rollback()
             return jsonify({"message": f"第{i}张图片超过 5MB"}), 400
 
-        # ✅ 优先走 GCS 上传
+        # 先尝试上传 GCS
         url = upload_file_to_gcs(file, folder="products")
         if url:
-            image_urls.append(url)
+            # ✅ GCS 成功：filename 存 URL，data 设为 None
+            im = ProductImage(
+                product_id=p.id,
+                filename=url,
+                mimetype=file.mimetype or "application/octet-stream",
+                data=None,
+            )
+            db.session.add(im)
         else:
-            # 兜底：还是存回本地数据库（二进制）
+            # ❗ GCS 失败：退回老逻辑，写二进制到数据库
             im = ProductImage(
                 product_id=p.id,
                 filename=secure_filename(file.filename or f"p{p.id}_{i}.jpg"),
@@ -805,11 +819,6 @@ def products_add():
                 data=file.read(),
             )
             db.session.add(im)
-
-    # 如果 GCS 成功，保存 URL 数组到 products.images_json
-    if image_urls:
-        p.images_json = json.dumps(image_urls, ensure_ascii=False)
-
 
     db.session.commit()
     data = _product_to_dict(p)
