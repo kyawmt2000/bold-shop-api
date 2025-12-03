@@ -605,15 +605,29 @@ def _outfit_to_dict(o: Outfit, req=None):
     }
 
 # --- 只在设置了 API_KEY 时才启用强校验 ---
+# 只保护后台 / 调试接口，公开接口不需要 key
+PROTECTED_PREFIXES = ["/api/admin", "/api/debug"]
+
 @app.before_request
 def _enforce_api_key():
+    # health / 预检 直接放行
     if request.path == "/health":
         return None
-    if request.method == "OPTIONS":   # 预检一律放行
+    if request.method == "OPTIONS":
         return None
-    if request.path.startswith("/api/") and API_KEY:
-        if not check_key(request):    # 只有设置了 API_KEY 才会进入校验
-            return jsonify({"message": "Unauthorized"}), 401
+
+    # 没有设置 API_KEY，就不做任何校验
+    if not API_KEY:
+        return None
+
+    # 只有这些前缀才需要 key
+    if not any(request.path.startswith(p) for p in PROTECTED_PREFIXES):
+        return None
+
+    # 校验失败返回 401
+    if not check_key(request):
+        return jsonify({"message": "Unauthorized"}), 401
+
 
 # -------------------- Health --------------------
 @app.route("/health")
