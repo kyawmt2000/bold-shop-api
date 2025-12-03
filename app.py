@@ -75,7 +75,9 @@ class Product(db.Model):
     desc    = db.Column(db.Text)
     sizes_json  = db.Column(db.Text)
     colors_json = db.Column(db.Text)
+    images_json = db.Column(db.Text)  # 新增：商品图片 URL 数组(JSON)
     status  = db.Column(db.String(20), default="active")
+
 
 
 class ProductVariant(db.Model):
@@ -410,8 +412,22 @@ def _variant_to_dict(v: ProductVariant):
 
 def _product_to_dict(p: Product, req=None):
     r = req or request
-    imgs = ProductImage.query.filter_by(product_id=p.id).all()
-    urls = [f"{r.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}" for im in imgs]
+
+    # 优先使用 products.images_json 中直接存的 GCS URL 列表
+    img_urls = []
+    try:
+        if getattr(p, "images_json", None):
+            img_urls = _safe_json_loads(p.images_json, [])
+    except Exception:
+        img_urls = []
+
+    if img_urls:
+        urls = img_urls
+    else:
+        # 兼容旧数据：从 ProductImage 表构造后端图片 URL
+        imgs = ProductImage.query.filter_by(product_id=p.id).all()
+        urls = [f"{r.url_root.rstrip('/')}/api/products/{p.id}/image/{im.id}" for im in imgs]
+
     variants = ProductVariant.query.filter_by(product_id=p.id).all()
     return {
         "id": p.id,
@@ -746,21 +762,43 @@ def products_add():
                 db.session.add(ProductVariant(product_id=p.id, size="", color=str(co), price=base_price, stock=0))
             created_any_variant = True
 
-    files = request.files.getlist("images")
-    for i, file in enumerate(files[:5]):
+        files = request.files.getlist("images")
+    if not files:
+        db.session.rollback()
+        return jsonify({"message": "至少上传一张图片"}), 400
+
+    image_urls = []
+
+    for i, file in enumerate(files[:5], start=1):
         if not file:
             continue
-        file.seek(0, os.SEEK_END); size=file.tell(); file.seek(0)
-        if size > 5*1024*1024:
+
+        # 先检查大小
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(0)
+        if size > 5 * 1024 * 1024:
             db.session.rollback()
-            return jsonify({"message": f"第{i+1}张图片超过 5MB"}), 400
-        im = ProductImage(
-            product_id=p.id,
-            filename=secure_filename(file.filename or f"p{p.id}_{i+1}.jpg"),
-            mimetype=file.mimetype or "application/octet-stream",
-            data=file.read()
-        )
-        db.session.add(im)
+            return jsonify({"message": f"第{i}张图片超过 5MB"}), 400
+
+        # ✅ 优先走 GCS 上传
+        url = upload_file_to_gcs(file, folder="products")
+        if url:
+            image_urls.append(url)
+        else:
+            # 兜底：还是存回本地数据库（二进制）
+            im = ProductImage(
+                product_id=p.id,
+                filename=secure_filename(file.filename or f"p{p.id}_{i}.jpg"),
+                mimetype=file.mimetype or "application/octet-stream",
+                data=file.read(),
+            )
+            db.session.add(im)
+
+    # 如果 GCS 成功，保存 URL 数组到 products.images_json
+    if image_urls:
+        p.images_json = json.dumps(image_urls, ensure_ascii=False)
+
 
     db.session.commit()
     data = _product_to_dict(p)
@@ -1294,8 +1332,10 @@ def admin_migrate():
             # 通用列兜底
             run("ALTER TABLE products ADD COLUMN IF NOT EXISTS merchant_email VARCHAR(200)")
             run("ALTER TABLE products ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'")
+            run("ALTER TABLE products ADD COLUMN IF NOT EXISTS images_json TEXT")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)")
+
 
             # outfits 补列（1–5 改动）
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)")
