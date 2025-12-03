@@ -1347,7 +1347,11 @@ def admin_migrate():
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)")
 
+            {
+    "sql": "ALTER TABLE products ADD COLUMN IF NOT EXISTS images_json TEXT"
+},
 
+            
             # outfits 补列（1–5 改动）
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)")
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS tags VARCHAR(200)")
