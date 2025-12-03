@@ -354,6 +354,14 @@ def _safe_json_loads(s, default):
 def _json_dumps(o):
     return json.dumps(o, ensure_ascii=False)
 
+def upload_to_gcs_product(file, filename):
+    bucket = storage_client.bucket(GCS_BUCKET)
+    blob = bucket.blob(f"products/{filename}")  # 存放在 products 文件夹
+    blob.upload_from_file(file, content_type=file.content_type)
+
+    blob.make_public()
+    return blob.public_url
+
 def upload_file_to_gcs(file, folder="outfits"):
     """
     上传单个文件到 GCS：
@@ -718,157 +726,55 @@ def products_get_one(pid):
     row = Product.query.get_or_404(pid)
     return jsonify(_product_to_dict(row))
 
-@app.post("/api/products/add")
-@app.post("/api/products/add")
-def products_add():
-    f = request.form
-    email = (f.get("merchant_email") or "").strip().lower()
-    if not _is_approved_merchant(email):
-        return jsonify({"message": "not approved"}), 403
+@app.route("/api/products/add", methods=["POST"])
+@require_api_key
+def add_product():
+    merchant_email = request.form.get("merchant_email", "").strip().lower()
+    title = request.form.get("title", "").strip()
+    gender = request.form.get("gender", "")
+    category = request.form.get("category", "")
+    price = request.form.get("price", "0")
+    desc = request.form.get("desc", "")
 
-    title = (f.get("title") or "").strip()
-    gender = (f.get("gender") or "").strip()
-    category = (f.get("category") or "").strip()
-    desc = (f.get("desc") or "").strip()
+    sizes = request.form.get("sizes", "[]")
+    colors = request.form.get("colors", "[]")
 
     try:
-        base_price = int(f.get("price") or 0)
-    except Exception:
-        return jsonify({"message": "price 不合法"}), 400
+        sizes_list = json.loads(sizes)
+        colors_list = json.loads(colors)
+    except:
+        return jsonify({"ok": False, "error": "Invalid JSON in sizes or colors"}), 400
 
-    sizes = _safe_json_loads(f.get("sizes"), [])
-    colors = _safe_json_loads(f.get("colors"), [])
-    variant_prices = _safe_json_loads(f.get("variant_prices"), [])
+    # 上传图片（GCS）
+    files = request.files.getlist("images")
+    image_urls = []
 
-    if not title:
-        return jsonify({"message": "title 不能为空"}), 400
-    if category not in {"clothes", "pants", "shoes"}:
-        return jsonify({"message": "category 必须是 clothes/pants/shoes"}), 400
-    if gender not in {"women", "men"}:
-        return jsonify({"message": "gender 必须是 women/men"}), 400
+    for f in files:
+        if f:
+            filename = uuid.uuid4().hex + os.path.splitext(f.filename)[1]
+            url = upload_to_gcs_product(f, filename)
+            image_urls.append(url)
 
+    # 存入数据库
     p = Product(
-        merchant_email=email,
+        merchant_email=merchant_email,
         title=title,
-        price=base_price,
         gender=gender,
         category=category,
+        price=price,
         desc=desc,
-        sizes_json=_json_dumps(sizes),
-        colors_json=_json_dumps(colors),
+        sizes_json=json.dumps(sizes_list),
+        colors_json=json.dumps(colors_list),
+        images_json=json.dumps(image_urls),   # <<< 关键
         status="active",
+        created_at=datetime.utcnow()
     )
+
     db.session.add(p)
-    db.session.flush()
-
-    created_any_variant = False
-    if isinstance(variant_prices, list) and len(variant_prices) > 0:
-        for i, v in enumerate(variant_prices):
-            try:
-                size = (v.get("size") or "").strip()
-                color = (v.get("color") or "").strip()
-                price = int(v.get("price"))
-                stock = int(v.get("stock") or 0)
-            except Exception:
-                db.session.rollback()
-                return jsonify({"message": f"第 {i+1} 个变体参数不合法"}), 400
-            db.session.add(
-                ProductVariant(
-                    product_id=p.id,
-                    size=size,
-                    color=color,
-                    price=price,
-                    stock=stock,
-                )
-            )
-        created_any_variant = True
-    else:
-        if sizes and colors:
-            for si in sizes:
-                for co in colors:
-                    db.session.add(
-                        ProductVariant(
-                            product_id=p.id,
-                            size=str(si),
-                            color=str(co),
-                            price=base_price,
-                            stock=0,
-                        )
-                    )
-            created_any_variant = True
-        elif sizes:
-            for si in sizes:
-                db.session.add(
-                    ProductVariant(
-                        product_id=p.id,
-                        size=str(si),
-                        color="",
-                        price=base_price,
-                        stock=0,
-                    )
-                )
-            created_any_variant = True
-        elif colors:
-            for co in colors:
-                db.session.add(
-                    ProductVariant(
-                        product_id=p.id,
-                        size="",
-                        color=str(co),
-                        price=base_price,
-                        stock=0,
-                    )
-                )
-            created_any_variant = True
-
-    # ✅ 注意：这里的缩进和上面保持同一级（函数内部顶级）
-    files = request.files.getlist("images")
-    if not files:
-        db.session.rollback()
-        return jsonify({"message": "至少上传一张图片"}), 400
-
-    for i, file in enumerate(files[:5], start=1):
-        if not file:
-            continue
-
-        # 检查大小
-        file.seek(0, os.SEEK_END)
-        size = file.tell()
-        file.seek(0)
-        if size > 5 * 1024 * 1024:
-            db.session.rollback()
-            return jsonify({"message": f"第{i}张图片超过 5MB"}), 400
-
-        # 先尝试上传 GCS
-        url = upload_file_to_gcs(file, folder="products")
-        if url:
-            # ✅ GCS 成功：filename 存 URL，data 设为 None
-            im = ProductImage(
-                product_id=p.id,
-                filename=url,
-                mimetype=file.mimetype or "application/octet-stream",
-                data=None,
-            )
-            db.session.add(im)
-        else:
-            # ❗ GCS 失败：退回老逻辑，写二进制到数据库
-            im = ProductImage(
-                product_id=p.id,
-                filename=secure_filename(
-                    file.filename or f"p{p.id}_{i}.jpg"
-                ),
-                mimetype=file.mimetype or "application/octet-stream",
-                data=file.read(),
-            )
-            db.session.add(im)
-
     db.session.commit()
-    data = _product_to_dict(p)
-    if not created_any_variant:
-        data["variants"] = [
-            {"id": None, "size": "", "color": "", "price": base_price, "stock": 0}
-        ]
-    return jsonify(data), 201
+
+    return jsonify({"ok": True, "id": p.id, "images": image_urls})
+
 
 @app.get("/api/products/<int:pid>/image/<int:iid>")
 def product_image(pid, iid):
