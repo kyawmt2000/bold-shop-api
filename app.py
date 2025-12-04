@@ -156,6 +156,10 @@ class UserSetting(db.Model):
     blacklist_json = db.Column(db.Text)  # JSON 数组
     lang = db.Column(db.String(8), default="zh")
     bio  = db.Column(db.String(120))  # 简介
+    nickname   = db.Column(db.String(80))
+    avatar_url = db.Column(db.String(500))
+    birthday   = db.Column(db.String(16))   # 直接存 'YYYY-MM-DD' 字符串就够用
+    city       = db.Column(db.String(120))
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -323,6 +327,11 @@ with app.app_context():
                 """))
                 # 兜底补列
                 conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)"))
+
             conn.commit()
     except Exception:
         # 兜底，不中断启动
@@ -1244,6 +1253,10 @@ def _settings_to_dict(s: UserSetting):
         "blacklist": _safe_json_loads(s.blacklist_json, []),
         "lang": s.lang or "zh",
         "bio": (s.bio or ""),
+        "nickname": s.nickname or "",
+        "avatar": s.avatar_url or "",
+        "birthday": s.birthday or "",
+        "city": s.city or "",
         "updated_at": s.updated_at.isoformat() if s.updated_at else None
     }
 
@@ -1275,6 +1288,12 @@ def put_settings():
         s.dm_who = dm if dm in {"all","following"} else "all"
         s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
         s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
+        s.bio = (data.get("bio") or s.bio or "")[:120]
+s.nickname = (data.get("nickname") or s.nickname or "")[:80]
+s.avatar_url = (data.get("avatar") or s.avatar_url or "")[:500]
+s.birthday = (data.get("birthday") or s.birthday or "")[:16]
+s.city = (data.get("city") or s.city or "")[:120]
+
         db.session.add(s); db.session.commit()
         return jsonify(_settings_to_dict(s))
     except Exception as e:
