@@ -1327,6 +1327,37 @@ def set_bio():
     db.session.commit()
     return jsonify({"ok": True, "email": email, "bio": s.bio or ""})
 
+@app.post("/api/profile/avatar")
+def upload_avatar():
+    """
+    上传头像到 GCS:
+    - form-data: email, avatar(文件)
+    - 返回: {"ok": True, "url": "..."}
+    """
+    email = (request.form.get("email") or "").strip().lower()
+    file = request.files.get("avatar")
+
+    if not email:
+        return jsonify({"message": "missing_email"}), 400
+    if not file:
+        return jsonify({"message": "missing_file"}), 400
+
+    # 限制一下文件大小，比如 5MB
+    file.seek(0, os.SEEK_END)
+    size = file.tell()
+    file.seek(0)
+    if size > 5 * 1024 * 1024:
+        return jsonify({"message": "file_too_large", "limit": 5 * 1024 * 1024}), 400
+
+    # 上传到 GCS 的 avatars/ 目录
+    url = upload_file_to_gcs(file, folder="avatars")
+    if not url:
+        return jsonify({"message": "upload_failed"}), 500
+
+    # 暂时只返回 URL，头像地址继续存在前端的 BOLD_PROFILE 里
+    return jsonify({"ok": True, "url": url})
+
+
 # ==================== 迁移端点（按方言执行） ====================
 @app.route("/api/admin/migrate", methods=["GET", "POST"])
 def admin_migrate():
