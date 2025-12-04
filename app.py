@@ -1289,10 +1289,10 @@ def put_settings():
         s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
         s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
         s.bio = (data.get("bio") or s.bio or "")[:120]
-s.nickname = (data.get("nickname") or s.nickname or "")[:80]
-s.avatar_url = (data.get("avatar") or s.avatar_url or "")[:500]
-s.birthday = (data.get("birthday") or s.birthday or "")[:16]
-s.city = (data.get("city") or s.city or "")[:120]
+        s.nickname = (data.get("nickname") or s.nickname or "")[:80]
+        s.avatar_url = (data.get("avatar") or s.avatar_url or "")[:500]
+        s.birthday = (data.get("birthday") or s.birthday or "")[:16]
+        s.city = (data.get("city") or s.city or "")[:120]
 
         db.session.add(s); db.session.commit()
         return jsonify(_settings_to_dict(s))
