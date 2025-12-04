@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime
 from io import BytesIO
+from sqlalchemy import text
 
 from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
@@ -309,6 +310,10 @@ with app.app_context():
                 """))
                 # 兜底补列
                 conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)"))
+                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)"))
             else:
                 conn.execute(db.text("""
                     CREATE TABLE IF NOT EXISTS user_settings (
