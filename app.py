@@ -1419,33 +1419,40 @@ def profile_avatar():
     if not file or file.filename == "":
         return jsonify({"ok": False, "error": "missing_file"}), 400
 
-    # 限制大小
+    # 限制大小：5MB
     file.seek(0, os.SEEK_END)
     size = file.tell()
     file.seek(0)
     if size > 5 * 1024 * 1024:
         return jsonify({"ok": False, "error": "too_large"}), 400
 
-    # 上传到 GCS  avatars/
+    # 1）上传到 GCS 的 avatars/ 目录
     url = upload_file_to_gcs(file, folder="avatars")
     if not url:
+        app.logger.error("avatar upload: upload_file_to_gcs returned None, email=%s", email)
         return jsonify({"ok": False, "error": "gcs_upload_failed"}), 500
 
-    # 顺便存到 user_settings.avatar_url，方便跨设备
+    # 2）写入 user_settings.avatar_url
     try:
-        s = UserSetting.query.filter_by(email=email).first()
+        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
         if not s:
             s = UserSetting(email=email)
             db.session.add(s)
+
         s.avatar_url = url
         s.updated_at = datetime.utcnow()
         db.session.commit()
     except Exception as e:
         db.session.rollback()
         app.logger.exception("save avatar_url failed: %s", e)
-        return jsonify({"ok": False, "error": "db_error"}), 500
+        return jsonify({
+            "ok": False,
+            "error": "db_error",
+            "detail": str(e),
+        }), 500
 
-    return jsonify({"ok": True, "url": url})
+    # 3）成功返回 GCS URL
+    return jsonify({"ok": True, "url": url}), 200
 
 
 # ==================== 迁移端点（按方言执行） ====================
