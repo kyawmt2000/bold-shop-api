@@ -1406,52 +1406,51 @@ def set_bio():
     db.session.commit()
     return jsonify({"ok": True, "email": email, "bio": s.bio or ""})
 
-@app.post("/api/profile/avatar")
-def upload_avatar():
-    """
-    上传头像到 GCS:
-    - form-data: email, avatar(文件)
-    - 返回: {"ok": True, "url": "..."}
-    """
+# === 头像上传：保存到 GCS + user_settings.avatar_url ===
+@app.route("/api/profile/avatar", methods=["POST", "OPTIONS"])
+def profile_avatar():
+    # 处理 CORS 预检
+    if request.method == "OPTIONS":
+        return _ok()
+
+    # email 从表单拿（前端已经这样传）
     email = (request.form.get("email") or "").strip().lower()
-    file = request.files.get("avatar")
-
     if not email:
-        return jsonify({"message": "missing_email"}), 400
-    if not file:
-        return jsonify({"message": "missing_file"}), 400
+        return jsonify({"ok": False, "error": "missing_email"}), 400
 
-    # 限制一下文件大小，比如 5MB
+    file = request.files.get("avatar")
+    if not file or file.filename == "":
+        return jsonify({"ok": False, "error": "missing_file"}), 400
+
+    # 简单限制一下大小（比如 2MB）
     file.seek(0, os.SEEK_END)
     size = file.tell()
     file.seek(0)
-    if size > 5 * 1024 * 1024:
-        return jsonify(
-            {"message": "file_too_large", "limit": 5 * 1024 * 1024}
-        ), 400
+    if size > 2 * 1024 * 1024:
+        return jsonify({"ok": False, "error": "too_large"}), 400
 
-    # 上传到 GCS 的 avatars/ 目录
+    # 1）先上传到 GCS（使用你已经写好的工具函数）
     url = upload_file_to_gcs(file, folder="avatars")
     if not url:
-        return jsonify({"message": "upload_failed"}), 500
+        return jsonify({"ok": False, "error": "gcs_upload_failed"}), 500
 
-    # ✅ 把 URL 写到 user_settings.avatar_url
+    # 2）把 URL 写入 user_settings.avatar_url
     try:
-        setting = UserSetting.query.filter(
-            func.lower(UserSetting.email) == email
-        ).first()
-        if not setting:
-            setting = UserSetting(email=email)
+        s = UserSetting.query.filter_by(email=email).first()
+        if not s:
+            s = UserSetting(email=email)
+            db.session.add(s)
 
-        setting.avatar_url = url
-        db.session.add(setting)
+        s.avatar_url = url
+        s.updated_at = datetime.utcnow()
         db.session.commit()
     except Exception as e:
-        app.logger.exception("save avatar failed: %s", e)
-        # 存 DB 失败也先把 URL 返回给前端
-        return jsonify({"ok": True, "url": url, "_warning": "db_save_failed"}), 200
+        db.session.rollback()
+        app.logger.exception("save avatar_url failed: %s", e)
+        return jsonify({"ok": False, "error": "db_error"}), 500
 
-    return jsonify({"ok": True, "url": url})
+    # 3）返回给前端
+    return jsonify({"ok": True, "url": url}), 200
 
 
 # ==================== 迁移端点（按方言执行） ====================
