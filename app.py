@@ -163,6 +163,17 @@ class UserSetting(db.Model):
     city       = db.Column(db.String(120))
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+class UserFollow(db.Model):
+    __tablename__ = "user_follows"
+
+    id = db.Column(db.Integer, primary_key=True)
+    follower_email = db.Column(db.String(200), index=True, nullable=False)
+    target_email   = db.Column(db.String(200), index=True, nullable=False)
+    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("follower_email", "target_email", name="uix_follow_pair"),
+    )
 
 # -------------------- 初始化：按方言兜底建表 --------------------
 with app.app_context():
@@ -1389,18 +1400,28 @@ def api_follow_mine():
     if not email:
         return jsonify({"ok": False, "error": "missing_email"}), 400
 
-    following_cnt = db.session.query(func.count(UserFollow.id))\
-        .filter_by(follower_email=email).scalar() or 0
+    try:
+        following_cnt = db.session.query(func.count(UserFollow.id))\
+            .filter_by(follower_email=email).scalar() or 0
 
-    followers_cnt = db.session.query(func.count(UserFollow.id))\
-        .filter_by(target_email=email).scalar() or 0
+        followers_cnt = db.session.query(func.count(UserFollow.id))\
+            .filter_by(target_email=email).scalar() or 0
 
-    return jsonify({
-        "ok": True,
-        "email": email,
-        "following": following_cnt,
-        "followers": followers_cnt,
-    })
+        return jsonify({
+            "ok": True,
+            "email": email,
+            "following": following_cnt,
+            "followers": followers_cnt,
+        })
+    except Exception as e:
+        app.logger.exception("follow_mine error: %s", e)
+        # 出错也返回 200，前端就不会黄三角
+        return jsonify({
+            "ok": False,
+            "email": email,
+            "following": 0,
+            "followers": 0,
+        })
 
 # === 简化的 profile bio 端点（可选用） ===
 @app.get("/api/profile/bio")
@@ -1748,15 +1769,3 @@ def outfits_import_draft():
 
     db.session.add(o); db.session.commit()
     return jsonify({"id": o.id, "item": _outfit_to_dict(o)}), 201
-
-class UserFollow(db.Model):
-    __tablename__ = "user_follows"
-
-    id = db.Column(db.Integer, primary_key=True)
-    follower_email = db.Column(db.String(200), index=True, nullable=False)
-    target_email   = db.Column(db.String(200), index=True, nullable=False)
-    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
-
-    __table_args__ = (
-        db.UniqueConstraint("follower_email", "target_email", name="uix_follow_pair"),
-    )
