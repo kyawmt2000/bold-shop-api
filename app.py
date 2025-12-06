@@ -1444,7 +1444,8 @@ def upload_avatar():
         if not setting:
             setting = UserSetting(email=email)
 
-        setting.avatar_url = url          # 这里只存 URL
+        # ✅ 正确：写到 avatar_url 字段
+        setting.avatar_url = url
         db.session.add(setting)
         db.session.commit()
     except Exception as e:
