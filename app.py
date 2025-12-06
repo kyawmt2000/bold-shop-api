@@ -1406,14 +1406,11 @@ def set_bio():
     db.session.commit()
     return jsonify({"ok": True, "email": email, "bio": s.bio or ""})
 
-# === 头像上传：保存到 GCS + user_settings.avatar_url ===
 @app.route("/api/profile/avatar", methods=["POST", "OPTIONS"])
 def profile_avatar():
-    # 处理 CORS 预检
     if request.method == "OPTIONS":
         return _ok()
 
-    # email 从表单拿（前端已经这样传）
     email = (request.form.get("email") or "").strip().lower()
     if not email:
         return jsonify({"ok": False, "error": "missing_email"}), 400
@@ -1422,25 +1419,24 @@ def profile_avatar():
     if not file or file.filename == "":
         return jsonify({"ok": False, "error": "missing_file"}), 400
 
-    # 简单限制一下大小（比如 2MB）
+    # 限制大小
     file.seek(0, os.SEEK_END)
     size = file.tell()
     file.seek(0)
-    if size > 2 * 1024 * 1024:
+    if size > 5 * 1024 * 1024:
         return jsonify({"ok": False, "error": "too_large"}), 400
 
-    # 1）先上传到 GCS（使用你已经写好的工具函数）
+    # 上传到 GCS  avatars/
     url = upload_file_to_gcs(file, folder="avatars")
     if not url:
         return jsonify({"ok": False, "error": "gcs_upload_failed"}), 500
 
-    # 2）把 URL 写入 user_settings.avatar_url
+    # 顺便存到 user_settings.avatar_url，方便跨设备
     try:
         s = UserSetting.query.filter_by(email=email).first()
         if not s:
             s = UserSetting(email=email)
             db.session.add(s)
-
         s.avatar_url = url
         s.updated_at = datetime.utcnow()
         db.session.commit()
@@ -1449,8 +1445,7 @@ def profile_avatar():
         app.logger.exception("save avatar_url failed: %s", e)
         return jsonify({"ok": False, "error": "db_error"}), 500
 
-    # 3）返回给前端
-    return jsonify({"ok": True, "url": url}), 200
+    return jsonify({"ok": True, "url": url})
 
 
 # ==================== 迁移端点（按方言执行） ====================
