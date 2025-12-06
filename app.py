@@ -1268,14 +1268,35 @@ def _settings_to_dict(s: UserSetting):
 @app.get("/api/settings")
 def get_settings():
     email = (request.args.get("email") or "").strip().lower()
-    if not email: return jsonify({"message":"missing email"}), 400
-    try:
-        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-        return jsonify(_settings_to_dict(s) or _default_settings(email))
-    except Exception as e:
-        # 表不存在或其它数据库错误时，先给默认，不让前端炸
-        return jsonify(_default_settings(email) | {"_warning":"fallback","_detail":str(e)}), 200
+    if not email:
+        return jsonify({})
 
+    setting = UserSetting.query.filter(
+        func.lower(UserSetting.email) == email
+    ).first()
+    if not setting:
+        return jsonify({})
+
+    # 手动构造返回 JSON，注意 avatar 直接用 setting.avatar
+    data = {
+        "avatar":   setting.avatar or "",
+        "nickname": setting.nickname or "",
+        "bio":      setting.bio or "",
+        "birthday": setting.birthday or "",
+        "city":     setting.city or "",
+        "lang":     setting.lang or "en",
+        "email":    setting.email,
+        "public_profile": bool(getattr(setting, "public_profile", True)),
+        "show_followers": bool(getattr(setting, "show_followers", True)),
+        "show_following": bool(getattr(setting, "show_following", True)),
+        "updated_at": setting.updated_at.isoformat() if getattr(setting, "updated_at", None) else None,
+    }
+
+    # ✅ 兼容老数据：如果是 data:image 开头，前端就当不存在（返回空字符串）
+    if data["avatar"] and data["avatar"].startswith("data:image"):
+        data["avatar"] = ""
+
+    return jsonify(data)
 
 @app.put("/api/settings")
 def put_settings():
@@ -1354,17 +1375,17 @@ def set_bio():
 @app.post("/api/profile/avatar")
 def upload_avatar():
     """
-    上传头像到 GCS 并写入 user_settings.avatar：
+    上传头像到 GCS，并把 HTTPS 地址写入 user_settings.avatar
     - form-data: email, avatar(文件)
-    - 返回: {"ok": True, "url": "https://storage.googleapis.com/....jpg"}
+    - 返回: {"ok": True, "url": "https://...jpg"}
     """
     email = (request.form.get("email") or "").strip().lower()
     file = request.files.get("avatar")
 
     if not email:
-        return jsonify({"message": "missing_email"}), 400
+        return jsonify({"ok": False, "message": "missing_email"}), 400
     if not file:
-        return jsonify({"message": "missing_file"}), 400
+        return jsonify({"ok": False, "message": "missing_file"}), 400
 
     # 限制：最大 5MB
     file.seek(0, os.SEEK_END)
@@ -1372,15 +1393,15 @@ def upload_avatar():
     file.seek(0)
     if size > 5 * 1024 * 1024:
         return jsonify(
-            {"message": "file_too_large", "limit": 5 * 1024 * 1024}
+            {"ok": False, "message": "file_too_large", "limit": 5 * 1024 * 1024}
         ), 400
 
-    # ✅ 真正上传到 GCS，返回一个 HTTPS URL
+    # ✅ 真正上传到 GCS，得到一个 HTTPS URL
     url = upload_file_to_gcs(file, folder="avatars")
     if not url:
-        return jsonify({"message": "upload_failed"}), 500
+        return jsonify({"ok": False, "message": "upload_failed"}), 500
 
-    # ✅ 把这个 URL 存到 user_settings.avatar 里（不再存 base64）
+    # ✅ 把 URL 写到 user_settings.avatar（注意：不是 avatar_url，也不是 base64）
     try:
         setting = UserSetting.query.filter(
             func.lower(UserSetting.email) == email
@@ -1388,15 +1409,14 @@ def upload_avatar():
         if not setting:
             setting = UserSetting(email=email)
 
-        setting.avatar = url  # 这里存的就是 GCS 的图片地址，例如 https://storage.googleapis.com/...
+        setting.avatar = url          # 这里只存 URL
         db.session.add(setting)
         db.session.commit()
     except Exception as e:
         app.logger.exception("save avatar failed: %s", e)
-        # 即使数据库异常，也先把 URL 返回给前端用
+        # 就算数据库有问题，也把 URL 返回给前端
         return jsonify({"ok": True, "url": url, "_warning": "db_save_failed"}), 200
 
-    # 返回给前端
     return jsonify({"ok": True, "url": url})
 
 
