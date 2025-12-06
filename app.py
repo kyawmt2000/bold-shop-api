@@ -1354,7 +1354,7 @@ def set_bio():
 @app.post("/api/profile/avatar")
 def upload_avatar():
     """
-    上传头像到 GCS:
+    上传头像到 GCS 并写入用户设置:
     - form-data: email, avatar(文件)
     - 返回: {"ok": True, "url": "..."}
     """
@@ -1366,19 +1366,38 @@ def upload_avatar():
     if not file:
         return jsonify({"message": "missing_file"}), 400
 
-    # 限制一下文件大小，比如 5MB
+    # 限制：最大 5MB
     file.seek(0, os.SEEK_END)
     size = file.tell()
     file.seek(0)
     if size > 5 * 1024 * 1024:
-        return jsonify({"message": "file_too_large", "limit": 5 * 1024 * 1024}), 400
+        return jsonify(
+            {"message": "file_too_large", "limit": 5 * 1024 * 1024}
+        ), 400
 
     # 上传到 GCS 的 avatars/ 目录
     url = upload_file_to_gcs(file, folder="avatars")
     if not url:
         return jsonify({"message": "upload_failed"}), 500
 
-    # 暂时只返回 URL，头像地址继续存在前端的 BOLD_PROFILE 里
+    # ✅ 把头像地址写入 user_settings 表的 avatar_url 字段
+    try:
+        s = UserSetting.query.filter(
+            func.lower(UserSetting.email) == email
+        ).first()
+        if not s:
+            s = UserSetting(email=email)
+
+        s.avatar_url = (url or "")[:500]
+        db.session.add(s)
+        db.session.commit()
+    except Exception as e:
+        app.logger.exception("save avatar_url failed: %s", e)
+        # 数据库保存失败也先把 URL 给前端用
+        return jsonify(
+            {"ok": True, "url": url, "_warning": "db_save_failed"}
+        ), 200
+
     return jsonify({"ok": True, "url": url})
 
 
