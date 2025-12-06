@@ -1383,6 +1383,96 @@ def settings_blacklist():
     db.session.commit()
     return jsonify(_settings_to_dict(s))
 
+@app.route("/api/follow", methods=["POST"])
+def api_follow():
+    data = request.get_json(silent=True) or {}
+    follower = (data.get("follower") or "").strip().lower()
+    target   = (data.get("target") or "").strip().lower()
+    action   = (data.get("action") or "toggle").strip().lower()
+
+    if not follower or not target:
+        return jsonify({"ok": False, "error": "missing_email"}), 400
+    if follower == target:
+        # 自己不能关注自己
+        return jsonify({"ok": False, "error": "self_not_allowed"}), 400
+
+    try:
+        q = UserFollow.query.filter_by(follower_email=follower, target_email=target)
+        rel = q.first()
+
+        if action in ("follow", "on"):
+            if not rel:
+                rel = UserFollow(follower_email=follower, target_email=target)
+                db.session.add(rel)
+        elif action in ("unfollow", "off"):
+            if rel:
+                db.session.delete(rel)
+        else:  # toggle
+            if rel:
+                db.session.delete(rel)
+                rel = None
+            else:
+                rel = UserFollow(follower_email=follower, target_email=target)
+                db.session.add(rel)
+
+        db.session.commit()
+
+        followers_cnt = db.session.query(func.count(UserFollow.id))\
+            .filter_by(target_email=target).scalar() or 0
+
+        return jsonify({
+            "ok": True,
+            "is_following": bool(rel),
+            "followers": followers_cnt,
+        })
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("follow error: %s", e)
+        return jsonify({"ok": False, "error": "server_error"}), 500
+
+@app.route("/api/follow/stats")
+def api_follow_stats():
+    target = (request.args.get("email") or "").strip().lower()
+    viewer = (request.args.get("viewer") or "").strip().lower()
+
+    if not target:
+        return jsonify({"ok": False, "error": "missing_email"}), 400
+
+    followers_cnt = db.session.query(func.count(UserFollow.id))\
+        .filter_by(target_email=target).scalar() or 0
+
+    is_following = False
+    if viewer:
+        is_following = db.session.query(UserFollow.id)\
+            .filter_by(follower_email=viewer, target_email=target)\
+            .first() is not None
+
+    return jsonify({
+        "ok": True,
+        "email": target,
+        "followers": followers_cnt,
+        "is_following": is_following,
+    })
+
+@app.route("/api/follow/mine")
+def api_follow_mine():
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "error": "missing_email"}), 400
+
+    following_cnt = db.session.query(func.count(UserFollow.id))\
+        .filter_by(follower_email=email).scalar() or 0
+
+    followers_cnt = db.session.query(func.count(UserFollow.id))\
+        .filter_by(target_email=email).scalar() or 0
+
+    return jsonify({
+        "ok": True,
+        "email": email,
+        "following": following_cnt,
+        "followers": followers_cnt,
+    })
+
 # === 简化的 profile bio 端点（可选用） ===
 @app.get("/api/profile/bio")
 def get_bio():
@@ -1594,6 +1684,39 @@ def admin_migrate():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+            # === user_follows 关注关系表 ===
+if is_pg:
+    conn.execute(db.text("""
+        CREATE TABLE IF NOT EXISTS user_follows (
+            id SERIAL PRIMARY KEY,
+            follower_email VARCHAR(200) NOT NULL,
+            target_email   VARCHAR(200) NOT NULL,
+            created_at     TIMESTAMP DEFAULT NOW()
+        )
+    """))
+    # 唯一 + 索引
+    conn.execute(db.text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'uix_follow_pair'
+            ) THEN
+                ALTER TABLE user_follows
+                ADD CONSTRAINT uix_follow_pair
+                UNIQUE (follower_email, target_email);
+            END IF;
+        END$$;
+    """))
+else:
+    conn.execute(db.text("""
+        CREATE TABLE IF NOT EXISTS user_follows (
+            id INTEGER PRIMARY KEY,
+            follower_email VARCHAR(200) NOT NULL,
+            target_email   VARCHAR(200) NOT NULL,
+            created_at     TIMESTAMP
+        )
+    """))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
@@ -1693,3 +1816,15 @@ def outfits_import_draft():
 
     db.session.add(o); db.session.commit()
     return jsonify({"id": o.id, "item": _outfit_to_dict(o)}), 201
+
+class UserFollow(db.Model):
+    __tablename__ = "user_follows"
+
+    id = db.Column(db.Integer, primary_key=True)
+    follower_email = db.Column(db.String(200), index=True, nullable=False)
+    target_email   = db.Column(db.String(200), index=True, nullable=False)
+    created_at     = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("follower_email", "target_email", name="uix_follow_pair"),
+    )
