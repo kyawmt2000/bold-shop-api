@@ -1301,7 +1301,7 @@ def get_settings():
             })
 
         # 小心所有字段都可能不存在 / 为 None，这里用 getattr 全包住
-        avatar = getattr(setting, "avatar", "") or ""
+        avatar = getattr(setting, "avatar_url", "") or ""
         # 兼容旧数据：如果是 data:image 开头，视为无效，让前端走默认头像
         if avatar.startswith("data:image"):
             avatar = ""
@@ -1444,7 +1444,7 @@ def upload_avatar():
         if not setting:
             setting = UserSetting(email=email)
 
-        setting.avatar = url          # 这里只存 URL
+        setting.avatar_url = url          # 这里只存 URL
         db.session.add(setting)
         db.session.commit()
     except Exception as e:
