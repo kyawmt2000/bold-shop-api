@@ -290,54 +290,7 @@ with app.app_context():
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
-
-            # === user_settings 表（含 bio 字段） ===
-            if is_pg:
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS user_settings (
-                        id SERIAL PRIMARY KEY,
-                        email VARCHAR(200) UNIQUE,
-                        phone VARCHAR(64),
-                        public_profile BOOLEAN DEFAULT TRUE,
-                        show_following BOOLEAN DEFAULT TRUE,
-                        show_followers BOOLEAN DEFAULT TRUE,
-                        dm_who VARCHAR(16) DEFAULT 'all',
-                        blacklist_json TEXT,
-                        lang VARCHAR(8) DEFAULT 'zh',
-                        bio VARCHAR(120),
-                        updated_at TIMESTAMP
-                    )
-                """))
-                # 兜底补列
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)"))
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"))
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)"))
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)"))
-            else:
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS user_settings (
-                        id INTEGER PRIMARY KEY,
-                        email VARCHAR(200) UNIQUE,
-                        phone VARCHAR(64),
-                        public_profile BOOLEAN DEFAULT 1,
-                        show_following BOOLEAN DEFAULT 1,
-                        show_followers BOOLEAN DEFAULT 1,
-                        dm_who VARCHAR(16) DEFAULT 'all',
-                        blacklist_json TEXT,
-                        lang VARCHAR(8) DEFAULT 'zh',
-                        bio VARCHAR(120),
-                        updated_at TIMESTAMP
-                    )
-                """))
-                # 兜底补列
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)"))
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"))
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)"))
-                conn.execute(db.text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)"))
-
-            conn.commit()
+            
     except Exception:
         # 兜底，不中断启动
         pass
@@ -1128,30 +1081,6 @@ def outfits_delete(oid):
     db.session.commit()
     return jsonify({"ok": True, "deleted_id": oid})
 
-# ========= Outfit Feed =========
-# 兼容前端：/api/outfit/feed  和  /api/outfits/feed
-
-from flask import request, jsonify
-
-@app.route("/api/outfit/feed")
-@app.route("/api/outfits/feed")
-def outfits_feed():
-    """返回所有 outfit，按创建时间倒序"""
-    try:
-        limit = int(request.args.get("limit", 50))
-    except:
-        limit = 50
-
-    # 查询数据库
-    items = Outfit.query.order_by(Outfit.created_at.desc()).limit(limit).all()
-
-    # 直接调用你上面写好的 _outfit_to_dict 工具函数
-    # 它会自动读取 images_json 并转换成前端需要的 images 数组
-    return jsonify({
-        "items": [_outfit_to_dict(o) for o in items]
-    })
-
-
 # ==================== New Feed API (Unified) ====================
 @app.get("/api/outfits/feed")
 @app.get("/api/outfit/feed2")
@@ -1612,6 +1541,8 @@ def admin_migrate():
                         is_video BOOLEAN DEFAULT FALSE
                     )
                 """)
+
+                # user_settings + 补列
                 run("""
                     CREATE TABLE IF NOT EXISTS user_settings (
                         id SERIAL PRIMARY KEY,
@@ -1628,6 +1559,24 @@ def admin_migrate():
                     )
                 """)
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)")
+
+                # user_follows 关注关系表（Postgres）
+                run("""
+                    CREATE TABLE IF NOT EXISTS user_follows (
+                        id SERIAL PRIMARY KEY,
+                        follower_email VARCHAR(200) NOT NULL,
+                        target_email   VARCHAR(200) NOT NULL,
+                        created_at     TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                run("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS uix_follow_pair
+                    ON user_follows (follower_email, target_email)
+                """)
             else:
                 run("""
                     CREATE TABLE IF NOT EXISTS product_variants (
@@ -1679,44 +1628,27 @@ def admin_migrate():
                     )
                 """)
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)")
+                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)")
 
+                # user_follows（SQLite）
+                run("""
+                    CREATE TABLE IF NOT EXISTS user_follows (
+                        id INTEGER PRIMARY KEY,
+                        follower_email VARCHAR(200) NOT NULL,
+                        target_email   VARCHAR(200) NOT NULL,
+                        created_at     TIMESTAMP
+                    )
+                """)
+                run("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS uix_follow_pair
+                    ON user_follows (follower_email, target_email)
+                """)
         return jsonify({"ok": True, "results": results}), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-
-            # === user_follows 关注关系表 ===
-if is_pg:
-    conn.execute(db.text("""
-        CREATE TABLE IF NOT EXISTS user_follows (
-            id SERIAL PRIMARY KEY,
-            follower_email VARCHAR(200) NOT NULL,
-            target_email   VARCHAR(200) NOT NULL,
-            created_at     TIMESTAMP DEFAULT NOW()
-        )
-    """))
-    # 唯一 + 索引
-    conn.execute(db.text("""
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 FROM pg_constraint
-                WHERE conname = 'uix_follow_pair'
-            ) THEN
-                ALTER TABLE user_follows
-                ADD CONSTRAINT uix_follow_pair
-                UNIQUE (follower_email, target_email);
-            END IF;
-        END$$;
-    """))
-else:
-    conn.execute(db.text("""
-        CREATE TABLE IF NOT EXISTS user_follows (
-            id INTEGER PRIMARY KEY,
-            follower_email VARCHAR(200) NOT NULL,
-            target_email   VARCHAR(200) NOT NULL,
-            created_at     TIMESTAMP
-        )
-    """))
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
