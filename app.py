@@ -1267,36 +1267,71 @@ def _settings_to_dict(s: UserSetting):
 
 @app.get("/api/settings")
 def get_settings():
-    email = (request.args.get("email") or "").strip().lower()
-    if not email:
-        return jsonify({})
+    """
+    返回当前用户的设置（昵称、头像等）
+    GET /api/settings?email=xxx
+    """
+    try:
+        email = (request.args.get("email") or "").strip().lower()
+        if not email:
+            # 不给 email 就返回空
+            return jsonify({})
 
-    setting = UserSetting.query.filter(
-        func.lower(UserSetting.email) == email
-    ).first()
-    if not setting:
-        return jsonify({})
+        # 查 user_settings 表（注意用 func.lower 做不区分大小写匹配）
+        setting = (
+            UserSetting.query
+            .filter(func.lower(UserSetting.email) == email)
+            .first()
+        )
 
-    # 手动构造返回 JSON，注意 avatar 直接用 setting.avatar
-    data = {
-        "avatar":   setting.avatar or "",
-        "nickname": setting.nickname or "",
-        "bio":      setting.bio or "",
-        "birthday": setting.birthday or "",
-        "city":     setting.city or "",
-        "lang":     setting.lang or "en",
-        "email":    setting.email,
-        "public_profile": bool(getattr(setting, "public_profile", True)),
-        "show_followers": bool(getattr(setting, "show_followers", True)),
-        "show_following": bool(getattr(setting, "show_following", True)),
-        "updated_at": setting.updated_at.isoformat() if getattr(setting, "updated_at", None) else None,
-    }
+        if not setting:
+            # 没有记录时给一份默认的
+            return jsonify({
+                "email": email,
+                "nickname": "",
+                "avatar": "",
+                "bio": "",
+                "birthday": "",
+                "city": "",
+                "lang": "en",
+                "public_profile": True,
+                "show_followers": True,
+                "show_following": True,
+                "updated_at": None,
+            })
 
-    # ✅ 兼容老数据：如果是 data:image 开头，前端就当不存在（返回空字符串）
-    if data["avatar"] and data["avatar"].startswith("data:image"):
-        data["avatar"] = ""
+        # 小心所有字段都可能不存在 / 为 None，这里用 getattr 全包住
+        avatar = getattr(setting, "avatar", "") or ""
+        # 兼容旧数据：如果是 data:image 开头，视为无效，让前端走默认头像
+        if avatar.startswith("data:image"):
+            avatar = ""
 
-    return jsonify(data)
+        updated_at = getattr(setting, "updated_at", None)
+        if updated_at is not None and hasattr(updated_at, "isoformat"):
+            updated_at = updated_at.isoformat()
+        else:
+            updated_at = None
+
+        data = {
+            "email": setting.email,
+            "nickname": getattr(setting, "nickname", "") or "",
+            "avatar": avatar,
+            "bio": getattr(setting, "bio", "") or "",
+            "birthday": getattr(setting, "birthday", "") or "",
+            "city": getattr(setting, "city", "") or "",
+            "lang": getattr(setting, "lang", "en") or "en",
+            "public_profile": bool(getattr(setting, "public_profile", True)),
+            "show_followers": bool(getattr(setting, "show_followers", True)),
+            "show_following": bool(getattr(setting, "show_following", True)),
+            "updated_at": updated_at,
+        }
+
+        return jsonify(data)
+
+    except Exception as e:
+        # 防止再 500，出了问题就记录日志然后返回空对象
+        app.logger.exception("get_settings failed: %s", e)
+        return jsonify({}), 200
 
 @app.put("/api/settings")
 def put_settings():
