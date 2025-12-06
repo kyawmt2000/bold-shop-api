@@ -840,14 +840,26 @@ def product_update(pid):
     email = (data.get("merchant_email") or "").strip().lower()
     row = Product.query.get_or_404(pid)
     if email != (row.merchant_email or "").lower():
-        return jsonify({"message":"forbidden"}), 403
-    if "title" in data: row.title = (data["title"] or "").strip()
+        return jsonify({"message": "forbidden"}), 403
+
+    if "title" in data:
+        row.title = (data.get("title") or "").strip()
+
     if "price" in data:
         try:
-            row.price = int(data["price"] or 0)
+            row.price = int(data.get("price") or 0)
         except Exception:
-            return jsonify({"message":"price 不合法"}), 400
-    if "desc" in data:  row.desc  = (data["desc"] or "").strip()
+            return jsonify({"message": "price 不合法"}), 400
+
+    if "desc" in data:
+        row.desc = (data.get("desc") or "").strip()
+
+    if "gender" in data:
+        row.gender = (data.get("gender") or "").strip()
+
+    if "category" in data:
+        row.category = (data.get("category") or "").strip()
+
     db.session.commit()
     return jsonify(_product_to_dict(row))
 
@@ -1068,13 +1080,47 @@ def outfits_update(oid):
     author_email = (data.get("author_email") or "").strip().lower()
     if not author_email:
         return jsonify({"message": "author_email required"}), 400
+
     row = Outfit.query.get_or_404(oid)
     if (row.author_email or "").strip().lower() != author_email:
         return jsonify({"message": "forbidden"}), 403
+
+    # 标题 / 正文
     if "title" in data:
         row.title = (data.get("title") or "").strip()
     if "desc" in data:
         row.desc = (data.get("desc") or "").strip()
+
+    # 可见性：public / following / private
+    if "visibility" in data:
+        vis = (data.get("visibility") or "public").strip().lower()
+        if vis not in ("public", "following", "private"):
+            vis = "public"
+        row.visibility = vis
+
+    # 位置（可选）
+    if "location" in data:
+        row.location = (data.get("location") or "").strip() or None
+
+    # 风格 = tags（数组或字符串）
+    if "tags" in data:
+        tags = data.get("tags") or []
+        if isinstance(tags, str):
+            try:
+                j = json.loads(tags)
+                if isinstance(j, list):
+                    tags = j
+                else:
+                    tags = [tags]
+            except Exception:
+                tags = [
+                    x.strip()
+                    for x in tags.replace("，", ",").split(",")
+                    if x.strip()
+                ]
+        if isinstance(tags, list):
+            row.tags_json = json.dumps(tags, ensure_ascii=False)
+
     db.session.commit()
     return jsonify(_outfit_to_dict(row))
 
