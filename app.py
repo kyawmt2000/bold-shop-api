@@ -1300,10 +1300,9 @@ def get_settings():
                 "updated_at": None,
             })
 
-        # 小心所有字段都可能不存在 / 为 None，这里用 getattr 全包住
+        # 这里统一用 avatar_url 这个字段名
         avatar = getattr(setting, "avatar_url", "") or ""
-        # 兼容旧数据：如果是 data:image 开头，视为无效，让前端走默认头像
-        if avatar.startswith("data:image"):
+        if isinstance(avatar, str) and avatar.startswith("data:image"):
             avatar = ""
 
         updated_at = getattr(setting, "updated_at", None)
