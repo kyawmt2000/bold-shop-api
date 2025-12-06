@@ -1354,9 +1354,9 @@ def set_bio():
 @app.post("/api/profile/avatar")
 def upload_avatar():
     """
-    上传头像到 GCS 并写入用户设置:
+    上传头像到 GCS 并写入 user_settings.avatar：
     - form-data: email, avatar(文件)
-    - 返回: {"ok": True, "url": "..."}
+    - 返回: {"ok": True, "url": "https://storage.googleapis.com/....jpg"}
     """
     email = (request.form.get("email") or "").strip().lower()
     file = request.files.get("avatar")
@@ -1375,29 +1375,28 @@ def upload_avatar():
             {"message": "file_too_large", "limit": 5 * 1024 * 1024}
         ), 400
 
-    # 上传到 GCS 的 avatars/ 目录
+    # ✅ 真正上传到 GCS，返回一个 HTTPS URL
     url = upload_file_to_gcs(file, folder="avatars")
     if not url:
         return jsonify({"message": "upload_failed"}), 500
 
-    # ✅ 把头像地址写入 user_settings 表的 avatar_url 字段
+    # ✅ 把这个 URL 存到 user_settings.avatar 里（不再存 base64）
     try:
-        s = UserSetting.query.filter(
+        setting = UserSetting.query.filter(
             func.lower(UserSetting.email) == email
         ).first()
-        if not s:
-            s = UserSetting(email=email)
+        if not setting:
+            setting = UserSetting(email=email)
 
-        s.avatar_url = (url or "")[:500]
-        db.session.add(s)
+        setting.avatar = url  # 这里存的就是 GCS 的图片地址，例如 https://storage.googleapis.com/...
+        db.session.add(setting)
         db.session.commit()
     except Exception as e:
-        app.logger.exception("save avatar_url failed: %s", e)
-        # 数据库保存失败也先把 URL 给前端用
-        return jsonify(
-            {"ok": True, "url": url, "_warning": "db_save_failed"}
-        ), 200
+        app.logger.exception("save avatar failed: %s", e)
+        # 即使数据库异常，也先把 URL 返回给前端用
+        return jsonify({"ok": True, "url": url, "_warning": "db_save_failed"}), 200
 
+    # 返回给前端
     return jsonify({"ok": True, "url": url})
 
 
