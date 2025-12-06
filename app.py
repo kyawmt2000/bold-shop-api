@@ -1436,7 +1436,7 @@ def upload_avatar():
     if not url:
         return jsonify({"message": "upload_failed"}), 500
 
-    # ✅ 把 URL 写入 user_settings.avatar_url，保证 /api/settings 能读到
+    # ✅ 把 URL 写到 user_settings.avatar_url
     try:
         setting = UserSetting.query.filter(
             func.lower(UserSetting.email) == email
@@ -1449,7 +1449,7 @@ def upload_avatar():
         db.session.commit()
     except Exception as e:
         app.logger.exception("save avatar failed: %s", e)
-        # 即使存 DB 失败，也把 URL 返回给前端
+        # 存 DB 失败也先把 URL 返回给前端
         return jsonify({"ok": True, "url": url, "_warning": "db_save_failed"}), 200
 
     return jsonify({"ok": True, "url": url})
