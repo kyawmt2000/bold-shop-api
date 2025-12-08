@@ -134,6 +134,8 @@ class Outfit(db.Model):
     tags_json    = db.Column(db.Text)   # 原有 JSON 数组（字符串）
     likes        = db.Column(db.Integer, default=0)
     comments     = db.Column(db.Integer, default=0)
+    favorites    = db.Column(db.Integer, default=0)
+    shares       = db.Column(db.Integer, default=0)
     status       = db.Column(db.String(20), default="active")
 
     # === 新增的最小侵入式列：便于直接存 URL 数组（JSON 字符串）与元信息 ===
@@ -191,6 +193,8 @@ with app.app_context():
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS favorites INTEGER DEFAULT 0"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS shares INTEGER DEFAULT 0"))
 
     except Exception as e:
         print("❌ outfits ALTER TABLE failed:", e)
@@ -301,6 +305,8 @@ with app.app_context():
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS favorites INTEGER DEFAULT 0"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS shares INTEGER DEFAULT 0"))
             
     except Exception:
         # 兜底，不中断启动
@@ -541,6 +547,11 @@ def _outfit_to_dict(o: Outfit, req=None):
     except Exception:
         tags = []
 
+        likes     = o.likes or 0
+    comments  = o.comments or 0
+    favorites = getattr(o, "favorites", 0) or 0
+    shares    = getattr(o, "shares", 0) or 0
+
     return {
         "id": o.id,
         "created_at": (o.created_at.isoformat() if o.created_at else None),
@@ -551,8 +562,20 @@ def _outfit_to_dict(o: Outfit, req=None):
         "tags": tags,
         "images": images,
         "videos": videos,
-        "likes": o.likes or 0,
-        "comments": o.comments or 0,
+
+        # 旧字段（兼容）
+        "likes": likes,
+        "comments": comments,
+
+        # 新字段：*_count & saved
+        "likes_count": likes,
+        "comments_count": comments,
+        "favorites": favorites,
+        "favorites_count": favorites,
+        "saved_count": favorites,       # saved = favorites
+        "shares": shares,
+        "shares_count": shares,
+
         "status": o.status or "active",
         "location": getattr(o, "location", None),
         "visibility": getattr(o, "visibility", "public"),
@@ -1187,8 +1210,6 @@ def outfit_feed():
     items = [_outfit_to_dict(o) for o in rows]
     return jsonify({"items": items, "has_more": False})
 
-
-
 @app.post("/api/outfits/<int:oid>/like")
 def outfit_like(oid):
     delta = 1
@@ -1198,10 +1219,16 @@ def outfit_like(oid):
             delta = int(body["delta"])
     except Exception:
         pass
+
     row = Outfit.query.get_or_404(oid)
     row.likes = max(0, (row.likes or 0) + delta)
     db.session.commit()
-    return jsonify({"id": oid, "likes": row.likes})
+    likes = row.likes or 0
+    return jsonify({
+        "id": oid,
+        "likes": likes,
+        "likes_count": likes,
+    })
 
 @app.post("/api/outfits/<int:oid>/comment")
 def outfit_comment(oid):
@@ -1212,10 +1239,87 @@ def outfit_comment(oid):
             delta = int(body["delta"])
     except Exception:
         pass
+
     row = Outfit.query.get_or_404(oid)
     row.comments = max(0, (row.comments or 0) + delta)
     db.session.commit()
-    return jsonify({"id": oid, "comments": row.comments})
+    comments = row.comments or 0
+    return jsonify({
+        "id": oid,
+        "comments": comments,
+        "comments_count": comments,
+    })
+
+@app.post("/api/outfits/<int:oid>/favorite")
+def outfit_favorite(oid):
+    """
+    收藏 / 取消收藏：
+    body = {"delta": 1}  -> +1
+    body = {"delta": -1} -> -1
+    不传 delta 默认 +1
+    """
+    delta = 1
+    try:
+        body = request.get_json(silent=True) or {}
+        if "delta" in body:
+            delta = int(body["delta"])
+    except Exception:
+        pass
+
+    row = Outfit.query.get_or_404(oid)
+    row.favorites = max(0, (row.favorites or 0) + delta)
+    db.session.commit()
+    favorites = row.favorites or 0
+    return jsonify({
+        "id": oid,
+        "favorites": favorites,
+        "favorites_count": favorites,
+        "saved_count": favorites,
+    })
+
+@app.post("/api/outfits/<int:oid>/share")
+def outfit_share(oid):
+    """
+    分享次数统计：每点一次 +1，就算取消不了也没关系
+    """
+    delta = 1
+    try:
+        body = request.get_json(silent=True) or {}
+        if "delta" in body:
+            delta = int(body["delta"])
+    except Exception:
+        pass
+
+    row = Outfit.query.get_or_404(oid)
+    row.shares = max(0, (row.shares or 0) + delta)
+    db.session.commit()
+    shares = row.shares or 0
+    return jsonify({
+        "id": oid,
+        "shares": shares,
+        "shares_count": shares,
+    })
+
+@app.get("/api/outfits/<int:oid>/stats")
+def outfit_stats(oid):
+    row = Outfit.query.get_or_404(oid)
+    likes     = row.likes or 0
+    comments  = row.comments or 0
+    favorites = getattr(row, "favorites", 0) or 0
+    shares    = getattr(row, "shares", 0) or 0
+
+    return jsonify({
+        "id": row.id,
+        "likes": likes,
+        "likes_count": likes,
+        "comments": comments,
+        "comments_count": comments,
+        "favorites": favorites,
+        "favorites_count": favorites,
+        "saved_count": favorites,
+        "shares": shares,
+        "shares_count": shares,
+    })
 
 # ==================== Settings APIs（含 bio） ====================
 def _default_settings(email: str):
@@ -1572,6 +1676,8 @@ def admin_migrate():
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS visibility VARCHAR(20) DEFAULT 'public'")
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS images_json TEXT")
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT")
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS favorites INTEGER DEFAULT 0")
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS shares INTEGER DEFAULT 0")
 
             if is_pg:
                 run("""
