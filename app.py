@@ -1233,23 +1233,29 @@ def api_outfits_feed_list():
 
     q = Outfit.query
     try:
-        # 优先按 created_at 排序（如果库里有这个列）
+        # 尝试按 created_at 排序（如果库里有这个字段）
         rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
     except Exception as e:
-        # 如果旧库没有 created_at，就退回按 id 排序，避免 500
-        app.logger.exception("outfits_feed order_by created_at failed, fallback to id: %s", e)
-        rows = q.order_by(Outfit.id.desc()).limit(limit).all()
+        app.logger.exception(
+            "outfits_feed order_by created_at failed, fallback to id: %s", e
+        )
+
+        # ⭐ 关键：先把失败事务回滚掉，再执行下一条 SQL
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+
+        # 再按 id 倒序兜底
+        rows = Outfit.query.order_by(Outfit.id.desc()).limit(limit).all()
 
     items = []
     for o in rows:
         try:
             items.append(_outfit_to_dict(o))
         except Exception as e:
-            # 单条坏数据跳过，不让整条接口挂掉
             app.logger.exception(
-                "outfit_to_dict failed for id=%s: %s",
-                getattr(o, "id", None),
-                e,
+                "outfit_to_dict failed for id=%s: %s", getattr(o, "id", None), e
             )
 
     return jsonify({"items": items, "has_more": False})
