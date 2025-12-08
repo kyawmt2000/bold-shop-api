@@ -1269,9 +1269,6 @@ def outfits_delete(oid):
 @app.get("/api/outfits/feed")
 @app.get("/api/outfit/feed2")
 def api_outfits_feed_list():
-    """
-    返回完整穿搭列表，用于 outfit.html / myaccount.html 推荐 & 关注
-    """
     try:
         limit = min(200, int(request.args.get("limit") or 50))
     except Exception:
@@ -1279,20 +1276,16 @@ def api_outfits_feed_list():
 
     q = Outfit.query
     try:
-        # 尝试按 created_at 排序（如果库里有这个字段）
         rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
     except Exception as e:
         app.logger.exception(
-            "outfits_feed order_by created_at failed, fallback to id: %s", e
+            "outfits_feed order_by created_at failed, fallback to id desc: %s", e
         )
-
-        # ⭐ 关键：先把失败事务回滚掉，再执行下一条 SQL
         try:
             db.session.rollback()
         except Exception:
             pass
 
-        # 再按 id 倒序兜底
         rows = Outfit.query.order_by(Outfit.id.desc()).limit(limit).all()
 
     items = []
