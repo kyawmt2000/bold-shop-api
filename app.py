@@ -1214,24 +1214,84 @@ def outfits_delete(oid):
 
 # ==================== New Feed API (Unified) ====================
 @app.get("/api/outfits/feed")
-@app.get("/api/outfit/feed2")
 def api_outfits_feed_list():
     try:
-        limit = min(200, int(request.args.get("limit") or 50))
-    except Exception:
-        limit = 50
-
-    q = Outfit.query.filter_by(status="active")
-    rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
-
-    items = []
-    for o in rows:
+        # limit 参数
         try:
-            items.append(_outfit_to_dict(o))
-        except Exception as e:
-            app.logger.exception("outfit_to_dict failed for id=%s: %s", getattr(o, "id", None), e)
+            limit = min(200, int(request.args.get("limit") or 50))
+        except:
+            limit = 50
 
-    return jsonify({"items": items, "has_more": False})
+        # 查询数据库
+        rows = Outfit.query.filter_by(status="active") \
+            .order_by(Outfit.created_at.desc()) \
+            .limit(limit).all()
+
+        items = []
+        for o in rows:
+            # 完全避免任何异常
+            try:
+                item = {
+                    "id": o.id,
+                    "title": o.title or "OOTD",
+                    "desc": getattr(o, "desc", None) or getattr(o, "caption", None) or "",
+                    "author_email": getattr(o, "author_email", None),
+                    "author_name": getattr(o, "author_name", None),
+                    "author_avatar": getattr(o, "author_avatar", None),
+                    "created_at": o.created_at.isoformat() if o.created_at else None,
+
+                    # images 处理（最常见错误来源）
+                    "images": [],
+                    "tags": [],
+                }
+
+                # images_json OR image_urls OR cover
+                raw_images = None
+                for fld in ["images_json", "image_urls", "media_json"]:
+                    if hasattr(o, fld):
+                        raw_images = getattr(o, fld)
+                        if raw_images:
+                            break
+
+                if raw_images:
+                    try:
+                        parsed = json.loads(raw_images)
+                        if isinstance(parsed, list):
+                            # 若是简单字符串数组
+                            images = []
+                            for x in parsed:
+                                if isinstance(x, str):
+                                    images.append(x)
+                                elif isinstance(x, dict) and "url" in x:
+                                    images.append(x["url"])
+                            item["images"] = images
+                    except:
+                        pass
+
+                # tags_json 兼容
+                raw_tags = getattr(o, "tags_json", None)
+                if raw_tags:
+                    try:
+                        parsed = json.loads(raw_tags)
+                        if isinstance(parsed, list):
+                            item["tags"] = [str(x) for x in parsed]
+                    except:
+                        pass
+
+                items.append(item)
+
+            except Exception as e:
+                print("Skip broken outfit:", o.id, e)
+                continue
+
+        return jsonify({
+            "items": items,
+            "has_more": False
+        })
+
+    except Exception as e:
+        print("FATAL FEED ERROR:", e)
+        return jsonify({"items": [], "error": "feed_failed"}), 200
 
 
 @app.get("/api/outfit/feed")
