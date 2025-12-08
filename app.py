@@ -1231,17 +1231,26 @@ def api_outfits_feed_list():
     except Exception:
         limit = 50
 
-        # 暂时不要按 status 过滤，避免数据库没有 status 列报错
     q = Outfit.query
-    rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
+    try:
+        # 优先按 created_at 排序（如果库里有这个列）
+        rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
+    except Exception as e:
+        # 如果旧库没有 created_at，就退回按 id 排序，避免 500
+        app.logger.exception("outfits_feed order_by created_at failed, fallback to id: %s", e)
+        rows = q.order_by(Outfit.id.desc()).limit(limit).all()
 
     items = []
     for o in rows:
         try:
             items.append(_outfit_to_dict(o))
         except Exception as e:
-            # 单条坏数据直接跳过，避免整个接口挂掉
-            app.logger.exception("outfit_to_dict failed for id=%s: %s", getattr(o, "id", None), e)
+            # 单条坏数据跳过，不让整条接口挂掉
+            app.logger.exception(
+                "outfit_to_dict failed for id=%s: %s",
+                getattr(o, "id", None),
+                e,
+            )
 
     return jsonify({"items": items, "has_more": False})
 
