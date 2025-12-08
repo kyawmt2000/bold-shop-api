@@ -502,81 +502,88 @@ def _loads_arr(v):
     return [s.strip() for s in str(v).split(",") if s.strip()]
 
 def _outfit_to_dict(o: Outfit, req=None):
-    r = req or request
+    """统一把 Outfit 模型转换成前端用的 dict。"""
 
-    # 1) 优先：列里直接存的 URL 数组（JSON 字符串）
-    imgs_raw = _safe_json_loads(getattr(o, "images_json", None), [])
-    vids_raw = _safe_json_loads(getattr(o, "videos_json", None), [])
-
-    # 过滤掉 blob: 的临时链接
-    images = [
-        u for u in imgs_raw
-        if isinstance(u, str) and not u.startswith("blob:")
-    ]
-    videos = [
-        u for u in vids_raw
-        if isinstance(u, str) and not u.startswith("blob:")
-    ]
-
-    # 2) 如果列里没有 URL，再从 outfit_media 表里读出来，拼成可访问的 URL
-    if not images and not videos and getattr(o, "id", None):
-        from urllib.parse import urlencode
-
-        base = (r.url_root or "").rstrip("/")   # 例如 https://bold-api-sg.onrender.com
-        qs = {}
-        if API_KEY:
-            qs["key"] = API_KEY
-        qs_str = ("?" + urlencode(qs)) if qs else ""
-
-        media_rows = OutfitMedia.query.filter_by(
-            outfit_id=o.id
-        ).order_by(OutfitMedia.id).all()
-
-        for m in media_rows:
-            url = f"{base}/api/outfits/{o.id}/media/{m.id}{qs_str}"
-            if getattr(m, "is_video", False):
-                videos.append(url)
-            else:
-                images.append(url)
-
-    # 3) 标签
+    # 处理 tags
+    tags = []
     try:
-        tags = json.loads(getattr(o, "tags_json", "") or "[]")
-        if not isinstance(tags, list):
-            tags = []
+        raw_tags = getattr(o, "tags_json", None)
+        if raw_tags:
+            t = json.loads(raw_tags)
+            if isinstance(t, list):
+                tags = t
     except Exception:
         tags = []
 
-        likes     = o.likes or 0
-    comments  = o.comments or 0
-    favorites = getattr(o, "favorites", 0) or 0
-    shares    = getattr(o, "shares", 0) or 0
+    # 处理图片 / 视频（保持你原来逻辑的话，可以在这里改）
+    images = []
+    videos = []
+    try:
+        media = getattr(o, "media_json", None)
+        if media:
+            mlist = json.loads(media)
+        else:
+            mlist = []
+    except Exception:
+        mlist = []
 
-            return {
+    for m in mlist:
+        mtype = m.get("type")
+        url = m.get("url")
+        if not url:
+            continue
+        if mtype == "image":
+            images.append(url)
+        elif mtype == "video":
+            videos.append(url)
+
+    # 兼容旧字段：likes / comments 和 新字段 likes_count / comments_count
+    raw_likes = getattr(o, "likes", None)
+    raw_likes_count = getattr(o, "likes_count", None)
+    likes_val = raw_likes_count if raw_likes_count is not None else (raw_likes or 0)
+
+    raw_comments = getattr(o, "comments", None)
+    raw_comments_count = getattr(o, "comments_count", None)
+    comments_val = raw_comments_count if raw_comments_count is not None else (raw_comments or 0)
+
+    # 收藏 / 分享（可能只有 *_count，也可能旧字段叫 favorites / shares）
+    favorites_val = (
+        getattr(o, "favorites_count", None)
+        if getattr(o, "favorites_count", None) is not None
+        else (getattr(o, "favorites", 0) or 0)
+    )
+    shares_val = (
+        getattr(o, "shares_count", None)
+        if getattr(o, "shares_count", None) is not None
+        else (getattr(o, "shares", 0) or 0)
+    )
+
+    return {
         "id": o.id,
-        "created_at": (o.created_at.isoformat() if o.created_at else None),
-        "author_email": o.author_email,
-        "author_name": o.author_name,
-        "title": o.title or "OOTD",
-        "desc": o.desc,
+        "created_at": o.created_at.isoformat() if getattr(o, "created_at", None) else None,
+        "author_email": getattr(o, "author_email", None),
+        "author_name": getattr(o, "author_name", None),
+        "author_avatar": getattr(o, "author_avatar", None),
+
+        "title": getattr(o, "title", None) or "OOTD",
+        "desc": getattr(o, "desc", None),
         "tags": tags,
         "images": images,
         "videos": videos,
 
-        # 兼容旧字段：likes / comments
-        "likes": (getattr(o, "likes", 0) or getattr(o, "likes_count", 0) or 0),
-        "comments": (getattr(o, "comments", 0) or getattr(o, "comments_count", 0) or 0),
+        # 旧字段（给没改 JS 的地方用）
+        "likes": likes_val,
+        "comments": comments_val,
 
-        # ✅ 新增计数字段，前端用这几个
-        "likes_count": getattr(o, "likes_count", 0) or 0,
-        "comments_count": getattr(o, "comments_count", 0) or 0,
-        "favorites_count": getattr(o, "favorites_count", 0) or 0,
-        "shares_count": getattr(o, "shares_count", 0) or 0,
+        # 新计数字段（你前端要用的）
+        "likes_count": likes_val,
+        "comments_count": comments_val,
+        "favorites_count": favorites_val,
+        "shares_count": shares_val,
 
-        "status": o.status or "active",
+        "status": getattr(o, "status", "active") or "active",
         "location": getattr(o, "location", None),
-        "visibility": getattr(o, "visibility", "public"),
-        "author_avatar": getattr(o, "author_avatar", None),
+        "visibility": getattr(o, "visibility", "public") or "public",
     }
 
 
