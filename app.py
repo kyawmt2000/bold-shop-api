@@ -525,83 +525,90 @@ def _safe_json_list(raw):
     return []
 
 def _outfit_to_dict(o: Outfit, req=None):
-    """统一把 Outfit 模型转换成前端用的 dict（尽量容错，不要 500）"""
+    """统一把 Outfit 模型转换成前端用的 dict；兼容各种旧数据格式，不要抛异常。"""
 
     # ---------- tags ----------
     tags = []
     try:
-        tags = _safe_json_list(getattr(o, "tags_json", None))
+        raw_tags = getattr(o, "tags_json", None)
+        if raw_tags:
+            t = json.loads(raw_tags)
+            if isinstance(t, list):
+                tags = [str(x) for x in t]
     except Exception:
         tags = []
 
-    # 如果 tags_json 为空，再退回到 tags 字符串字段
-    if not tags and getattr(o, "tags", None):
-        try:
-            tags = _loads_arr(o.tags)
-        except Exception:
-            tags = []
-
     # ---------- images / videos ----------
-    images = []
-    videos = []
+    images: list[str] = []
+    videos: list[str] = []
 
-    # 1) 优先用新字段 images_json / videos_json
+    # 1) 优先使用新字段 images_json / videos_json（如果有）
     try:
-        images = _safe_json_list(getattr(o, "images_json", None))
-        videos = _safe_json_list(getattr(o, "videos_json", None))
+        raw_img = getattr(o, "images_json", None)
+        if raw_img:
+            parsed = json.loads(raw_img)
+            if isinstance(parsed, list):
+                images = [str(x) for x in parsed if x]
     except Exception:
-        images = images or []
-        videos = videos or []
+        pass
 
-    # 2) 如果还都是空的，再兼容 media_json 的各种老格式
+    try:
+        raw_vid = getattr(o, "videos_json", None)
+        if raw_vid:
+            parsed = json.loads(raw_vid)
+            if isinstance(parsed, list):
+                videos = [str(x) for x in parsed if x]
+    except Exception:
+        pass
+
+    # 2) 如果还都是空，再兼容旧字段 media_json
     if not images and not videos:
+        mlist = []
         try:
-            media_raw = getattr(o, "media_json", None)
-            mlist = _safe_json_list(media_raw)
-
-            tmp_imgs = []
-            tmp_vids = []
-
-            for m in mlist:
-                # 既兼容 dict，也兼容直接字符串
-                if isinstance(m, dict):
-                    mtype = (m.get("type") or "image").lower()
-                    url = m.get("url") or m.get("src")
-                else:
-                    mtype = "image"
-                    url = str(m)
-
-                if not url:
-                    continue
-
-                if mtype == "video":
-                    tmp_vids.append(url)
-                else:
-                    tmp_imgs.append(url)
-
-            if tmp_imgs:
-                images = tmp_imgs
-            if tmp_vids:
-                videos = tmp_vids
+            media = getattr(o, "media_json", None)
+            if media:
+                parsed = json.loads(media)
+                if isinstance(parsed, list):
+                    mlist = parsed
+                elif isinstance(parsed, dict):
+                    mlist = [parsed]
         except Exception:
-            pass
+            mlist = []
 
-    # ---------- 点赞 / 评论 / 收藏 / 分享 ----------
-    raw_likes = getattr(o, "likes_count", None)
-    if raw_likes is None:
-        raw_likes = getattr(o, "likes", 0) or 0
+        for m in mlist:
+            # 兼容两种情况：dict / str
+            if isinstance(m, dict):
+                mtype = (m.get("type") or "image").lower()
+                url = m.get("url") or m.get("src")
+            else:
+                mtype = "image"
+                url = str(m)
 
-    raw_comments = getattr(o, "comments_count", None)
-    if raw_comments is None:
-        raw_comments = getattr(o, "comments", 0) or 0
+            if not url:
+                continue
 
-    raw_fav = getattr(o, "favorites_count", None)
-    if raw_fav is None:
-        raw_fav = getattr(o, "favorites", 0) or 0
+            if mtype == "video":
+                videos.append(url)
+            else:
+                images.append(url)
 
-    raw_shares = getattr(o, "shares_count", None)
-    if raw_shares is None:
-        raw_shares = getattr(o, "shares", 0) or 0
+    # ---------- 点赞 / 评论 ----------
+    raw_likes = getattr(o, "likes", None)
+    raw_likes_count = getattr(o, "likes_count", None)
+    likes_val = raw_likes_count if raw_likes_count is not None else (raw_likes or 0)
+
+    raw_comments = getattr(o, "comments", None)
+    raw_comments_count = getattr(o, "comments_count", None)
+    comments_val = raw_comments_count if raw_comments_count is not None else (raw_comments or 0)
+
+    # ---------- 收藏 / 分享 ----------
+    favorites_val = getattr(o, "favorites_count", None)
+    if favorites_val is None:
+        favorites_val = getattr(o, "favorites", 0) or 0
+
+    shares_val = getattr(o, "shares_count", None)
+    if shares_val is None:
+        shares_val = getattr(o, "shares", 0) or 0
 
     return {
         "id": o.id,
@@ -618,15 +625,15 @@ def _outfit_to_dict(o: Outfit, req=None):
         "images": images,
         "videos": videos,
 
-        # 旧字段（前端旧代码也可以用）
-        "likes": raw_likes,
-        "comments": raw_comments,
+        # 旧字段（给没改 JS 的地方用）
+        "likes": likes_val,
+        "comments": comments_val,
 
         # 新计数字段
-        "likes_count": raw_likes,
-        "comments_count": raw_comments,
-        "favorites_count": raw_fav,
-        "shares_count": raw_shares,
+        "likes_count": likes_val,
+        "comments_count": comments_val,
+        "favorites_count": favorites_val,
+        "shares_count": shares_val,
 
         "status": getattr(o, "status", "active") or "active",
         "location": getattr(o, "location", None),
@@ -1214,84 +1221,28 @@ def outfits_delete(oid):
 
 # ==================== New Feed API (Unified) ====================
 @app.get("/api/outfits/feed")
+@app.get("/api/outfit/feed2")
 def api_outfits_feed_list():
+    """
+    返回完整穿搭列表，用于 outfit.html / myaccount.html 推荐 & 关注
+    """
     try:
-        # limit 参数
+        limit = min(200, int(request.args.get("limit") or 50))
+    except Exception:
+        limit = 50
+
+    q = Outfit.query.filter_by(status="active")
+    rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
+
+    items = []
+    for o in rows:
         try:
-            limit = min(200, int(request.args.get("limit") or 50))
-        except:
-            limit = 50
+            items.append(_outfit_to_dict(o))
+        except Exception as e:
+            # 单条坏数据直接跳过，避免整个接口挂掉
+            app.logger.exception("outfit_to_dict failed for id=%s: %s", getattr(o, "id", None), e)
 
-        # 查询数据库
-        rows = Outfit.query.filter_by(status="active") \
-            .order_by(Outfit.created_at.desc()) \
-            .limit(limit).all()
-
-        items = []
-        for o in rows:
-            # 完全避免任何异常
-            try:
-                item = {
-                    "id": o.id,
-                    "title": o.title or "OOTD",
-                    "desc": getattr(o, "desc", None) or getattr(o, "caption", None) or "",
-                    "author_email": getattr(o, "author_email", None),
-                    "author_name": getattr(o, "author_name", None),
-                    "author_avatar": getattr(o, "author_avatar", None),
-                    "created_at": o.created_at.isoformat() if o.created_at else None,
-
-                    # images 处理（最常见错误来源）
-                    "images": [],
-                    "tags": [],
-                }
-
-                # images_json OR image_urls OR cover
-                raw_images = None
-                for fld in ["images_json", "image_urls", "media_json"]:
-                    if hasattr(o, fld):
-                        raw_images = getattr(o, fld)
-                        if raw_images:
-                            break
-
-                if raw_images:
-                    try:
-                        parsed = json.loads(raw_images)
-                        if isinstance(parsed, list):
-                            # 若是简单字符串数组
-                            images = []
-                            for x in parsed:
-                                if isinstance(x, str):
-                                    images.append(x)
-                                elif isinstance(x, dict) and "url" in x:
-                                    images.append(x["url"])
-                            item["images"] = images
-                    except:
-                        pass
-
-                # tags_json 兼容
-                raw_tags = getattr(o, "tags_json", None)
-                if raw_tags:
-                    try:
-                        parsed = json.loads(raw_tags)
-                        if isinstance(parsed, list):
-                            item["tags"] = [str(x) for x in parsed]
-                    except:
-                        pass
-
-                items.append(item)
-
-            except Exception as e:
-                print("Skip broken outfit:", o.id, e)
-                continue
-
-        return jsonify({
-            "items": items,
-            "has_more": False
-        })
-
-    except Exception as e:
-        print("FATAL FEED ERROR:", e)
-        return jsonify({"items": [], "error": "feed_failed"}), 200
+    return jsonify({"items": items, "has_more": False})
 
 
 @app.get("/api/outfit/feed")
