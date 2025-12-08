@@ -695,7 +695,6 @@ def health(): return ok()
 from sqlalchemy import text  # 你 app.py 最上面已经有的话就不用重复加
 
 # ================== 旧库兼容：自动补充 outfits 缺的列 ==================
-@app.before_first_request
 def ensure_outfits_legacy_columns():
     """
     确保旧数据库里的 outfits 表有 favorites / shares 这些新列。
@@ -738,6 +737,13 @@ def ensure_outfits_legacy_columns():
     except Exception as e:
         app.logger.exception("ensure_outfits_legacy_columns failed: %s", e)
 
+# 在应用启动时，进入 app context 手动跑一次补列逻辑
+with app.app_context():
+    try:
+        ensure_outfits_legacy_columns()
+    except Exception as e:
+        app.logger.exception("run ensure_outfits_legacy_columns on startup failed: %s", e)
+        
 # -------------------- 一次性修复 outfits 表字段 --------------------
 @app.get("/api/debug/fix_outfits_columns")
 def debug_fix_outfits_columns():
