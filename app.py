@@ -1231,7 +1231,8 @@ def api_outfits_feed_list():
     except Exception:
         limit = 50
 
-    q = Outfit.query.filter_by(status="active")
+        # 暂时不要按 status 过滤，避免数据库没有 status 列报错
+    q = Outfit.query
     rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
 
     items = []
@@ -1258,7 +1259,7 @@ def outfit_feed():
         limit = 20
 
     qstr = (request.args.get("q") or "").strip().lower()
-    q = Outfit.query.filter_by(status="active")
+    q = Outfit.query   # 先不要按 status 过滤
 
     if qstr:
         like = f"%{qstr}%"
