@@ -552,7 +552,7 @@ def _outfit_to_dict(o: Outfit, req=None):
     favorites = getattr(o, "favorites", 0) or 0
     shares    = getattr(o, "shares", 0) or 0
 
-    return {
+        return {
         "id": o.id,
         "created_at": (o.created_at.isoformat() if o.created_at else None),
         "author_email": o.author_email,
@@ -563,18 +563,15 @@ def _outfit_to_dict(o: Outfit, req=None):
         "images": images,
         "videos": videos,
 
-        # 旧字段（兼容）
-        "likes": likes,
-        "comments": comments,
+        # 原来的 likes / comments（兼容旧字段）
+        "likes": (getattr(o, "likes", 0) or getattr(o, "likes_count", 0) or 0),
+        "comments": (getattr(o, "comments", 0) or getattr(o, "comments_count", 0) or 0),
 
-        # 新字段：*_count & saved
-        "likes_count": likes,
-        "comments_count": comments,
-        "favorites": favorites,
-        "favorites_count": favorites,
-        "saved_count": favorites,       # saved = favorites
-        "shares": shares,
-        "shares_count": shares,
+        # ✅ 新增的计数字段（前端用这几个）
+        "likes_count": getattr(o, "likes_count", 0) or 0,
+        "comments_count": getattr(o, "comments_count", 0) or 0,
+        "favorites_count": getattr(o, "favorites_count", 0) or 0,
+        "shares_count": getattr(o, "shares_count", 0) or 0,
 
         "status": o.status or "active",
         "location": getattr(o, "location", None),
@@ -1472,6 +1469,104 @@ def settings_blacklist():
     db.session.add(s)
     db.session.commit()
     return jsonify(_settings_to_dict(s))
+
+@app.route("/api/outfits/<int:outfit_id>/like", methods=["POST"])
+def toggle_like(outfit_id):
+    user_id = request.json.get("user_id")
+
+    outfit = Outfit.query.get(outfit_id)
+    if not outfit:
+        return jsonify({"error": "Outfit not found"}), 404
+
+    # 检查该用户是否已经点赞过
+    existing = db.session.execute(
+        text("SELECT 1 FROM likes WHERE outfit_id=:oid AND user_id=:uid"),
+        {"oid": outfit_id, "uid": user_id}
+    ).fetchone()
+
+    if existing:
+        # 取消点赞
+        db.session.execute(
+            text("DELETE FROM likes WHERE outfit_id=:oid AND user_id=:uid"),
+            {"oid": outfit_id, "uid": user_id}
+        )
+        outfit.likes_count = outfit.likes_count - 1 if outfit.likes_count > 0 else 0
+        db.session.commit()
+        return jsonify({"liked": False, "likes_count": outfit.likes_count})
+
+    else:
+        # 新点赞
+        db.session.execute(
+            text("INSERT INTO likes (outfit_id, user_id) VALUES (:oid, :uid)"),
+            {"oid": outfit_id, "uid": user_id}
+        )
+        outfit.likes_count += 1
+        db.session.commit()
+        return jsonify({"liked": True, "likes_count": outfit.likes_count})
+
+@app.route("/api/outfits/<int:outfit_id>/favorite", methods=["POST"])
+def toggle_favorite(outfit_id):
+    user_id = request.json.get("user_id")
+
+    outfit = Outfit.query.get(outfit_id)
+    if not outfit:
+        return jsonify({"error": "Outfit not found"}), 404
+
+    existing = db.session.execute(
+        text("SELECT 1 FROM favorites WHERE outfit_id=:oid AND user_id=:uid"),
+        {"oid": outfit_id, "uid": user_id}
+    ).fetchone()
+
+    if existing:
+        db.session.execute(
+            text("DELETE FROM favorites WHERE outfit_id=:oid AND user_id=:uid"),
+            {"oid": outfit_id, "uid": user_id}
+        )
+        outfit.favorites_count = max(outfit.favorites_count - 1, 0)
+        db.session.commit()
+        return jsonify({"saved": False, "favorites_count": outfit.favorites_count})
+
+    else:
+        db.session.execute(
+            text("INSERT INTO favorites (outfit_id, user_id) VALUES (:oid, :uid)"),
+            {"oid": outfit_id, "uid": user_id}
+        )
+        outfit.favorites_count += 1
+        db.session.commit()
+        return jsonify({"saved": True, "favorites_count": outfit.favorites_count})
+
+@app.route("/api/outfits/<int:outfit_id>/comment", methods=["POST"])
+def create_comment(outfit_id):
+    user_id = request.json.get("user_id")
+    content = request.json.get("content")
+
+    outfit = Outfit.query.get(outfit_id)
+    if not outfit:
+        return jsonify({"error": "Outfit not found"}), 404
+
+    db.session.execute(
+        text("""
+            INSERT INTO comments (outfit_id, user_id, content, created_at)
+            VALUES (:oid, :uid, :content, NOW())
+        """),
+        {"oid": outfit_id, "uid": user_id, "content": content}
+    )
+
+    outfit.comments_count += 1
+    db.session.commit()
+
+    return jsonify({"success": True, "comments_count": outfit.comments_count})
+
+@app.route("/api/outfits/<int:outfit_id>/share", methods=["POST"])
+def share_post(outfit_id):
+    outfit = Outfit.query.get(outfit_id)
+    if not outfit:
+        return jsonify({"error": "Outfit not found"}), 404
+
+    outfit.shares_count += 1
+    db.session.commit()
+
+    return jsonify({"shared": True, "shares_count": outfit.shares_count})
 
 @app.route("/api/follow", methods=["POST"])
 def api_follow():
