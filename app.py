@@ -177,6 +177,70 @@ class UserFollow(db.Model):
         db.UniqueConstraint("follower_email", "target_email", name="uix_follow_pair"),
     )
 
+class Notification(db.Model):
+    """
+    通知表：
+    - 谁（actor）对谁（user_email）的 outfit 做了什么（like / comment）
+    """
+    __tablename__ = "notifications"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # 收到通知的人（帖子作者）
+    user_email   = db.Column(db.String(200), index=True, nullable=False)
+
+    # 操作人（点赞 / 评论的人）
+    actor_email  = db.Column(db.String(200), index=True)
+    actor_name   = db.Column(db.String(200))
+    actor_avatar = db.Column(db.String(500))
+
+    # 关联的帖子
+    outfit_id    = db.Column(db.Integer, db.ForeignKey("outfits.id"), index=True)
+
+    # 操作类型：like / comment
+    action       = db.Column(db.String(32))
+
+    # 额外信息，比如评论内容
+    payload_json = db.Column(db.Text)
+
+    is_read      = db.Column(db.Boolean, default=False, index=True)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+def create_notification_for_outfit(outfit, action, actor=None, payload=None):
+    """
+    给帖子作者生成一条通知：
+    - action: "like" / "comment"
+    - actor: {"email","name","avatar"}
+    - payload: 任意 dict，比如 {"text": "..."}
+    """
+    try:
+        if not outfit or not outfit.author_email:
+            return
+
+        user_email = (outfit.author_email or "").strip().lower()
+        if not user_email:
+            return
+
+        actor = actor or {}
+        actor_email = (actor.get("email") or "").strip().lower() or None
+
+        # 自己给自己点/评就不通知了
+        if actor_email and actor_email == user_email:
+            return
+
+        n = Notification(
+            user_email=user_email,
+            actor_email=actor_email,
+            actor_name=actor.get("name") or None,
+            actor_avatar=actor.get("avatar") or None,
+            outfit_id=outfit.id,
+            action=action,
+            payload_json=json.dumps(payload or {}, ensure_ascii=False),
+        )
+        db.session.add(n)
+    except Exception as e:
+        app.logger.exception("create_notification_for_outfit failed: %s", e)
+
 # -------------------- 初始化：按方言兜底建表 --------------------
 with app.app_context():
     db.create_all()
@@ -1338,15 +1402,42 @@ def outfit_feed():
 @app.post("/api/outfits/<int:oid>/like")
 def outfit_like(oid):
     delta = 1
+    body = {}
+    actor = {}
+
     try:
         body = request.get_json(silent=True) or {}
         if "delta" in body:
             delta = int(body["delta"])
     except Exception:
-        pass
+        body = {}
+
+    # 点赞用户信息（前端可选传）
+    try:
+        actor = {
+            "email": body.get("actor_email"),
+            "name": body.get("actor_name"),
+            "avatar": body.get("actor_avatar"),
+        }
+    except Exception:
+        actor = {}
 
     row = Outfit.query.get_or_404(oid)
-    row.likes = max(0, (row.likes or 0) + delta)
+    old = row.likes or 0
+    row.likes = max(0, old + delta)
+
+    # 只有增加点赞时才发通知（取消赞 delta=-1 不发）
+    if delta > 0:
+        try:
+            create_notification_for_outfit(
+                row,
+                action="like",
+                actor=actor,
+                payload={"delta": delta},
+            )
+        except Exception as e:
+            app.logger.exception("create like notification failed: %s", e)
+
     db.session.commit()
     likes = row.likes or 0
     return jsonify({
@@ -1358,15 +1449,43 @@ def outfit_like(oid):
 @app.post("/api/outfits/<int:oid>/comment")
 def outfit_comment(oid):
     delta = 1
+    body = {}
+    actor = {}
+    comment_text = ""
+
     try:
         body = request.get_json(silent=True) or {}
         if "delta" in body:
             delta = int(body["delta"])
     except Exception:
-        pass
+        body = {}
+
+    try:
+        actor = {
+            "email": body.get("actor_email"),
+            "name": body.get("actor_name"),
+            "avatar": body.get("actor_avatar"),
+        }
+        comment_text = (body.get("text") or "")[:200]  # 评论内容可选，截断一下
+    except Exception:
+        actor = {}
+        comment_text = ""
 
     row = Outfit.query.get_or_404(oid)
-    row.comments = max(0, (row.comments or 0) + delta)
+    old = row.comments or 0
+    row.comments = max(0, old + delta)
+
+    if delta > 0:
+        try:
+            create_notification_for_outfit(
+                row,
+                action="comment",
+                actor=actor,
+                payload={"text": comment_text, "delta": delta},
+            )
+        except Exception as e:
+            app.logger.exception("create comment notification failed: %s", e)
+
     db.session.commit()
     comments = row.comments or 0
     return jsonify({
@@ -1374,6 +1493,72 @@ def outfit_comment(oid):
         "comments": comments,
         "comments_count": comments,
     })
+
+@app.get("/api/notifications")
+def api_notifications():
+    """
+    查询当前用户的通知：
+    GET /api/notifications?email=xxx&limit=50&unread=1
+    """
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"items": []})
+
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 100))
+
+    unread_only = (request.args.get("unread") or "").strip() in ("1", "true", "yes")
+
+    q = Notification.query.filter_by(user_email=email)
+    if unread_only:
+        q = q.filter_by(is_read=False)
+
+    rows = q.order_by(Notification.created_at.desc()).limit(limit).all()
+
+    items = []
+    for n in rows:
+        try:
+            payload = json.loads(n.payload_json or "{}")
+        except Exception:
+            payload = {}
+
+        items.append({
+            "id": n.id,
+            "user_email": n.user_email,
+            "actor_email": n.actor_email,
+            "actor_name": n.actor_name,
+            "actor_avatar": n.actor_avatar,
+            "outfit_id": n.outfit_id,
+            "action": n.action,          # like / comment
+            "payload": payload,          # {text, delta...}
+            "is_read": bool(n.is_read),
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        })
+
+    return jsonify({"items": items})
+
+@app.post("/api/notifications/mark_read")
+def api_notifications_mark_read():
+    """
+    标记通知为已读：
+    body: {"email": "...", "ids": [1,2,3]}  或只传 email 标记全部
+    """
+    body = request.get_json(silent=True) or {}
+    email = (body.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "error": "email required"}), 400
+
+    ids = body.get("ids") or []
+    q = Notification.query.filter_by(user_email=email)
+    if ids:
+        q = q.filter(Notification.id.in_(ids))
+
+    updated = q.update({Notification.is_read: True}, synchronize_session=False)
+    db.session.commit()
+    return jsonify({"ok": True, "updated": updated})
 
 @app.post("/api/outfits/<int:oid>/favorite")
 def outfit_favorite(oid):
