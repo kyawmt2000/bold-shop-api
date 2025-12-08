@@ -552,7 +552,7 @@ def _outfit_to_dict(o: Outfit, req=None):
     favorites = getattr(o, "favorites", 0) or 0
     shares    = getattr(o, "shares", 0) or 0
 
-        return {
+            return {
         "id": o.id,
         "created_at": (o.created_at.isoformat() if o.created_at else None),
         "author_email": o.author_email,
@@ -563,11 +563,11 @@ def _outfit_to_dict(o: Outfit, req=None):
         "images": images,
         "videos": videos,
 
-        # 原来的 likes / comments（兼容旧字段）
+        # 兼容旧字段：likes / comments
         "likes": (getattr(o, "likes", 0) or getattr(o, "likes_count", 0) or 0),
         "comments": (getattr(o, "comments", 0) or getattr(o, "comments_count", 0) or 0),
 
-        # ✅ 新增的计数字段（前端用这几个）
+        # ✅ 新增计数字段，前端用这几个
         "likes_count": getattr(o, "likes_count", 0) or 0,
         "comments_count": getattr(o, "comments_count", 0) or 0,
         "favorites_count": getattr(o, "favorites_count", 0) or 0,
