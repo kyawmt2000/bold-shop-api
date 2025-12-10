@@ -169,9 +169,9 @@ class UserSetting(db.Model):
     bio  = db.Column(db.String(120))  # 简介
     nickname   = db.Column(db.String(80))
     avatar_url = db.Column(db.String(500))
-    birthday   = db.Column(db.String(16))   # 直接存 'YYYY-MM-DD' 字符串就够用
+    birthday   = db.Column(db.String(16))   # 'YYYY-MM-DD'
     city       = db.Column(db.String(120))
-    gender     = db.Column(db.String(16))
+    gender     = db.Column(db.String(16))   # ⭐ 性别
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class UserFollow(db.Model):
@@ -1752,7 +1752,11 @@ def _default_settings(email: str):
     }
 
 def _settings_to_dict(s: UserSetting):
-    if not s: return None
+    """
+    把 UserSetting 转成前端需要的 JSON
+    """
+    if not s:
+        return None
     return {
         "email": s.email,
         "phone": s.phone or "",
@@ -1762,36 +1766,28 @@ def _settings_to_dict(s: UserSetting):
         "dm_who": s.dm_who or "all",
         "blacklist": _safe_json_loads(s.blacklist_json, []),
         "lang": s.lang or "zh",
-        "bio": (s.bio or ""),
+        "bio": s.bio or "",
         "nickname": s.nickname or "",
         "avatar": s.avatar_url or "",
         "birthday": s.birthday or "",
         "city": s.city or "",
-        "gender": getattr(s, "gender", "") or "", 
-        "updated_at": s.updated_at.isoformat() if s.updated_at else None
+        "gender": getattr(s, "gender", "") or "",   # ⭐ 这里安全地取 gender
+        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
     }
 
 @app.get("/api/settings")
-def get_settings():
+def api_get_settings():
     """
-    返回当前用户的设置（昵称、头像等）
-    GET /api/settings?email=xxx
+    根据 email 返回用户设置
     """
     try:
-        email = (request.args.get("email") or "").strip().lower()
+        email = request.args.get("email") or request.headers.get("X-User-Email")
         if not email:
-            # 不给 email 就返回空
-            return jsonify({})
+            return jsonify({"message": "missing_email"}), 400
 
-        # 查 user_settings 表（注意用 func.lower 做不区分大小写匹配）
-        setting = (
-            UserSetting.query
-            .filter(func.lower(UserSetting.email) == email)
-            .first()
-        )
-
-        if not setting:
-            # 没有记录时给一份默认的
+        s = UserSetting.query.filter_by(email=email).first()
+        if not s:
+            # 没有记录就返回一份默认配置
             return jsonify({
                 "email": email,
                 "nickname": "",
@@ -1799,13 +1795,21 @@ def get_settings():
                 "bio": "",
                 "birthday": "",
                 "city": "",
-                "gender": "",
+                "gender": "",            # ⭐ 默认空
                 "lang": "en",
                 "public_profile": True,
                 "show_followers": True,
                 "show_following": True,
                 "updated_at": None,
             })
+
+        # 有记录就格式化输出
+        data = _settings_to_dict(s)
+        return jsonify(data)
+
+    except Exception as e:
+        app.logger.exception("get /api/settings failed")
+        return jsonify({"message": "db_error", "detail": str(e)}), 500
 
         # 这里统一用 avatar_url 这个字段名
         avatar = getattr(setting, "avatar_url", "") or ""
@@ -1841,33 +1845,53 @@ def get_settings():
         return jsonify({}), 200
 
 @app.put("/api/settings")
-def put_settings():
-    data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    if not email: return jsonify({"message":"missing email"}), 400
-    _touch_user(email)
+def api_put_settings():
+    """
+    修改 / 创建 用户设置
+    前端 body 至少要有 email，其它字段可选
+    """
     try:
-        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-        if not s: s = UserSetting(email=email)
-        s.phone = (data.get("phone") or "").strip()
-        s.public_profile = bool(data.get("public_profile", s.public_profile if s.public_profile is not None else True))
-        s.show_following = bool(data.get("show_following", s.show_following if s.show_following is not None else True))
-        s.show_followers = bool(data.get("show_followers", s.show_followers if s.show_followers is not None else True))
-        dm = (data.get("dm_who") or "all").strip().lower()
-        s.dm_who = dm if dm in {"all","following"} else "all"
-        s.blacklist_json = _json_dumps(data.get("blacklist") or _safe_json_loads(s.blacklist_json, []))
-        s.lang = (data.get("lang") or s.lang or "zh").strip()[:8]
-        s.bio = (data.get("bio") or s.bio or "")[:120]
-        s.nickname = (data.get("nickname") or s.nickname or "")[:80]
-        s.avatar_url = (data.get("avatar") or s.avatar_url or "")[:500]
-        s.birthday = (data.get("birthday") or s.birthday or "")[:16]
-        s.city = (data.get("city") or s.city or "")[:120]
-        s.gender = (data.get("gender") or s.gender or "")[:16]
+        data = request.get_json(force=True, silent=True) or {}
+        email = (data.get("email") or "").strip()
+        if not email:
+            return jsonify({"message": "missing_email"}), 400
 
-        db.session.add(s); db.session.commit()
+        s = UserSetting.query.filter_by(email=email).first()
+        if not s:
+            s = UserSetting(email=email)
+
+        # 文本字段
+        s.nickname   = (data.get("nickname") or s.nickname or "")[:80]
+        s.bio        = (data.get("bio") or s.bio or "")[:120]
+        s.avatar_url = (data.get("avatar") or data.get("avatar_url") or s.avatar_url or "")[:500]
+        s.birthday   = (data.get("birthday") or s.birthday or "")[:16]
+        s.city       = (data.get("city") or s.city or "")[:120]
+        s.gender     = (data.get("gender") or s.gender or "")[:16]    # ⭐ 保存 gender
+        s.lang       = (data.get("lang") or s.lang or "zh")[:8]
+
+        # 布尔类
+        if "public_profile" in data:
+            s.public_profile = bool(data.get("public_profile"))
+        if "show_following" in data:
+            s.show_following = bool(data.get("show_following"))
+        if "show_followers" in data:
+            s.show_followers = bool(data.get("show_followers"))
+
+        # 黑名单
+        if "blacklist" in data:
+            try:
+                s.blacklist_json = json.dumps(data.get("blacklist") or [])
+            except Exception:
+                s.blacklist_json = "[]"
+
+        db.session.add(s)
+        db.session.commit()
+
         return jsonify(_settings_to_dict(s))
+
     except Exception as e:
-        return jsonify({"message":"db_error","detail":str(e)}), 500
+        app.logger.exception("put /api/settings failed")
+        return jsonify({"message": "db_error", "detail": str(e)}), 500
 
 
 @app.post("/api/settings/blacklist")
