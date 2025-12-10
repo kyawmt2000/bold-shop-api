@@ -171,6 +171,7 @@ class UserSetting(db.Model):
     avatar_url = db.Column(db.String(500))
     birthday   = db.Column(db.String(16))   # 直接存 'YYYY-MM-DD' 字符串就够用
     city       = db.Column(db.String(120))
+    gender     = db.Column(db.String(16))
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 class UserFollow(db.Model):
@@ -1766,6 +1767,7 @@ def _settings_to_dict(s: UserSetting):
         "avatar": s.avatar_url or "",
         "birthday": s.birthday or "",
         "city": s.city or "",
+        "gender": getattr(s, "gender", "") or "",
         "updated_at": s.updated_at.isoformat() if s.updated_at else None
     }
 
@@ -1797,6 +1799,7 @@ def get_settings():
                 "bio": "",
                 "birthday": "",
                 "city": "",
+                "gender": "",
                 "lang": "en",
                 "public_profile": True,
                 "show_followers": True,
@@ -1822,6 +1825,7 @@ def get_settings():
             "bio": getattr(setting, "bio", "") or "",
             "birthday": getattr(setting, "birthday", "") or "",
             "city": getattr(setting, "city", "") or "",
+            "gender": getattr(setting, "gender", "") or "",
             "lang": getattr(setting, "lang", "en") or "en",
             "public_profile": bool(getattr(setting, "public_profile", True)),
             "show_followers": bool(getattr(setting, "show_followers", True)),
@@ -1858,6 +1862,7 @@ def put_settings():
         s.avatar_url = (data.get("avatar") or s.avatar_url or "")[:500]
         s.birthday = (data.get("birthday") or s.birthday or "")[:16]
         s.city = (data.get("city") or s.city or "")[:120]
+        s.gender = (data.get("gender") or s.gender or "")[:16]
 
         db.session.add(s); db.session.commit()
         return jsonify(_settings_to_dict(s))
