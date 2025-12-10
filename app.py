@@ -807,6 +807,47 @@ with app.app_context():
         ensure_outfits_legacy_columns()
     except Exception as e:
         app.logger.exception("run ensure_outfits_legacy_columns on startup failed: %s", e)
+
+@app.get("/api/admin/users")
+def api_admin_users():
+    """
+    后台：用户列表
+    返回字段：
+    - id           账号ID（用 user_settings.id）
+    - email        邮箱
+    - username     昵称
+    - phone        手机号
+    - created_at   注册/更新时间
+    - gender       性别（目前表里没有就先 None）
+    - birthday     生日
+    """
+
+    # 如果你以后想用 ADMIN_API_KEY 来保护这个接口，可以打开下面这几行：
+    admin_key = os.getenv("ADMIN_API_KEY") or ""
+    if admin_key:
+        req_key = (request.headers.get("X-API-Key") or "").strip()
+        if req_key != admin_key:
+            return jsonify({"error": "forbidden"}), 403
+
+    rows = UserSetting.query.order_by(
+        UserSetting.updated_at.desc().nullslast()
+    ).limit(500).all()
+
+    out = []
+    for s in rows:
+        # 注册时间：优先 updated_at，然后 created_at，如果都没有就用当前时间
+        ts = s.updated_at or s.created_at or datetime.utcnow()
+        out.append({
+            "id": s.id,
+            "email": s.email,
+            "username": getattr(s, "nickname", None),
+            "phone": getattr(s, "phone", None),
+            "created_at": ts.isoformat(timespec="seconds"),
+            "gender": getattr(s, "gender", None),      # 你现在表里没有 gender 的话就是 None
+            "birthday": getattr(s, "birthday", None),
+        })
+
+    return jsonify(out)
         
 # -------------------- 一次性修复 outfits 表字段 --------------------
 @app.get("/api/debug/fix_outfits_columns")
