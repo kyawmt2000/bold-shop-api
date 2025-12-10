@@ -157,26 +157,29 @@ class User(db.Model):
 # === User Setting（新增 bio 字段） ===
 class UserSetting(db.Model):
     __tablename__ = "user_settings"
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(200), index=True, nullable=False, unique=True)
 
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+
+    # 个人信息
+    nickname = db.Column(db.String(80))
+    avatar_url = db.Column(db.String(500))
+    bio = db.Column(db.String(120))
+    birthday = db.Column(db.String(16))
+    city = db.Column(db.String(120))
+    gender = db.Column(db.String(16))
+
+    # 账户 / 隐私
     phone = db.Column(db.String(64))
     public_profile = db.Column(db.Boolean, default=True)
     show_following = db.Column(db.Boolean, default=True)
     show_followers = db.Column(db.Boolean, default=True)
-    dm_who = db.Column(db.String(16), default="all")  # all | following
-    blacklist_json = db.Column(db.Text)               # JSON 数组
-
+    dm_who = db.Column(db.String(16), default="all")
+    blacklist_json = db.Column(db.Text)
     lang = db.Column(db.String(8), default="zh")
-    bio  = db.Column(db.String(120))                  # 签名/简介
-    nickname   = db.Column(db.String(80))
-    avatar_url = db.Column(db.String(500))
-    birthday   = db.Column(db.String(16))             # 'YYYY-MM-DD'
-    city       = db.Column(db.String(120))
-    gender     = db.Column(db.String(16))             # 性别
 
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow,
-                           onupdate=datetime.utcnow)
+    # 更新时间
+    updated_at = db.Column(db.TIMESTAMP)
 
 class UserFollow(db.Model):
     __tablename__ = "user_follows"
@@ -1755,28 +1758,38 @@ def _default_settings(email: str):
         "updated_at": None
     }
 
-def _settings_to_dict(s: UserSetting):
-    """把 UserSetting 转成 JSON 返回给前端"""
-    if not s:
-        return None
+def _settings_to_dict(setting: UserSetting):
+    """
+    把 UserSetting 转成前端用的 dict
+    """
+    if not setting:
+        return {}
+
+    # avatar 统一用 avatar_url 存
+    avatar = getattr(setting, "avatar_url", "") or ""
+    if isinstance(avatar, str) and avatar.startswith("data:image"):
+        # 如果误存了 base64，这里可以选择置空，避免过大
+        avatar = ""
+
+    updated_at = getattr(setting, "updated_at", None)
+    if updated_at is not None and hasattr(updated_at, "isoformat"):
+        updated_at = updated_at.isoformat()
+    else:
+        updated_at = None
+
     return {
-        "email": s.email,
-        "phone": s.phone or "",
-        "public_profile": bool(s.public_profile),
-        "show_following": bool(s.show_following),
-        "show_followers": bool(s.show_followers),
-        "dm_who": s.dm_who or "all",
-        "blacklist": _safe_json_loads(s.blacklist_json, []),
-
-        "lang": s.lang or "zh",
-        "bio": s.bio or "",
-        "nickname": s.nickname or "",
-        "avatar": s.avatar_url or "",
-        "birthday": s.birthday or "",
-        "city": s.city or "",
-        "gender": s.gender or "",
-
-        "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        "email": setting.email,
+        "nickname": getattr(setting, "nickname", "") or "",
+        "avatar": avatar,  # 前端统一拿 avatar 字段
+        "bio": getattr(setting, "bio", "") or "",
+        "birthday": getattr(setting, "birthday", "") or "",
+        "city": getattr(setting, "city", "") or "",
+        "gender": getattr(setting, "gender", "") or "",
+        "lang": getattr(setting, "lang", "en") or "en",
+        "public_profile": bool(getattr(setting, "public_profile", True)),
+        "show_followers": bool(getattr(setting, "show_followers", True)),
+        "show_following": bool(getattr(setting, "show_following", True)),
+        "updated_at": updated_at,
     }
 
 @app.get("/api/settings")
@@ -1785,16 +1798,18 @@ def api_get_settings():
     根据 email 返回用户设置
     """
     try:
-        # 1. 拿 email
-        email = request.args.get("email") or request.headers.get("X-User-Email")
+        email = (
+            request.args.get("email")
+            or request.headers.get("X-User-Email")
+            or ""
+        ).strip().lower()
+
         if not email:
             return jsonify({"message": "missing_email"}), 400
 
-        # 2. 查表
         s = UserSetting.query.filter_by(email=email).first()
-
-        # 3. 没记录就返回默认
         if not s:
+            # 没有记录就返回默认配置（不强制写入 DB，等 PUT 再写）
             return jsonify({
                 "email": email,
                 "nickname": "",
@@ -1810,57 +1825,64 @@ def api_get_settings():
                 "updated_at": None,
             })
 
-        # 4. 有记录就用工具函数统一转 dict
         return jsonify(_settings_to_dict(s))
 
     except Exception as e:
         app.logger.exception("get /api/settings failed")
         return jsonify({"message": "db_error", "detail": str(e)}), 500
 
+from datetime import datetime  # 头部已经有就不用再加
+
 @app.put("/api/settings")
 def api_put_settings():
     """
-    保存用户设定：
-    前端传：email, nickname, avatar, bio, birthday, city, gender, lang...
+    更新用户设定：
+    - email（必须）
+    - nickname / bio / birthday / city / gender / lang
+    - avatar / avatar_url 任选其一（可以直接存字符串，后面你有需要再接 GCS）
+    - 隐私相关：public_profile / show_followers / show_following
     """
     try:
-        data = request.get_json(force=True, silent=True) or {}
-        email = (data.get("email") or "").strip()
+        data = request.get_json(force=True) or {}
+
+        email = (
+            data.get("email")
+            or request.args.get("email")
+            or request.headers.get("X-User-Email")
+            or ""
+        ).strip().lower()
+
         if not email:
             return jsonify({"message": "missing_email"}), 400
 
         s = UserSetting.query.filter_by(email=email).first()
         if not s:
             s = UserSetting(email=email)
+            db.session.add(s)
 
-        # 文本字段（有就覆盖，没有就保留旧值）
-        s.nickname   = (data.get("nickname") or s.nickname or "")[:80]
-        s.bio        = (data.get("bio") or s.bio or "")[:120]
-        s.avatar_url = (data.get("avatar") or data.get("avatar_url") or s.avatar_url or "")[:500]
-        s.birthday   = (data.get("birthday") or s.birthday or "")[:16]
-        s.city       = (data.get("city") or s.city or "")[:120]
-        s.gender     = (data.get("gender") or s.gender or "")[:16]
-        s.lang       = (data.get("lang") or s.lang or "zh")[:8]
+        # 基本信息
+        for field in ["nickname", "bio", "birthday", "city", "gender", "lang"]:
+            if field in data:
+                setattr(s, field, (data.get(field) or "").strip())
 
-        # 布尔类 & 黑名单（如果你需要）
-        if "public_profile" in data:
-            s.public_profile = bool(data.get("public_profile"))
-        if "show_following" in data:
-            s.show_following = bool(data.get("show_following"))
-        if "show_followers" in data:
-            s.show_followers = bool(data.get("show_followers"))
-        if "blacklist" in data:
-            try:
-                s.blacklist_json = json.dumps(data.get("blacklist") or [])
-            except Exception:
-                s.blacklist_json = "[]"
+        # avatar 相关（可以先不处理 GCS，直接存）
+        avatar_val = data.get("avatar_url") or data.get("avatar") or ""
+        if avatar_val:
+            s.avatar_url = avatar_val
 
-        db.session.add(s)
+        # 隐私设置（如果前端暂时没传，这里不会覆盖原值）
+        for field in ["public_profile", "show_followers", "show_following"]:
+            if field in data:
+                setattr(s, field, bool(data.get(field)))
+
+        s.updated_at = datetime.utcnow()
+
         db.session.commit()
-
         return jsonify(_settings_to_dict(s))
+
     except Exception as e:
-        app.logger.exception("PUT /api/settings failed")
+        db.session.rollback()
+        app.logger.exception("put /api/settings failed")
         return jsonify({"message": "db_error", "detail": str(e)}), 500
 
 
