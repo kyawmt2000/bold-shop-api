@@ -156,29 +156,38 @@ class User(db.Model):
 
 # === User Setting（新增 bio 字段） ===
 class UserSetting(db.Model):
+    """
+    Per-user settings model.  This table stores profile information such as
+    nickname, avatar, bio and location, plus privacy settings.  Each row is
+    uniquely keyed by the user's email.  Keeping these fields consistent
+    with the frontend prevents runtime errors when serializing/unserializing
+    JSON data.
+    """
     __tablename__ = "user_settings"
 
+    # Primary key and identity
     id = db.Column(db.Integer, primary_key=True)
+    # Each email maps to one settings record
     email = db.Column(db.String(120), unique=True, nullable=False)
 
-    # 个人信息
-    nickname = db.Column(db.String(80))
-    avatar_url = db.Column(db.String(500))
-    bio = db.Column(db.String(120))
-    birthday = db.Column(db.String(16))
-    city = db.Column(db.String(120))
-    gender = db.Column(db.String(16))
+    # Profile fields
+    nickname = db.Column(db.String(80))               # 用户昵称
+    avatar_url = db.Column(db.String(500))            # 头像 URL
+    bio = db.Column(db.String(120))                   # 个性签名
+    birthday = db.Column(db.String(16))               # 生日 YYYY-MM-DD
+    city = db.Column(db.String(120))                  # 城市
+    gender = db.Column(db.String(16))                 # 性别
 
-    # 账户 / 隐私
+    # Privacy / account settings
     phone = db.Column(db.String(64))
     public_profile = db.Column(db.Boolean, default=True)
     show_following = db.Column(db.Boolean, default=True)
     show_followers = db.Column(db.Boolean, default=True)
     dm_who = db.Column(db.String(16), default="all")
-    blacklist_json = db.Column(db.Text)
+    blacklist_json = db.Column(db.Text)               # 黑名单 JSON 字符串
     lang = db.Column(db.String(8), default="zh")
 
-    # 更新时间
+    # Record last update timestamp for concurrency control
     updated_at = db.Column(db.TIMESTAMP)
 
 class UserFollow(db.Model):
@@ -1758,37 +1767,40 @@ def _default_settings(email: str):
         "updated_at": None
     }
 
-def _settings_to_dict(setting: UserSetting):
+def _settings_to_dict(s: UserSetting) -> dict:
     """
-    把 UserSetting 转成前端用的 dict
+    Convert a UserSetting object into a JSON-serializable dict for the frontend.
+
+    We normalize the avatar field to always come from `avatar_url` and remove any
+    accidental base64 data URI. Missing values are returned as empty strings.
     """
-    if not setting:
+    if not s:
         return {}
 
-    # avatar 统一用 avatar_url 存
-    avatar = getattr(setting, "avatar_url", "") or ""
+    # Normalize the avatar to avoid storing data URIs inadvertently
+    avatar = (s.avatar_url or "")
     if isinstance(avatar, str) and avatar.startswith("data:image"):
-        # 如果误存了 base64，这里可以选择置空，避免过大
         avatar = ""
 
-    updated_at = getattr(setting, "updated_at", None)
-    if updated_at is not None and hasattr(updated_at, "isoformat"):
-        updated_at = updated_at.isoformat()
-    else:
+    updated_at = None
+    try:
+        if s.updated_at is not None and hasattr(s.updated_at, "isoformat"):
+            updated_at = s.updated_at.isoformat()
+    except Exception:
         updated_at = None
 
     return {
-        "email": setting.email,
-        "nickname": getattr(setting, "nickname", "") or "",
-        "avatar": avatar,  # 前端统一拿 avatar 字段
-        "bio": getattr(setting, "bio", "") or "",
-        "birthday": getattr(setting, "birthday", "") or "",
-        "city": getattr(setting, "city", "") or "",
-        "gender": getattr(setting, "gender", "") or "",
-        "lang": getattr(setting, "lang", "en") or "en",
-        "public_profile": bool(getattr(setting, "public_profile", True)),
-        "show_followers": bool(getattr(setting, "show_followers", True)),
-        "show_following": bool(getattr(setting, "show_following", True)),
+        "email": s.email,
+        "nickname": s.nickname or "",
+        "avatar": avatar,
+        "bio": s.bio or "",
+        "birthday": s.birthday or "",
+        "city": s.city or "",
+        "gender": s.gender or "",
+        "lang": s.lang or "en",
+        "public_profile": bool(s.public_profile) if s.public_profile is not None else True,
+        "show_followers": bool(s.show_followers) if s.show_followers is not None else True,
+        "show_following": bool(s.show_following) if s.show_following is not None else True,
         "updated_at": updated_at,
     }
 
