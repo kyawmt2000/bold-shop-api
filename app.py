@@ -145,6 +145,14 @@ class Outfit(db.Model):
     images_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
     videos_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
 
+class User(db.Model):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(200), unique=True, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    last_seen_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
 
 # === User Setting（新增 bio 字段） ===
 class UserSetting(db.Model):
@@ -430,6 +438,29 @@ def upload_to_gcs_product(file, filename):
         app.logger.exception("upload_to_gcs_product failed: %s", e)
         return None
 
+def _touch_user(email: str):
+    """
+    确保 users 表里有这条记录：
+    - 第一次看到这个 email：创建新用户
+    - 以后再看到：只更新 last_seen_at
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    try:
+        row = User.query.filter(func.lower(User.email) == email).first()
+        now = datetime.utcnow()
+        if not row:
+            row = User(email=email, created_at=now, last_seen_at=now)
+            db.session.add(row)
+        else:
+            row.last_seen_at = now
+        db.session.commit()
+        return row
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("_touch_user failed: %s", e)
+        return None
 
 def upload_file_to_gcs(file, folder="outfits"):
     """
@@ -810,43 +841,49 @@ with app.app_context():
 
 @app.get("/api/admin/users")
 def api_admin_users():
+    """
+    后台用户列表：
+    - 主来源：users 表（真正注册/出现过的账号）
+    - 额外信息：user_settings 里的昵称、手机、生日等
+    """
+
+    # 如果你想用 ADMIN_API_KEY 做保护，可以在环境变量里配一个
+    admin_key = os.getenv("ADMIN_API_KEY") or ""
+    if admin_key:
+        req_key = (request.headers.get("X-API-Key") or "").strip()
+        if req_key != admin_key:
+            return jsonify({"error": "forbidden"}), 403
+
     try:
-        rows = UserSetting.query.limit(500).all()
+        q = (
+            db.session
+            .query(User, UserSetting)
+            .outerjoin(
+                UserSetting,
+                func.lower(User.email) == func.lower(UserSetting.email)
+            )
+            .order_by(User.created_at.desc())
+            .limit(500)
+        )
+
+        out = []
+        for u, s in q.all():
+            created_at = u.created_at.isoformat(timespec="seconds") if u.created_at else None
+
+            out.append({
+                "id": u.id,
+                "email": u.email,
+                "username": getattr(s, "nickname", None),
+                "phone": getattr(s, "phone", None),
+                "created_at": created_at,
+                "gender": getattr(s, "gender", None) if hasattr(s, "gender") else None,
+                "birthday": getattr(s, "birthday", None),
+            })
+
+        return jsonify(out)
     except Exception as e:
-        return jsonify({
-            "error": "db query failed",
-            "detail": str(e)
-        }), 500
-
-    out = []
-
-    for s in rows:
-        # ✅ 只保证 id / email，一定存在
-        uid = getattr(s, "id", None)
-        email = getattr(s, "email", None)
-
-        # ✅ 其他字段全部安全兜底
-        username = getattr(s, "nickname", None) or getattr(s, "username", None)
-        phone = getattr(s, "phone", None)
-        birthday = getattr(s, "birthday", None)
-
-        created_at = None
-        if hasattr(s, "created_at") and s.created_at:
-            created_at = s.created_at.isoformat()
-        elif hasattr(s, "updated_at") and s.updated_at:
-            created_at = s.updated_at.isoformat()
-
-        out.append({
-            "id": uid,
-            "email": email,
-            "username": username,
-            "phone": phone,
-            "created_at": created_at,
-            "gender": None,     # ✅ 你现在表里没有，别碰
-            "birthday": birthday
-        })
-
-    return jsonify(out)
+        app.logger.exception("api_admin_users failed: %s", e)
+        return jsonify({"error": "db_error", "detail": str(e)}), 500
 
     # 如果你以后想用 ADMIN_API_KEY 来保护这个接口，可以打开下面这几行：
     admin_key = os.getenv("ADMIN_API_KEY") or ""
@@ -1804,6 +1841,7 @@ def put_settings():
     data = request.get_json(silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     if not email: return jsonify({"message":"missing email"}), 400
+    _touch_user(email)
     try:
         s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
         if not s: s = UserSetting(email=email)
