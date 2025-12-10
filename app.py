@@ -810,17 +810,43 @@ with app.app_context():
 
 @app.get("/api/admin/users")
 def api_admin_users():
-    """
-    后台：用户列表
-    返回字段：
-    - id           账号ID（用 user_settings.id）
-    - email        邮箱
-    - username     昵称
-    - phone        手机号
-    - created_at   注册/更新时间
-    - gender       性别（目前表里没有就先 None）
-    - birthday     生日
-    """
+    try:
+        rows = UserSetting.query.limit(500).all()
+    except Exception as e:
+        return jsonify({
+            "error": "db query failed",
+            "detail": str(e)
+        }), 500
+
+    out = []
+
+    for s in rows:
+        # ✅ 只保证 id / email，一定存在
+        uid = getattr(s, "id", None)
+        email = getattr(s, "email", None)
+
+        # ✅ 其他字段全部安全兜底
+        username = getattr(s, "nickname", None) or getattr(s, "username", None)
+        phone = getattr(s, "phone", None)
+        birthday = getattr(s, "birthday", None)
+
+        created_at = None
+        if hasattr(s, "created_at") and s.created_at:
+            created_at = s.created_at.isoformat()
+        elif hasattr(s, "updated_at") and s.updated_at:
+            created_at = s.updated_at.isoformat()
+
+        out.append({
+            "id": uid,
+            "email": email,
+            "username": username,
+            "phone": phone,
+            "created_at": created_at,
+            "gender": None,     # ✅ 你现在表里没有，别碰
+            "birthday": birthday
+        })
+
+    return jsonify(out)
 
     # 如果你以后想用 ADMIN_API_KEY 来保护这个接口，可以打开下面这几行：
     admin_key = os.getenv("ADMIN_API_KEY") or ""
