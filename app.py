@@ -1767,7 +1767,7 @@ def _settings_to_dict(s: UserSetting):
         "avatar": s.avatar_url or "",
         "birthday": s.birthday or "",
         "city": s.city or "",
-        "gender": s.getattr(s, "gender", "") or "",
+        "gender": getattr(s, "gender", "") or "", 
         "updated_at": s.updated_at.isoformat() if s.updated_at else None
     }
 
