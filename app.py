@@ -2278,7 +2278,6 @@ def admin_migrate():
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)")
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)")
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)")
-                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS gender VARCHAR(16)")
 
                 # user_follows 关注关系表（Postgres）
                 run("""
@@ -2348,7 +2347,6 @@ def admin_migrate():
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)")
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)")
                 run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)")
-                run("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS gender VARCHAR(16)")
 
                 # user_follows（SQLite）
                 run("""
