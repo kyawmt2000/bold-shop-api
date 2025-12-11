@@ -1804,16 +1804,21 @@ def _settings_to_dict(s: UserSetting) -> dict:
         "updated_at": updated_at,
     }
 
+from datetime import datetime
+from sqlalchemy import func
+from flask import current_app, request, jsonify
+
+# ===========================
+#  新版：获取用户设定
+# ===========================
 @app.get("/api/settings")
 def api_get_settings():
     """
     根据 email 返回用户设置：
-    - 数据库正常：返回真实设置（通过 _settings_to_dict）
-    - 数据库出错 / 没有记录：返回一份默认配置
-    👉 不再返回 500
+    - 找不到记录：返回一份默认配置
+    - avatar 使用 avatar_url 字段（如果有）
+    - 新增 phone 字段（如果模型有该字段则读取）
     """
-    from flask import current_app
-
     def default_payload(email: str):
         return {
             "email": email,
@@ -1823,6 +1828,7 @@ def api_get_settings():
             "birthday": "",
             "city": "",
             "gender": "",
+            "phone": "",
             "lang": "en",
             "public_profile": True,
             "show_followers": True,
@@ -1831,18 +1837,21 @@ def api_get_settings():
         }
 
     # 1) 取 email
-    email = (request.args.get("email") or
-             request.headers.get("X-User-Email") or "").strip().lower()
+    email = (
+        request.args.get("email")
+        or request.headers.get("X-User-Email")
+        or ""
+    ).strip().lower()
+
     if not email:
         return jsonify({"message": "missing_email"}), 400
 
-    # 2) 访问数据库可能会失败，所以单独 try
+    # 2) 查数据库（出错时也不要 500）
     try:
         s = UserSetting.query.filter(
             func.lower(UserSetting.email) == email
         ).first()
     except Exception as e:
-        # 数据库挂了：记日志，但不要 500，直接给默认
         current_app.logger.exception("GET /api/settings DB error: %s", e)
         return jsonify(default_payload(email)), 200
 
@@ -1850,126 +1859,178 @@ def api_get_settings():
     if not s:
         return jsonify(default_payload(email)), 200
 
-    # 4) 用现有的 _settings_to_dict 序列化；如果这里再出错，也给默认
+    # 4) 组装返回（尽量兼容之前结构）
     try:
-        data = _settings_to_dict(s)
-        # 确保 email 至少是当前这个
-        if not data.get("email"):
-            data["email"] = email
+        # 如果你项目里还有 _settings_to_dict，可以先用它打底
+        try:
+            data = _settings_to_dict(s)
+        except Exception:
+            data = {}
+
+        data["email"] = email
+
+        # avatar：优先用 avatar_url / avatar
+        avatar_val = (
+            getattr(s, "avatar_url", None)
+            or getattr(s, "avatar", None)
+            or data.get("avatar")
+            or ""
+        )
+        data["avatar"] = avatar_val
+
+        # 基本字段兜底
+        data.setdefault("nickname", getattr(s, "nickname", "") or "")
+        data.setdefault("bio", getattr(s, "bio", "") or "")
+        data.setdefault("birthday", getattr(s, "birthday", "") or "")
+        data.setdefault("city", getattr(s, "city", "") or "")
+        data.setdefault("gender", getattr(s, "gender", "") or "")
+        data.setdefault("lang", getattr(s, "lang", "en") or "en")
+        data.setdefault("public_profile", bool(getattr(s, "public_profile", True)))
+        data.setdefault("show_followers", bool(getattr(s, "show_followers", True)))
+        data.setdefault("show_following", bool(getattr(s, "show_following", True)))
+
+        # phone（如果模型有这个字段）
+        if hasattr(s, "phone"):
+            data["phone"] = getattr(s, "phone", "") or ""
+        else:
+            # 没有这个字段的话，也至少给前端一个 key
+            data.setdefault("phone", "")
+
+        # 更新时间
+        data["updated_at"] = getattr(s, "updated_at", None)
+
         return jsonify(data), 200
+
     except Exception as e:
         current_app.logger.exception("GET /api/settings serialize error: %s", e)
         return jsonify(default_payload(email)), 200
 
-@app.put("/api/settings")
-def api_put_settings():
+
+# ===========================
+#  新版：保存用户设定
+# ===========================
+@app.post("/api/settings")
+def api_post_settings():
     """
-    更新用户设定：
-    - email（必须）
-    - nickname / bio / birthday / city / gender / lang
-    - avatar / avatar_url 任选其一（可以直接存字符串，后面你有需要再接 GCS）
-    - 隐私相关：public_profile / show_followers / show_following
+    保存 / 更新用户设定（配合 setting.html 使用）：
+
+    Body JSON:
+    {
+      "email": "xxx@gmail.com",   # 必填
+      "nickname": "...",
+      "bio": "...",
+      "gender": "male|female|other|''",
+      "birthday": "YYYY-MM-DD",
+      "phone": "...",
+      "avatar": "https://gcs-url...",  # 头像 URL（由 /api/profile/avatar 返回）
+      // 以下可选：
+      "city": "...",
+      "lang": "en|zh|...",
+      "public_profile": true/false,
+      "show_followers": true/false,
+      "show_following": true/false
+    }
     """
     try:
         data = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"message": "invalid_json"}), 400
 
-        email = (
-            data.get("email")
-            or request.args.get("email")
-            or request.headers.get("X-User-Email")
-            or ""
-        ).strip().lower()
+    # 1) email
+    email = (
+        data.get("email")
+        or request.args.get("email")
+        or request.headers.get("X-User-Email")
+        or ""
+    ).strip().lower()
 
-        if not email:
-            return jsonify({"message": "missing_email"}), 400
+    if not email:
+        return jsonify({"message": "missing_email"}), 400
 
-        s = UserSetting.query.filter_by(email=email).first()
+    try:
+        # 2) 找 / 建记录（不区分大小写）
+        s = UserSetting.query.filter(
+            func.lower(UserSetting.email) == email
+        ).first()
         if not s:
             s = UserSetting(email=email)
             db.session.add(s)
 
-        # 基本信息
+        # 3) 基本信息（去掉前后空格）
         for field in ["nickname", "bio", "birthday", "city", "gender", "lang"]:
             if field in data:
-                setattr(s, field, (data.get(field) or "").strip())
+                value = (data.get(field) or "").strip()
+                setattr(s, field, value)
 
-        # avatar 相关（可以先不处理 GCS，直接存）
-        avatar_val = data.get("avatar_url") or data.get("avatar") or ""
+        # 4) phone 字段（如果模型有）
+        if "phone" in data and hasattr(s, "phone"):
+            s.phone = (data.get("phone") or "").strip()
+
+        # 5) avatar URL（由前端 /api/profile/avatar 上传后返回的 url）
+        avatar_val = data.get("avatar") or data.get("avatar_url") or ""
         if avatar_val:
-            s.avatar_url = avatar_val
+            if hasattr(s, "avatar_url"):
+                s.avatar_url = avatar_val
+            else:
+                # 某些旧表可能直接叫 avatar
+                if hasattr(s, "avatar"):
+                    s.avatar = avatar_val
 
-        # 隐私设置（如果前端暂时没传，这里不会覆盖原值）
+        # 6) 隐私相关（如果前端没传就不改原来的）
+        def to_bool(v):
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, str):
+                return v.strip().lower() in ("1", "true", "yes", "on")
+            if isinstance(v, (int, float)):
+                return bool(v)
+            return False
+
         for field in ["public_profile", "show_followers", "show_following"]:
             if field in data:
-                setattr(s, field, bool(data.get(field)))
+                setattr(s, field, to_bool(data.get(field)))
 
+        # 7) 更新时间
         s.updated_at = datetime.utcnow()
 
         db.session.commit()
-        return jsonify(_settings_to_dict(s))
+
+        # 8) 返回最新设置（结构跟 GET 一样）
+        try:
+            resp = _settings_to_dict(s)
+        except Exception:
+            resp = {}
+
+        resp["email"] = email
+
+        avatar_val = (
+            getattr(s, "avatar_url", None)
+            or getattr(s, "avatar", None)
+            or resp.get("avatar")
+            or ""
+        )
+        resp["avatar"] = avatar_val
+        resp["nickname"] = getattr(s, "nickname", "") or ""
+        resp["bio"] = getattr(s, "bio", "") or ""
+        resp["birthday"] = getattr(s, "birthday", "") or ""
+        resp["city"] = getattr(s, "city", "") or ""
+        resp["gender"] = getattr(s, "gender", "") or ""
+        resp["lang"] = getattr(s, "lang", "en") or "en"
+        resp["public_profile"] = bool(getattr(s, "public_profile", True))
+        resp["show_followers"] = bool(getattr(s, "show_followers", True))
+        resp["show_following"] = bool(getattr(s, "show_following", True))
+        if hasattr(s, "phone"):
+            resp["phone"] = getattr(s, "phone", "") or ""
+        else:
+            resp.setdefault("phone", "")
+        resp["updated_at"] = getattr(s, "updated_at", None)
+
+        return jsonify(resp), 200
 
     except Exception as e:
         db.session.rollback()
-        app.logger.exception("put /api/settings failed")
+        current_app.logger.exception("POST /api/settings failed: %s", e)
         return jsonify({"message": "db_error", "detail": str(e)}), 500
-
-
-@app.post("/api/settings/blacklist")
-def settings_blacklist():
-    """body: {email, op: add|remove, value: 'someone@example.com'}"""
-    body = request.get_json(silent=True) or {}
-    email = (body.get("email") or "").strip().lower()
-    op = (body.get("op") or "").strip().lower()
-    value = (body.get("value") or "").strip()
-    if not email or not op or not value:
-        return jsonify({"message":"missing params"}), 400
-    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-    if not s: s = UserSetting(email=email)
-    lst = _safe_json_loads(s.blacklist_json, [])
-    if op == "add":
-        if value not in lst: lst.append(value)
-    elif op == "remove":
-        lst = [x for x in lst if x != value]
-    else:
-        return jsonify({"message":"op must be add/remove"}), 400
-    s.blacklist_json = _json_dumps(lst)
-    db.session.add(s)
-    db.session.commit()
-    return jsonify(_settings_to_dict(s))
-
-@app.route("/api/outfits/<int:outfit_id>/like", methods=["POST"])
-def toggle_like(outfit_id):
-    user_id = request.json.get("user_id")
-
-    outfit = Outfit.query.get(outfit_id)
-    if not outfit:
-        return jsonify({"error": "Outfit not found"}), 404
-
-    # 检查该用户是否已经点赞过
-    existing = db.session.execute(
-        text("SELECT 1 FROM likes WHERE outfit_id=:oid AND user_id=:uid"),
-        {"oid": outfit_id, "uid": user_id}
-    ).fetchone()
-
-    if existing:
-        # 取消点赞
-        db.session.execute(
-            text("DELETE FROM likes WHERE outfit_id=:oid AND user_id=:uid"),
-            {"oid": outfit_id, "uid": user_id}
-        )
-        outfit.likes_count = outfit.likes_count - 1 if outfit.likes_count > 0 else 0
-        db.session.commit()
-        return jsonify({"liked": False, "likes_count": outfit.likes_count})
-
-    else:
-        # 新点赞
-        db.session.execute(
-            text("INSERT INTO likes (outfit_id, user_id) VALUES (:oid, :uid)"),
-            {"oid": outfit_id, "uid": user_id}
-        )
-        outfit.likes_count += 1
-        db.session.commit()
-        return jsonify({"liked": True, "likes_count": outfit.likes_count})
 
 @app.route("/api/outfits/<int:outfit_id>/favorite", methods=["POST"])
 def toggle_favorite(outfit_id):
