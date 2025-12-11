@@ -253,6 +253,17 @@ class Notification(db.Model):
     is_read      = db.Column(db.Boolean, default=False, index=True)
     created_at   = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
+# models 区域里，加一个评论表
+class OutfitComment(db.Model):
+    __tablename__ = "outfit_comments"
+
+    id = db.Column(db.Integer, primary_key=True)
+    outfit_id = db.Column(db.Integer, db.ForeignKey("outfits.id"), nullable=False, index=True)
+    author_email = db.Column(db.String(255), nullable=False, index=True)
+    author_name = db.Column(db.String(120), nullable=False)
+    text = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 def create_notification_for_outfit(outfit, action, actor=None, payload=None):
     """
     给帖子作者生成一条通知：
@@ -2666,6 +2677,66 @@ def outfits_by_ts(ts_ms: int):
         return jsonify({"item": _outfit_to_dict(row)})
     except Exception as e:
         return jsonify({"message": "server_error", "detail": str(e)}), 500
+
+from flask import request, jsonify
+from datetime import datetime
+
+# 获取某条 outfit 的评论列表
+@app.get("/api/outfits/<int:oid>/comments")
+def api_get_outfit_comments(oid):
+    limit = min(200, int(request.args.get("limit") or 100))
+    rows = (OutfitComment.query
+            .filter_by(outfit_id=oid)
+            .order_by(OutfitComment.created_at.asc())
+            .limit(limit)
+            .all())
+    return jsonify({
+        "ok": True,
+        "items": [
+            {
+                "id": c.id,
+                "outfit_id": c.outfit_id,
+                "author_email": c.author_email,
+                "author_name": c.author_name,
+                "text": c.text,
+                "created_at": c.created_at.isoformat()
+            }
+            for c in rows
+        ]
+    })
+
+# 新增一条评论
+@app.post("/api/outfits/<int:oid>/comments")
+def api_add_outfit_comment(oid):
+    data = request.get_json(force=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    name  = (data.get("name") or "").strip() or (email.split("@")[0] if email else "User")
+    text  = (data.get("text") or "").strip()
+
+    if not email or not text:
+        return jsonify({"ok": False, "message": "missing_email_or_text"}), 400
+
+    c = OutfitComment(
+        outfit_id = oid,
+        author_email = email,
+        author_name = name,
+        text = text,
+        created_at = datetime.utcnow(),
+    )
+    db.session.add(c)
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "item": {
+            "id": c.id,
+            "outfit_id": c.outfit_id,
+            "author_email": c.author_email,
+            "author_name": c.author_name,
+            "text": c.text,
+            "created_at": c.created_at.isoformat(),
+        }
+    })
 
 
 @app.post("/api/outfits/import_draft")
