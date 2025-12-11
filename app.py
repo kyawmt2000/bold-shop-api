@@ -2784,6 +2784,12 @@ def outfits_import_draft():
 
     @app.post("/api/outfits/<int:cid>/comments/<int:comment_id>/like")
 def api_toggle_comment_like(cid, comment_id):
+    """
+    点赞 / 取消点赞 outfit 评论
+    body JSON:
+      - email: 当前用户邮箱
+      - action: "like" / "unlike" / "toggle"（默认 toggle）
+    """
     data = request.get_json() or {}
     email = (data.get("email") or "").strip().lower()
     action = (data.get("action") or "toggle").lower()
@@ -2797,7 +2803,7 @@ def api_toggle_comment_like(cid, comment_id):
 
     like = OutfitCommentLike.query.filter_by(
         comment_id=comment_id,
-        user_email=email
+        user_email=email,
     ).first()
 
     if action in ("like", "on", "1"):
@@ -2817,7 +2823,10 @@ def api_toggle_comment_like(cid, comment_id):
     db.session.commit()
 
     like_count = OutfitCommentLike.query.filter_by(comment_id=comment_id).count()
-    is_liked = OutfitCommentLike.query.filter_by(comment_id=comment_id, user_email=email).first() is not None
+    is_liked = (
+        OutfitCommentLike.query.filter_by(comment_id=comment_id, user_email=email).first()
+        is not None
+    )
 
     return jsonify(ok=True, like_count=like_count, liked=is_liked)
 
