@@ -2782,10 +2782,47 @@ def outfits_import_draft():
             return [s for s in [x.strip() for x in v.replace("，", ",").split(",")] if s]
         return []
 
-    @app.post("/api/outfits/<int:cid>/comments/<int:comment_id>/like")
+    # Build row
+    o = Outfit(
+        author_email=author_email,
+        author_name=(data.get("author_name") or "").strip(),
+        title=(data.get("title") or "OOTD").strip(),
+        desc=data.get("desc") or "",
+        status="active",
+        location=(data.get("location") or "").strip() or None,
+        visibility=(data.get("visibility") or "public").strip() or "public",
+    )
+
+    tags = _as_list(data.get("tags"))
+    if tags:
+        o.tags_json = json.dumps(tags, ensure_ascii=False)
+
+    images = _as_list(data.get("images"))
+    videos = _as_list(data.get("videos"))
+    if images:
+        o.images_json = json.dumps(images, ensure_ascii=False)
+    if videos:
+        o.videos_json = json.dumps(videos, ensure_ascii=False)
+
+    # Optional: created_at from client draft timestamp
+    try:
+        ts = int(data.get("created_at_ms") or data.get("draft_ts") or 0)
+        if ts:
+            if ts > 10_000_000_000:  # ms
+                o.created_at = datetime.fromtimestamp(ts / 1000.0)
+            else:
+                o.created_at = datetime.fromtimestamp(ts)
+    except Exception:
+        pass
+
+    db.session.add(o); db.session.commit()
+    return jsonify({"id": o.id, "item": _outfit_to_dict(o)}), 201
+
+@app.post("/api/outfits/<int:cid>/comments/<int:comment_id>/like")
 def api_toggle_comment_like(cid, comment_id):
     """
     点赞 / 取消点赞 outfit 评论
+
     body JSON:
       - email: 当前用户邮箱
       - action: "like" / "unlike" / "toggle"（默认 toggle）
@@ -2829,39 +2866,3 @@ def api_toggle_comment_like(cid, comment_id):
     )
 
     return jsonify(ok=True, like_count=like_count, liked=is_liked)
-
-    # Build row
-    o = Outfit(
-        author_email=author_email,
-        author_name=(data.get("author_name") or "").strip(),
-        title=(data.get("title") or "OOTD").strip(),
-        desc=data.get("desc") or "",
-        status="active",
-        location=(data.get("location") or "").strip() or None,
-        visibility=(data.get("visibility") or "public").strip() or "public",
-    )
-
-    tags = _as_list(data.get("tags"))
-    if tags:
-        o.tags_json = json.dumps(tags, ensure_ascii=False)
-
-    images = _as_list(data.get("images"))
-    videos = _as_list(data.get("videos"))
-    if images:
-        o.images_json = json.dumps(images, ensure_ascii=False)
-    if videos:
-        o.videos_json = json.dumps(videos, ensure_ascii=False)
-
-    # Optional: created_at from client draft timestamp
-    try:
-        ts = int(data.get("created_at_ms") or data.get("draft_ts") or 0)
-        if ts:
-            if ts > 10_000_000_000:  # ms
-                o.created_at = datetime.fromtimestamp(ts / 1000.0)
-            else:
-                o.created_at = datetime.fromtimestamp(ts)
-    except Exception:
-        pass
-
-    db.session.add(o); db.session.commit()
-    return jsonify({"id": o.id, "item": _outfit_to_dict(o)}), 201
