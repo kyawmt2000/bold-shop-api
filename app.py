@@ -1810,7 +1810,7 @@ def api_get_settings():
     返回用户设置（防止 500，全部字段安全处理）
     """
     try:
-        email = (request.args.get("email") or 
+        email = (request.args.get("email") or
                  request.headers.get("X-User-Email") or "").strip().lower()
         if not email:
             return jsonify({"message": "missing_email"}), 400
