@@ -2206,25 +2206,52 @@ def get_bio():
 
 @app.post("/api/profile/avatar")
 def upload_avatar():
-    file = request.files.get("file")
-    email = request.form.get("email")
+    """
+    上传头像文件到 GCS，并把头像 URL 写到 UserSetting.avatar_url 里面。
+    兼容前端两种字段名：
+    - file
+    - avatar
+    返回: {"avatar": url, "url": url, "email": email}
+    """
+    # 既兼容 file 又兼容 avatar（老前端）
+    upfile = request.files.get("file") or request.files.get("avatar")
+    email = (request.form.get("email") or "").strip().lower()
 
-    if not file:
+    if not email:
+        return jsonify({"message": "missing_email"}), 400
+
+    if not upfile:
         return jsonify({"message": "no_file"}), 400
 
-    ext = file.filename.rsplit(".", 1)[-1].lower()
+    # 生成文件名
+    ext = upfile.filename.rsplit(".", 1)[-1].lower()
     filename = f"avatar/{email}_{uuid4()}.{ext}"
 
+    # 上传到 GCS（bucket 已经在前面初始化过）
     blob = bucket.blob(filename)
-    blob.upload_from_file(file, content_type=file.content_type)
+    blob.upload_from_file(upfile, content_type=upfile.content_type)
     blob.make_public()
 
     url = blob.public_url
 
-    user.avatar = url
+    # 写入 UserSetting.avatar_url
+    s = UserSetting.query.filter(
+        func.lower(UserSetting.email) == email
+    ).first()
+    if not s:
+        s = UserSetting(email=email)
+        db.session.add(s)
+
+    s.avatar_url = url
+    s.updated_at = datetime.utcnow()
     db.session.commit()
 
-    return jsonify({"avatar": url})
+    # 兼容前端：既返回 avatar 也返回 url
+    return jsonify({
+        "avatar": url,
+        "url": url,
+        "email": email,
+    }), 200
 
 @app.post("/api/profile/bio")
 def set_bio():
