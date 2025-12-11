@@ -264,6 +264,18 @@ class OutfitComment(db.Model):
     text = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+# 例子：Outfit 评论点赞表
+class OutfitCommentLike(db.Model):
+    __tablename__ = "outfit_comment_likes"
+
+    id = db.Column(db.Integer, primary_key=True)
+    comment_id = db.Column(db.Integer, db.ForeignKey("outfit_comments.id"), nullable=False)
+    user_email = db.Column(db.String(255), nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("comment_id", "user_email", name="uq_comment_user_like"),
+    )
+
 def create_notification_for_outfit(outfit, action, actor=None, payload=None):
     """
     给帖子作者生成一条通知：
@@ -2769,6 +2781,45 @@ def outfits_import_draft():
                 pass
             return [s for s in [x.strip() for x in v.replace("，", ",").split(",")] if s]
         return []
+
+    @app.post("/api/outfits/<int:cid>/comments/<int:comment_id>/like")
+def api_toggle_comment_like(cid, comment_id):
+    data = request.get_json() or {}
+    email = (data.get("email") or "").strip().lower()
+    action = (data.get("action") or "toggle").lower()
+
+    if not email:
+        return jsonify(ok=False, message="missing_email"), 400
+
+    c = OutfitComment.query.filter_by(id=comment_id, outfit_id=cid).first()
+    if not c:
+        return jsonify(ok=False, message="comment_not_found"), 404
+
+    like = OutfitCommentLike.query.filter_by(
+        comment_id=comment_id,
+        user_email=email
+    ).first()
+
+    if action in ("like", "on", "1"):
+        if not like:
+            like = OutfitCommentLike(comment_id=comment_id, user_email=email)
+            db.session.add(like)
+    elif action in ("unlike", "off", "0"):
+        if like:
+            db.session.delete(like)
+    else:  # toggle
+        if like:
+            db.session.delete(like)
+        else:
+            like = OutfitCommentLike(comment_id=comment_id, user_email=email)
+            db.session.add(like)
+
+    db.session.commit()
+
+    like_count = OutfitCommentLike.query.filter_by(comment_id=comment_id).count()
+    is_liked = OutfitCommentLike.query.filter_by(comment_id=comment_id, user_email=email).first() is not None
+
+    return jsonify(ok=True, like_count=like_count, liked=is_liked)
 
     # Build row
     o = Outfit(
