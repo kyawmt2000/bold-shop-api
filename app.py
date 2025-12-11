@@ -1448,13 +1448,26 @@ def outfits_delete(oid):
     author_email = (data.get("author_email") or "").strip().lower()
     if not author_email:
         return jsonify({"message": "author_email required"}), 400
+
     row = Outfit.query.get_or_404(oid)
     if (row.author_email or "").strip().lower() != author_email:
         return jsonify({"message": "forbidden"}), 403
-    OutfitMedia.query.filter_by(outfit_id=oid).delete()
-    db.session.delete(row)
-    db.session.commit()
-    return jsonify({"ok": True, "deleted_id": oid})
+
+    try:
+        # 先删关联的媒体
+        OutfitMedia.query.filter_by(outfit_id=oid).delete()
+
+        # ⭐ 再删关联的通知，避免外键错误
+        Notification.query.filter_by(outfit_id=oid).delete()
+
+        # 最后删帖子本身
+        db.session.delete(row)
+        db.session.commit()
+        return jsonify({"ok": True, "deleted_id": oid})
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("delete outfit %s failed: %s", oid, e)
+        return jsonify({"ok": False, "error": "delete_failed", "detail": str(e)}), 500
 
 # ==================== New Feed API (Unified) ====================
 @app.get("/api/outfits/feed")
