@@ -2143,6 +2143,28 @@ def get_bio():
     s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
     return jsonify({"email": email, "bio": (s.bio if s else "")})
 
+@app.post("/api/profile/avatar")
+def upload_avatar():
+    file = request.files.get("file")
+    email = request.form.get("email")
+
+    if not file:
+        return jsonify({"message": "no_file"}), 400
+
+    ext = file.filename.rsplit(".", 1)[-1].lower()
+    filename = f"avatar/{email}_{uuid4()}.{ext}"
+
+    blob = bucket.blob(filename)
+    blob.upload_from_file(file, content_type=file.content_type)
+    blob.make_public()
+
+    url = blob.public_url
+
+    user.avatar = url
+    db.session.commit()
+
+    return jsonify({"avatar": url})
+
 @app.post("/api/profile/bio")
 def set_bio():
     data = request.get_json(silent=True) or {}
