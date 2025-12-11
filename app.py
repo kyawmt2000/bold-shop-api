@@ -1807,62 +1807,59 @@ def _settings_to_dict(s: UserSetting) -> dict:
 @app.get("/api/settings")
 def api_get_settings():
     """
-    返回用户设置（防止 500，全部字段安全处理）
+    根据 email 返回用户设置：
+    - 数据库正常：返回真实设置（通过 _settings_to_dict）
+    - 数据库出错 / 没有记录：返回一份默认配置
+    👉 不再返回 500
     """
+    from flask import current_app
+
+    def default_payload(email: str):
+        return {
+            "email": email,
+            "nickname": "",
+            "avatar": "",
+            "bio": "",
+            "birthday": "",
+            "city": "",
+            "gender": "",
+            "lang": "en",
+            "public_profile": True,
+            "show_followers": True,
+            "show_following": True,
+            "updated_at": None,
+        }
+
+    # 1) 取 email
+    email = (request.args.get("email") or
+             request.headers.get("X-User-Email") or "").strip().lower()
+    if not email:
+        return jsonify({"message": "missing_email"}), 400
+
+    # 2) 访问数据库可能会失败，所以单独 try
     try:
-        email = (request.args.get("email") or
-                 request.headers.get("X-User-Email") or "").strip().lower()
-        if not email:
-            return jsonify({"message": "missing_email"}), 400
-
-        s = UserSetting.query.filter_by(email=email).first()
-
-        # 没记录 → 直接返回默认值
-        if not s:
-            return jsonify({
-                "email": email,
-                "nickname": "",
-                "avatar": "",
-                "bio": "",
-                "birthday": "",
-                "city": "",
-                "gender": "",
-                "lang": "en",
-                "public_profile": True,
-                "show_followers": True,
-                "show_following": True,
-                "updated_at": None,
-            })
-
-        # 安全获取字段（避免 NoneType 报错）
-        def safe(obj, key, default=""):
-            v = getattr(obj, key, default)
-            if v is None:
-                return default
-            return v
-
-        avatar = safe(s, "avatar_url", "") or safe(s, "avatar", "")
-
-        return jsonify({
-            "email": s.email,
-            "nickname": safe(s, "nickname", ""),
-            "avatar": avatar,
-            "bio": safe(s, "bio", ""),
-            "birthday": safe(s, "birthday", ""),
-            "city": safe(s, "city", ""),
-            "gender": safe(s, "gender", ""),
-            "lang": safe(s, "lang", "en"),
-            "public_profile": bool(safe(s, "public_profile", True)),
-            "show_followers": bool(safe(s, "show_followers", True)),
-            "show_following": bool(safe(s, "show_following", True)),
-            "updated_at": (
-                s.updated_at.isoformat() if getattr(s, "updated_at", None) else None
-            ),
-        })
-
+        s = UserSetting.query.filter(
+            func.lower(UserSetting.email) == email
+        ).first()
     except Exception as e:
-        app.logger.exception(f"/api/settings error: {e}")
-        return jsonify({"message": "server_error"}), 500
+        # 数据库挂了：记日志，但不要 500，直接给默认
+        current_app.logger.exception("GET /api/settings DB error: %s", e)
+        return jsonify(default_payload(email)), 200
+
+    # 3) 没有记录 → 默认配置
+    if not s:
+        return jsonify(default_payload(email)), 200
+
+    # 4) 用现有的 _settings_to_dict 序列化；如果这里再出错，也给默认
+    try:
+        data = _settings_to_dict(s)
+        # 确保 email 至少是当前这个
+        if not data.get("email"):
+            data["email"] = email
+        return jsonify(data), 200
+    except Exception as e:
+        current_app.logger.exception("GET /api/settings serialize error: %s", e)
+        return jsonify(default_payload(email)), 200
 
 @app.put("/api/settings")
 def api_put_settings():
