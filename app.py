@@ -1807,21 +1807,18 @@ def _settings_to_dict(s: UserSetting) -> dict:
 @app.get("/api/settings")
 def api_get_settings():
     """
-    根据 email 返回用户设置
+    根据 email 返回用户设置（防止 500，字段都给默认值）
     """
     try:
-        email = (
-            request.args.get("email")
-            or request.headers.get("X-User-Email")
-            or ""
-        ).strip().lower()
-
+        email = (request.args.get("email") or
+                 request.headers.get("X-User-Email") or "").strip().lower()
         if not email:
             return jsonify({"message": "missing_email"}), 400
 
         s = UserSetting.query.filter_by(email=email).first()
+
         if not s:
-            # 没有记录就返回默认配置（不强制写入 DB，等 PUT 再写）
+            # 没有记录就返回一份默认配置
             return jsonify({
                 "email": email,
                 "nickname": "",
@@ -1837,13 +1834,31 @@ def api_get_settings():
                 "updated_at": None,
             })
 
-        return jsonify(_settings_to_dict(s))
+        def g(obj, name, default=None):
+            return getattr(obj, name, default)
 
+        avatar = g(s, "avatar_url") or g(s, "avatar") or ""
+
+        return jsonify({
+            "email": s.email,
+            "nickname": g(s, "nickname", "") or "",
+            "avatar": avatar,
+            "bio": g(s, "bio", "") or "",
+            "birthday": g(s, "birthday", "") or "",
+            "city": g(s, "city", "") or "",
+            "gender": g(s, "gender", "") or "",
+            "lang": g(s, "lang", "en") or "en",
+            "public_profile": bool(g(s, "public_profile", True)),
+            "show_followers": bool(g(s, "show_followers", True)),
+            "show_following": bool(g(s, "show_following", True)),
+            "updated_at": (
+                g(s, "updated_at", None).isoformat()
+                if g(s, "updated_at", None) else None
+            ),
+        })
     except Exception as e:
-        app.logger.exception("get /api/settings failed")
-        return jsonify({"message": "db_error", "detail": str(e)}), 500
-
-from datetime import datetime  # 头部已经有就不用再加
+        app.logger.exception("api_get_settings failed: %s", e)
+        return jsonify({"message": "server_error"}), 500
 
 @app.put("/api/settings")
 def api_put_settings():
