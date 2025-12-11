@@ -1807,18 +1807,18 @@ def _settings_to_dict(s: UserSetting) -> dict:
 @app.get("/api/settings")
 def api_get_settings():
     """
-    根据 email 返回用户设置（防止 500，字段都给默认值）
+    返回用户设置（防止 500，全部字段安全处理）
     """
     try:
-        email = (request.args.get("email") or
+        email = (request.args.get("email") or 
                  request.headers.get("X-User-Email") or "").strip().lower()
         if not email:
             return jsonify({"message": "missing_email"}), 400
 
         s = UserSetting.query.filter_by(email=email).first()
 
+        # 没记录 → 直接返回默认值
         if not s:
-            # 没有记录就返回一份默认配置
             return jsonify({
                 "email": email,
                 "nickname": "",
@@ -1834,30 +1834,34 @@ def api_get_settings():
                 "updated_at": None,
             })
 
-        def g(obj, name, default=None):
-            return getattr(obj, name, default)
+        # 安全获取字段（避免 NoneType 报错）
+        def safe(obj, key, default=""):
+            v = getattr(obj, key, default)
+            if v is None:
+                return default
+            return v
 
-        avatar = g(s, "avatar_url") or g(s, "avatar") or ""
+        avatar = safe(s, "avatar_url", "") or safe(s, "avatar", "")
 
         return jsonify({
             "email": s.email,
-            "nickname": g(s, "nickname", "") or "",
+            "nickname": safe(s, "nickname", ""),
             "avatar": avatar,
-            "bio": g(s, "bio", "") or "",
-            "birthday": g(s, "birthday", "") or "",
-            "city": g(s, "city", "") or "",
-            "gender": g(s, "gender", "") or "",
-            "lang": g(s, "lang", "en") or "en",
-            "public_profile": bool(g(s, "public_profile", True)),
-            "show_followers": bool(g(s, "show_followers", True)),
-            "show_following": bool(g(s, "show_following", True)),
+            "bio": safe(s, "bio", ""),
+            "birthday": safe(s, "birthday", ""),
+            "city": safe(s, "city", ""),
+            "gender": safe(s, "gender", ""),
+            "lang": safe(s, "lang", "en"),
+            "public_profile": bool(safe(s, "public_profile", True)),
+            "show_followers": bool(safe(s, "show_followers", True)),
+            "show_following": bool(safe(s, "show_following", True)),
             "updated_at": (
-                g(s, "updated_at", None).isoformat()
-                if g(s, "updated_at", None) else None
+                s.updated_at.isoformat() if getattr(s, "updated_at", None) else None
             ),
         })
+
     except Exception as e:
-        app.logger.exception("api_get_settings failed: %s", e)
+        app.logger.exception(f"/api/settings error: {e}")
         return jsonify({"message": "server_error"}), 500
 
 @app.put("/api/settings")
