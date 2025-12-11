@@ -2208,10 +2208,12 @@ def get_bio():
 def upload_avatar():
     """
     上传头像到 GCS，并把 URL 写入 UserSetting.avatar_url
-    前端：
-      - FormData 里：email / avatar （字段名 avatar）
-      - 也兼容字段名 file
-    返回：
+
+    前端 FormData:
+      - email: 用户邮箱
+      - avatar: 文件（兼容字段名 file）
+
+    返回:
       {"url": "...", "avatar": "...", "email": "..."}
     """
     try:
@@ -2220,26 +2222,39 @@ def upload_avatar():
         if not email:
             return jsonify({"message": "missing_email"}), 400
 
-        # 2) 取文件：兼容 avatar / file 两种字段名
+        # 2) 取文件，兼容 avatar / file 两种字段名
         upfile = request.files.get("avatar") or request.files.get("file")
         if not upfile or not upfile.filename:
             return jsonify({"message": "no_file"}), 400
 
-        # 3) 生成文件名
-        filename = upfile.filename
-        if "." in filename:
-            ext = filename.rsplit(".", 1)[-1].lower()
-        else:
-            ext = "jpg"
-        blob_name = f"avatar/{email}_{uuid4().hex}.{ext}"
+        if not GCS_BUCKET:
+            return jsonify({"message": "gcs_not_configured"}), 500
+
+        # 3) 生成文件名：avatars/2025/02/05/uuid.jpg
+        raw_name = secure_filename(upfile.filename or "avatar")
+        _, ext = os.path.splitext(raw_name)
+        if not ext:
+            ext = ".jpg"
+        today = datetime.utcnow().strftime("%Y/%m/%d")
+        blob_name = f"avatars/{today}/{uuid4().hex}{ext}"
 
         # 4) 上传到 GCS
-        # ⚠️ 这里依赖你之前已经在文件顶部初始化好的 bucket 变量：
-        # storage_client = storage.Client()
-        # bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
         blob = bucket.blob(blob_name)
-        blob.upload_from_file(upfile, content_type=upfile.content_type)
-        blob.make_public()
+
+        upfile.seek(0)
+        blob.upload_from_file(
+            upfile,
+            content_type=(upfile.content_type or "application/octet-stream"),
+        )
+
+        try:
+            blob.make_public()
+        except Exception:
+            # 设公开失败也不致命
+            pass
+
         url = blob.public_url
 
         # 5) 写入 UserSetting
@@ -2250,7 +2265,6 @@ def upload_avatar():
             s = UserSetting(email=email)
             db.session.add(s)
 
-        # 有 avatar_url 字段就用它，没有就用 avatar
         if hasattr(s, "avatar_url"):
             s.avatar_url = url
         elif hasattr(s, "avatar"):
@@ -2259,7 +2273,7 @@ def upload_avatar():
         s.updated_at = datetime.utcnow()
         db.session.commit()
 
-        # 6) 返回给前端
+        # 6) 返回给前端（同时给 url / avatar 两个字段）
         return jsonify({
             "url": url,
             "avatar": url,
@@ -2267,7 +2281,6 @@ def upload_avatar():
         }), 200
 
     except Exception as e:
-        # 有数据库操作就先回滚一下，防止挂住连接
         try:
             db.session.rollback()
         except Exception:
