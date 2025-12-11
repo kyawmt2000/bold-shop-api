@@ -2227,7 +2227,9 @@ def upload_avatar():
         if not upfile or not upfile.filename:
             return jsonify({"message": "no_file"}), 400
 
-        if not GCS_BUCKET:
+        # 这里直接用你前面初始化好的全局 bucket
+        global bucket
+        if "bucket" not in globals() or bucket is None:
             return jsonify({"message": "gcs_not_configured"}), 500
 
         # 3) 生成文件名：avatars/2025/02/05/uuid.jpg
@@ -2239,11 +2241,8 @@ def upload_avatar():
         blob_name = f"avatars/{today}/{uuid4().hex}{ext}"
 
         # 4) 上传到 GCS
-        client = storage.Client()
-        bucket = client.bucket(GCS_BUCKET)
-        blob = bucket.blob(blob_name)
-
         upfile.seek(0)
+        blob = bucket.blob(blob_name)
         blob.upload_from_file(
             upfile,
             content_type=(upfile.content_type or "application/octet-stream"),
