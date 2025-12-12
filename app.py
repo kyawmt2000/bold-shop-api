@@ -2707,26 +2707,52 @@ def api_outfit_stats(outfit_id):
     })
 
 @app.get("/api/outfits/<int:outfit_id>/comments")
-def api_outfit_comments_list(outfit_id):
-    limit = min(200, int(request.args.get("limit") or 50))
-    rows = (OutfitComment.query
-            .filter_by(outfit_id=outfit_id)
-            .order_by(OutfitComment.created_at.asc())
-            .limit(limit)
-            .all())
+def api_outfit_comments(outfit_id):
+    """
+    GET /api/outfits/<id>/comments?limit=200&viewer=xxx@email.com
+    返回:
+      { ok:true, items:[{id, author_email, author_name, author_avatar, text, created_at, like_count, liked}] }
+    """
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except Exception:
+        limit = 50
+    limit = max(1, min(200, limit))
 
-    return jsonify({
-        "ok": True,
-        "items": [{
-            "id": c.id,
-            "outfit_id": c.outfit_id,
-            "author_email": c.author_email,
-            "author_name": c.author_name,
-            "author_avatar": c.author_avatar,
-            "text": c.text,
-            "created_at": c.created_at.isoformat() + "Z",
-        } for c in rows]
-    })
+    viewer = (request.args.get("viewer") or "").strip().lower()
+
+    try:
+        rows = (OutfitComment.query
+                .filter_by(outfit_id=outfit_id)
+                .order_by(OutfitComment.created_at.asc())
+                .limit(limit)
+                .all())
+
+        items = []
+        for c in rows:
+            like_q = OutfitCommentLike.query.filter_by(comment_id=c.id)
+            like_count = like_q.count()
+
+            liked = False
+            if viewer:
+                liked = like_q.filter_by(email=viewer).first() is not None
+
+            items.append({
+                "id": c.id,
+                "outfit_id": c.outfit_id,
+                "author_email": (c.author_email or "").lower(),
+                "author_name": c.author_name or "",
+                "author_avatar": c.author_avatar or "",
+                "text": c.text or "",
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "like_count": int(like_count),
+                "liked": bool(liked),
+            })
+
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        app.logger.exception("api_outfit_comments failed: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
 
 @app.post("/api/outfits/import_draft")
 def outfits_import_draft():
