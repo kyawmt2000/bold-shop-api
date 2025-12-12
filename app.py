@@ -261,16 +261,31 @@ class Notification(db.Model):
     is_read      = db.Column(db.Boolean, default=False, index=True)
     created_at   = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
-# models 区域里，加一个评论表
+from datetime import datetime
+from sqlalchemy import func
+
+class OutfitLike(db.Model):
+    __tablename__ = "outfit_likes"
+    id = db.Column(db.Integer, primary_key=True)
+    outfit_id = db.Column(db.Integer, nullable=False, index=True)
+    viewer_email = db.Column(db.String(255), nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("outfit_id", "viewer_email", name="uq_outfit_like"),
+    )
+
 class OutfitComment(db.Model):
     __tablename__ = "outfit_comments"
-
     id = db.Column(db.Integer, primary_key=True)
-    outfit_id = db.Column(db.Integer, db.ForeignKey("outfits.id"), nullable=False, index=True)
+    outfit_id = db.Column(db.Integer, nullable=False, index=True)
+
     author_email = db.Column(db.String(255), nullable=False, index=True)
-    author_name = db.Column(db.String(120), nullable=False)
+    author_name  = db.Column(db.String(255), nullable=False, default="User")
+    author_avatar = db.Column(db.Text, nullable=True)
+
     text = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 # 例子：Outfit 评论点赞表
 class OutfitCommentLike(db.Model):
@@ -2704,6 +2719,56 @@ def debug_comments_tables():
     except Exception as e:
         return jsonify({"ok": False, "detail": str(e), "type": e.__class__.__name__}), 500
 
+@app.get("/api/outfits/<int:outfit_id>/stats")
+def api_outfit_stats(outfit_id):
+    viewer = (request.args.get("viewer") or "").strip().lower()
+
+    like_count = db.session.query(func.count(OutfitLike.id)).filter(
+        OutfitLike.outfit_id == outfit_id
+    ).scalar() or 0
+
+    comment_count = db.session.query(func.count(OutfitComment.id)).filter(
+        OutfitComment.outfit_id == outfit_id
+    ).scalar() or 0
+
+    liked = False
+    if viewer:
+        liked = db.session.query(OutfitLike.id).filter(
+            OutfitLike.outfit_id == outfit_id,
+            OutfitLike.viewer_email == viewer
+        ).first() is not None
+
+    return jsonify({
+        "ok": True,
+        "outfit_id": outfit_id,
+        "like_count": int(like_count),
+        "comment_count": int(comment_count),
+        "liked": bool(liked),
+    })
+
+@app.get("/api/outfits/<int:outfit_id>/comments")
+def api_outfit_comments_list(outfit_id):
+    limit = min(200, int(request.args.get("limit") or 50))
+    rows = (OutfitComment.query
+            .filter_by(outfit_id=outfit_id)
+            .order_by(OutfitComment.created_at.asc())
+            .limit(limit)
+            .all())
+
+    return jsonify({
+        "ok": True,
+        "items": [{
+            "id": c.id,
+            "outfit_id": c.outfit_id,
+            "author_email": c.author_email,
+            "author_name": c.author_name,
+            "author_avatar": c.author_avatar,
+            "text": c.text,
+            "created_at": c.created_at.isoformat() + "Z",
+        } for c in rows]
+    })
+
+
 # 新增一条评论
 @app.post("/api/outfits/<int:oid>/comments")
 def api_add_outfit_comment(oid):
@@ -2839,6 +2904,71 @@ def api_toggle_comment_like(oid, comment_id):
         app.logger.exception("api_toggle_comment_like error: %s", e)
         db.session.rollback()
         return jsonify({"ok": False, "message": "server_error"}), 500
+
+@app.post("/api/outfits/<int:outfit_id>/like")
+def api_outfit_like_toggle(outfit_id):
+    data = request.get_json(silent=True) or {}
+    viewer = (data.get("viewer") or "").strip().lower()
+    if not viewer:
+        return jsonify({"ok": False, "message": "missing_viewer"}), 400
+
+    row = OutfitLike.query.filter_by(outfit_id=outfit_id, viewer_email=viewer).first()
+    if row:
+        db.session.delete(row)
+        liked = False
+    else:
+        db.session.add(OutfitLike(outfit_id=outfit_id, viewer_email=viewer))
+        liked = True
+
+    db.session.commit()
+
+    like_count = db.session.query(func.count(OutfitLike.id)).filter(
+        OutfitLike.outfit_id == outfit_id
+    ).scalar() or 0
+
+    return jsonify({"ok": True, "liked": liked, "like_count": int(like_count)})
+
+@app.post("/api/outfits/<int:outfit_id>/comments")
+def api_outfit_comment_create(outfit_id):
+    data = request.get_json(silent=True) or {}
+    author_email = (data.get("author_email") or "").strip().lower()
+    text = (data.get("text") or "").strip()
+
+    if not author_email:
+        return jsonify({"ok": False, "message": "missing_author_email"}), 400
+    if not text:
+        return jsonify({"ok": False, "message": "empty_text"}), 400
+
+    author_name = (data.get("author_name") or author_email.split("@")[0] or "User").strip()
+    author_avatar = (data.get("author_avatar") or "").strip() or None
+
+    c = OutfitComment(
+        outfit_id=outfit_id,
+        author_email=author_email,
+        author_name=author_name,
+        author_avatar=author_avatar,
+        text=text
+    )
+    db.session.add(c)
+    db.session.commit()
+
+    comment_count = db.session.query(func.count(OutfitComment.id)).filter(
+        OutfitComment.outfit_id == outfit_id
+    ).scalar() or 0
+
+    return jsonify({
+        "ok": True,
+        "item": {
+            "id": c.id,
+            "outfit_id": c.outfit_id,
+            "author_email": c.author_email,
+            "author_name": c.author_name,
+            "author_avatar": c.author_avatar,
+            "text": c.text,
+            "created_at": c.created_at.isoformat() + "Z",
+        },
+        "comment_count": int(comment_count)
+    })
 
 @app.get("/api/follow/state")
 def api_follow_state():
