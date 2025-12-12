@@ -378,6 +378,33 @@ def ensure_outfit_comment_tables():
 with app.app_context():
     ensure_outfit_comment_tables()
 
+def ensure_outfit_comment_likes_columns():
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(db.text("""
+                ALTER TABLE outfit_comment_likes
+                ADD COLUMN IF NOT EXISTS outfit_id INTEGER
+            """))
+            conn.execute(db.text("""
+                ALTER TABLE outfit_comment_likes
+                ADD COLUMN IF NOT EXISTS user_email VARCHAR(255)
+            """))
+            conn.execute(db.text("""
+                ALTER TABLE outfit_comment_likes
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()
+            """))
+
+            # 重新确保唯一索引存在（不重复建）
+            conn.execute(db.text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_comment_like
+                ON outfit_comment_likes (comment_id, user_email)
+            """))
+    except Exception as e:
+        app.logger.exception("ensure_outfit_comment_likes_columns failed: %s", e)
+
+with app.app_context():
+    ensure_outfit_comment_likes_columns()
+
 def ensure_outfit_like_comment_tables_fix():
     try:
         with db.engine.begin() as conn:
@@ -2712,14 +2739,14 @@ def api_toggle_comment_like(oid, comment_id):
         if not c:
             return jsonify({"ok": False, "message": "comment_not_found"}), 404
 
-        rel = OutfitCommentLike.query.filter_by(comment_id=comment_id, email=email).first()
+       rel = OutfitCommentLike.query.filter_by(comment_id=comment_id, user_email=email).first()
 
-        if rel:
-            db.session.delete(rel)
-            liked = False
-        else:
-            db.session.add(OutfitCommentLike(outfit_id=oid, comment_id=comment_id, email=email))
-            liked = True
+if rel:
+    db.session.delete(rel)
+    liked = False
+else:
+    db.session.add(OutfitCommentLike(outfit_id=oid, comment_id=comment_id, user_email=email))
+    liked = True
 
         db.session.commit()
         like_count = OutfitCommentLike.query.filter_by(comment_id=comment_id).count()
