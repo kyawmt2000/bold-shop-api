@@ -2755,24 +2755,6 @@ def api_follow_state():
         "is_following": bool(rel),
     })
 
-@app.get("/api/follow/state")
-def api_follow_state():
-    follower = (request.args.get("follower") or "").strip().lower()
-    target   = (request.args.get("target")   or "").strip().lower()
-
-    if not follower or not target or follower == target:
-        return jsonify({"ok": True, "is_following": False})
-
-    rel = UserFollow.query.filter_by(
-        follower_email=follower,
-        target_email=target
-    ).first()
-
-    return jsonify({
-        "ok": True,
-        "is_following": bool(rel),
-    })
-
 # 新增一条评论
 @app.post("/api/outfits/<int:oid>/comments")
 def api_add_outfit_comment(oid):
