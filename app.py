@@ -2071,6 +2071,85 @@ def api_get_settings():
         current_app.logger.exception("GET /api/settings serialize error: %s", e)
         return jsonify(default_payload(email)), 200
 
+@app.get("/api/follow/following")
+def api_follow_following_list():
+    """
+    我关注的人列表
+    GET /api/follow/following?email=me@example.com
+    """
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "message": "missing_email"}), 400
+
+    try:
+        # 我关注的人（target）
+        rows = (db.session.query(UserFollow.target_email)
+                .filter(UserFollow.follower_email == email)
+                .order_by(UserFollow.id.desc())
+                .limit(500)
+                .all())
+        targets = [r[0] for r in rows if r and r[0]]
+
+        # 尝试补充头像/昵称（如果你有 UserSetting 表）
+        items = []
+        if "UserSetting" in globals():
+            settings = UserSetting.query.filter(UserSetting.email.in_(targets)).all()
+            m = {s.email.lower(): s for s in settings}
+            for em in targets:
+                s = m.get(em.lower())
+                avatar = ""
+                nick = ""
+                if s:
+                    nick = (getattr(s, "nickname", "") or "")
+                    avatar = (getattr(s, "avatar_url", "") or getattr(s, "avatar", "") or "")
+                items.append({"email": em, "nickname": nick, "avatar": avatar})
+        else:
+            items = [{"email": em, "nickname": "", "avatar": ""} for em in targets]
+
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        app.logger.exception("api_follow_following_list error: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
+
+
+@app.get("/api/follow/followers")
+def api_follow_followers_list():
+    """
+    关注我的人列表
+    GET /api/follow/followers?email=me@example.com
+    """
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "message": "missing_email"}), 400
+
+    try:
+        # 关注我的人（follower）
+        rows = (db.session.query(UserFollow.follower_email)
+                .filter(UserFollow.target_email == email)
+                .order_by(UserFollow.id.desc())
+                .limit(500)
+                .all())
+        followers = [r[0] for r in rows if r and r[0]]
+
+        items = []
+        if "UserSetting" in globals():
+            settings = UserSetting.query.filter(UserSetting.email.in_(followers)).all()
+            m = {s.email.lower(): s for s in settings}
+            for em in followers:
+                s = m.get(em.lower())
+                avatar = ""
+                nick = ""
+                if s:
+                    nick = (getattr(s, "nickname", "") or "")
+                    avatar = (getattr(s, "avatar_url", "") or getattr(s, "avatar", "") or "")
+                items.append({"email": em, "nickname": nick, "avatar": avatar})
+        else:
+            items = [{"email": em, "nickname": "", "avatar": ""} for em in followers]
+
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        app.logger.exception("api_follow_followers_list error: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
 
 # ===========================
 #  新版：保存用户设定
