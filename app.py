@@ -18,7 +18,15 @@ from google.cloud import storage
 # -----------------------------------------
 
 app = Flask(__name__)
-CORS(app)
+from flask_cors import CORS
+
+CORS(
+  app,
+  resources={r"/api/*": {"origins": "*"}},
+  supports_credentials=False,
+  allow_headers=["Content-Type", "X-API-Key"],
+  methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+)
 
 # 从 Render 环境变量读取 DATABASE_URL
 db_url = os.getenv("DATABASE_URL")
