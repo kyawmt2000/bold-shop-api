@@ -344,63 +344,56 @@ with app.app_context():
 def ensure_outfit_comment_tables():
     try:
         with db.engine.begin() as conn:
-            dialect = conn.engine.dialect.name.lower()
-            is_pg = "postgres" in dialect
+            # 1) comments
+            conn.execute(db.text("""
+                CREATE TABLE IF NOT EXISTS outfit_comments (
+                    id SERIAL PRIMARY KEY,
+                    outfit_id INTEGER NOT NULL,
+                    author_email VARCHAR(255) NOT NULL,
+                    author_name VARCHAR(255) NOT NULL,
+                    author_avatar TEXT,
+                    text TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
 
-            if is_pg:
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS outfit_comments (
-                        id SERIAL PRIMARY KEY,
-                        outfit_id INTEGER NOT NULL,
-                        author_email VARCHAR(255) NOT NULL,
-                        author_name VARCHAR(120) NOT NULL,
-                        text TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    )
-                """))
-                conn.execute(db.text("""
-                    CREATE INDEX IF NOT EXISTS idx_outfit_comments_outfit_id
-                    ON outfit_comments (outfit_id)
-                """))
+            # 2) comment likes (统一用 user_email)
+            conn.execute(db.text("""
+                CREATE TABLE IF NOT EXISTS outfit_comment_likes (
+                    id SERIAL PRIMARY KEY,
+                    comment_id INTEGER NOT NULL,
+                    user_email VARCHAR(255) NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
 
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS outfit_comment_likes (
-                        id SERIAL PRIMARY KEY,
-                        outfit_id INTEGER NOT NULL,
-                        comment_id INTEGER NOT NULL,
-                        email VARCHAR(255) NOT NULL,
-                        created_at TIMESTAMP DEFAULT NOW()
-                    )
-                """))
-                conn.execute(db.text("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS uq_comment_like
-                    ON outfit_comment_likes (comment_id, email)
-                """))
-            else:
-                # SQLite fallback（你 Render 用 pg，这段只是兜底）
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS outfit_comments (
-                        id INTEGER PRIMARY KEY,
-                        outfit_id INTEGER NOT NULL,
-                        author_email VARCHAR(255) NOT NULL,
-                        author_name VARCHAR(120) NOT NULL,
-                        text TEXT NOT NULL,
-                        created_at TIMESTAMP
-                    )
-                """))
-                conn.execute(db.text("""
-                    CREATE TABLE IF NOT EXISTS outfit_comment_likes (
-                        id INTEGER PRIMARY KEY,
-                        outfit_id INTEGER NOT NULL,
-                        comment_id INTEGER NOT NULL,
-                        email VARCHAR(255) NOT NULL,
-                        created_at TIMESTAMP
-                    )
-                """))
-                conn.execute(db.text("""
-                    CREATE UNIQUE INDEX IF NOT EXISTS uq_comment_like
-                    ON outfit_comment_likes (comment_id, email)
-                """))
+            # 如果旧表是 email 字段/或别的字段，这里做兼容：没有 user_email 就加
+            conn.execute(db.text("""
+                ALTER TABLE outfit_comment_likes
+                ADD COLUMN IF NOT EXISTS user_email VARCHAR(255)
+            """))
+
+            # 如果你以前用的是 email 字段（有些库里可能存在），把 email 复制到 user_email
+            conn.execute(db.text("""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name='outfit_comment_likes' AND column_name='email'
+                    ) THEN
+                        UPDATE outfit_comment_likes
+                        SET user_email = COALESCE(user_email, email);
+                    END IF;
+                END$$;
+            """))
+
+            # ✅ 正确的唯一索引：comment_id + user_email
+            conn.execute(db.text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_comment_like
+                ON outfit_comment_likes (comment_id, user_email)
+            """))
+
+        app.logger.info("ensure_outfit_comment_tables ok")
     except Exception as e:
         app.logger.exception("ensure_outfit_comment_tables failed: %s", e)
 
