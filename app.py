@@ -3156,3 +3156,29 @@ def api_follow_state():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
+
+@app.get("/api/products/<int:pid>/qa/<int:qa_id>/likes")
+def api_product_qa_like_users(pid, qa_id):
+    try:
+        rows = ProductQALike.query.filter_by(
+            product_id=pid,
+            qa_id=qa_id
+        ).order_by(ProductQALike.created_at.asc()).all()
+
+        users = []
+        for r in rows:
+            # 可选：联表 UserSetting，拿头像/昵称
+            s = UserSetting.query.filter_by(email=r.user_email).first()
+
+            users.append({
+                "email": r.user_email,
+                "name": (s.nickname if s and s.nickname else r.user_email.split("@")[0]),
+                "avatar": (s.avatar_url if s and s.avatar_url else "")
+            })
+
+        return jsonify({
+            "ok": True,
+            "items": users
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
