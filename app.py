@@ -2655,6 +2655,70 @@ def api_outfit_comments(outfit_id):
         app.logger.exception("api_outfit_comments failed: %s", e)
         return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
 
+@app.post("/api/profile/avatar")
+def upload_profile_avatar():
+    """
+    上传头像到 GCS
+    body:
+      {
+        "email": "user@email.com",
+        "avatar_base64": "data:image/webp;base64,AAAA..."
+      }
+
+    return:
+      { ok: true, avatar_url: "https://storage.googleapis.com/xxx/avatars/xxx.webp" }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        email = (data.get("email") or "").strip().lower()
+        b64   = data.get("avatar_base64") or ""
+
+        if not email or not b64.startswith("data:image"):
+            return jsonify({"ok": False, "message": "bad_request"}), 400
+
+        # 1️⃣ 解析 base64
+        header, encoded = b64.split(",", 1)
+        ext = "png"
+        if "webp" in header: ext = "webp"
+        elif "jpeg" in header or "jpg" in header: ext = "jpg"
+
+        raw = base64.b64decode(encoded)
+
+        # 2️⃣ GCS 路径：avatars/邮箱/uuid.webp
+        filename = f"avatars/{email}/{uuid.uuid4().hex}.{ext}"
+
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob   = bucket.blob(filename)
+
+        blob.upload_from_file(
+            BytesIO(raw),
+            content_type=f"image/{ext}",
+            rewind=True
+        )
+
+        blob.make_public()  # 或你自己的 ACL 逻辑
+
+        avatar_url = blob.public_url
+
+        # 3️⃣ 如果你有 User / UserSetting 表，建议顺手存一下
+        try:
+            u = UserSetting.query.filter_by(email=email).first()
+            if u:
+                u.avatar = avatar_url
+                db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+        return jsonify({
+            "ok": True,
+            "avatar_url": avatar_url
+        })
+
+    except Exception as e:
+        app.logger.exception("upload_profile_avatar failed")
+        return jsonify({"ok": False, "message": "server_error"}), 500
+
 @app.post("/api/outfits/import_draft")
 def outfits_import_draft():
     """
