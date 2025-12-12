@@ -407,6 +407,34 @@ def ensure_outfit_comment_tables():
 with app.app_context():
     ensure_outfit_comment_tables()
 
+def ensure_outfit_like_comment_tables_fix():
+    try:
+        with db.engine.begin() as conn:
+            # 1) outfit_comments 补 author_avatar
+            conn.execute(db.text("""
+                ALTER TABLE outfit_comments
+                ADD COLUMN IF NOT EXISTS author_avatar TEXT
+            """))
+
+            # 2) 确保 outfit_likes 存在（给 toggle like 用）
+            conn.execute(db.text("""
+                CREATE TABLE IF NOT EXISTS outfit_likes (
+                    id SERIAL PRIMARY KEY,
+                    outfit_id INTEGER NOT NULL,
+                    viewer_email VARCHAR(255) NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """))
+            conn.execute(db.text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_outfit_like
+                ON outfit_likes (outfit_id, viewer_email)
+            """))
+    except Exception as e:
+        app.logger.exception("ensure_outfit_like_comment_tables_fix failed: %s", e)
+
+with app.app_context():
+    ensure_outfit_like_comment_tables_fix()
+
     try:
         with db.engine.connect() as conn:
             dialect = conn.engine.dialect.name.lower()
@@ -1742,53 +1770,6 @@ def outfit_feed():
     items = [_outfit_to_dict(o) for o in rows]
     return jsonify({"items": items, "has_more": False})
 
-@app.post("/api/outfits/<int:oid>/like")
-def outfit_like(oid):
-    delta = 1
-    body = {}
-    actor = {}
-
-    try:
-        body = request.get_json(silent=True) or {}
-        if "delta" in body:
-            delta = int(body["delta"])
-    except Exception:
-        body = {}
-
-    # 点赞用户信息（前端可选传）
-    try:
-        actor = {
-            "email": body.get("actor_email"),
-            "name": body.get("actor_name"),
-            "avatar": body.get("actor_avatar"),
-        }
-    except Exception:
-        actor = {}
-
-    row = Outfit.query.get_or_404(oid)
-    old = row.likes or 0
-    row.likes = max(0, old + delta)
-
-    # 只有增加点赞时才发通知（取消赞 delta=-1 不发）
-    if delta > 0:
-        try:
-            create_notification_for_outfit(
-                row,
-                action="like",
-                actor=actor,
-                payload={"delta": delta},
-            )
-        except Exception as e:
-            app.logger.exception("create like notification failed: %s", e)
-
-    db.session.commit()
-    likes = row.likes or 0
-    return jsonify({
-        "id": oid,
-        "likes": likes,
-        "likes_count": likes,
-    })
-
 @app.post("/api/outfits/<int:oid>/comment")
 def outfit_comment(oid):
     delta = 1
@@ -1949,27 +1930,6 @@ def outfit_share(oid):
     shares = row.shares or 0
     return jsonify({
         "id": oid,
-        "shares": shares,
-        "shares_count": shares,
-    })
-
-@app.get("/api/outfits/<int:oid>/stats")
-def outfit_stats(oid):
-    row = Outfit.query.get_or_404(oid)
-    likes     = row.likes or 0
-    comments  = row.comments or 0
-    favorites = getattr(row, "favorites", 0) or 0
-    shares    = getattr(row, "shares", 0) or 0
-
-    return jsonify({
-        "id": row.id,
-        "likes": likes,
-        "likes_count": likes,
-        "comments": comments,
-        "comments_count": comments,
-        "favorites": favorites,
-        "favorites_count": favorites,
-        "saved_count": favorites,
         "shares": shares,
         "shares_count": shares,
     })
@@ -2767,41 +2727,6 @@ def api_outfit_comments_list(outfit_id):
             "created_at": c.created_at.isoformat() + "Z",
         } for c in rows]
     })
-
-
-# 新增一条评论
-@app.post("/api/outfits/<int:oid>/comments")
-def api_add_outfit_comment(oid):
-    data = request.get_json(force=True) or {}
-    email = (data.get("email") or "").strip().lower()
-    name  = (data.get("name") or "").strip() or (email.split("@")[0] if email else "User")
-    text  = (data.get("text") or "").strip()
-
-    if not email or not text:
-        return jsonify({"ok": False, "message": "missing_email_or_text"}), 400
-
-    c = OutfitComment(
-        outfit_id = oid,
-        author_email = email,
-        author_name = name,
-        text = text,
-        created_at = datetime.utcnow(),
-    )
-    db.session.add(c)
-    db.session.commit()
-
-    return jsonify({
-        "ok": True,
-        "item": {
-            "id": c.id,
-            "outfit_id": c.outfit_id,
-            "author_email": c.author_email,
-            "author_name": c.author_name,
-            "text": c.text,
-            "created_at": c.created_at.isoformat(),
-        }
-    })
-
 
 @app.post("/api/outfits/import_draft")
 def outfits_import_draft():
