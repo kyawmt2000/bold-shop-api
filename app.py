@@ -2239,70 +2239,6 @@ def api_post_settings():
         current_app.logger.exception("POST /api/settings failed: %s", e)
         return jsonify({"message": "db_error", "detail": str(e)}), 500
 
-@app.route("/api/outfits/<int:outfit_id>/favorite", methods=["POST"])
-def toggle_favorite(outfit_id):
-    user_id = request.json.get("user_id")
-
-    outfit = Outfit.query.get(outfit_id)
-    if not outfit:
-        return jsonify({"error": "Outfit not found"}), 404
-
-    existing = db.session.execute(
-        text("SELECT 1 FROM favorites WHERE outfit_id=:oid AND user_id=:uid"),
-        {"oid": outfit_id, "uid": user_id}
-    ).fetchone()
-
-    if existing:
-        db.session.execute(
-            text("DELETE FROM favorites WHERE outfit_id=:oid AND user_id=:uid"),
-            {"oid": outfit_id, "uid": user_id}
-        )
-        outfit.favorites_count = max(outfit.favorites_count - 1, 0)
-        db.session.commit()
-        return jsonify({"saved": False, "favorites_count": outfit.favorites_count})
-
-    else:
-        db.session.execute(
-            text("INSERT INTO favorites (outfit_id, user_id) VALUES (:oid, :uid)"),
-            {"oid": outfit_id, "uid": user_id}
-        )
-        outfit.favorites_count += 1
-        db.session.commit()
-        return jsonify({"saved": True, "favorites_count": outfit.favorites_count})
-
-@app.route("/api/outfits/<int:outfit_id>/comment", methods=["POST"])
-def create_comment(outfit_id):
-    user_id = request.json.get("user_id")
-    content = request.json.get("content")
-
-    outfit = Outfit.query.get(outfit_id)
-    if not outfit:
-        return jsonify({"error": "Outfit not found"}), 404
-
-    db.session.execute(
-        text("""
-            INSERT INTO comments (outfit_id, user_id, content, created_at)
-            VALUES (:oid, :uid, :content, NOW())
-        """),
-        {"oid": outfit_id, "uid": user_id, "content": content}
-    )
-
-    outfit.comments_count += 1
-    db.session.commit()
-
-    return jsonify({"success": True, "comments_count": outfit.comments_count})
-
-@app.route("/api/outfits/<int:outfit_id>/share", methods=["POST"])
-def share_post(outfit_id):
-    outfit = Outfit.query.get(outfit_id)
-    if not outfit:
-        return jsonify({"error": "Outfit not found"}), 404
-
-    outfit.shares_count += 1
-    db.session.commit()
-
-    return jsonify({"shared": True, "shares_count": outfit.shares_count})
-
 @app.route("/api/follow", methods=["POST"])
 def api_follow():
     data = request.get_json(silent=True) or {}
@@ -2723,14 +2659,14 @@ def api_outfit_comments(oid):
             })
 
         return jsonify({"ok": True, "items": items})
-    except Exception as e:
-    app.logger.exception("api_outfit_comments error: %s", e)
-    return jsonify({
-        "ok": False,
-        "message": "server_error",
-        "detail": str(e),
-        "type": e.__class__.__name__,
-    }), 500
+        except Exception as e:
+        app.logger.exception("api_outfit_comments error: %s", e)
+        return jsonify({
+            "ok": False,
+            "message": "server_error",
+            "detail": str(e),
+            "type": e.__class__.__name__,
+        }), 500
 
 @app.get("/api/debug/comments_tables")
 def debug_comments_tables():
