@@ -1361,19 +1361,38 @@ def add_review(pid):
     db.session.commit()
     return jsonify({"success": True})
 
-# ----------- 商品讨论：读取 -----------
 @app.get("/api/products/<int:pid>/qa")
 def get_qa(pid):
-    rows = ProductQA.query.filter_by(product_id=pid).order_by(ProductQA.created_at.asc()).all()
-    return jsonify({"items": [{
-        "id": q.id,
-        "product_id": q.product_id,
-        "user_email": q.user_email,
-        "user_name": q.user_name,
-        "content": q.content,
-        "parent_id": q.parent_id,
-        "created_at": q.created_at.isoformat()
-    } for q in rows]})
+    viewer = (request.args.get("viewer") or "").strip().lower()
+
+    rows = ProductQA.query.filter_by(product_id=pid)\
+        .order_by(ProductQA.created_at.asc()).all()
+
+    items = []
+    for q in rows:
+        qa_id = q.id
+
+        like_count = ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id).count()
+
+        liked = False
+        if viewer:
+            liked = ProductQALike.query.filter_by(
+                product_id=pid, qa_id=qa_id, user_email=viewer
+            ).first() is not None
+
+        items.append({
+            "id": q.id,
+            "product_id": q.product_id,
+            "user_email": q.user_email,
+            "user_name": q.user_name,
+            "content": q.content,
+            "parent_id": q.parent_id,
+            "created_at": q.created_at.isoformat(),
+            "like_count": like_count,   # ✅ 新增
+            "liked": liked              # ✅ 新增
+        })
+
+    return jsonify({"ok": True, "items": items})
 
 # ----------- 商品讨论：新增（含回答） -----------
 @app.post("/api/products/<int:pid>/qa")
@@ -3137,18 +3156,3 @@ def api_follow_state():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
-
-@app.get("/api/products/<int:pid>/qa")
-def api_product_qa_list(pid):
-    viewer = (request.args.get("viewer") or "").strip().lower()
-
-    # items = ... 你原本取 QA 的列表（每条至少有 id）
-    # 假设 items 是 dict list
-    for it in items:
-        qa_id = int(it.get("id") or 0)
-        it["like_count"] = ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id).count()
-        it["liked"] = bool(
-            viewer and ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id, user_email=viewer).first()
-        )
-
-    return jsonify({"ok": True, "items": items})
