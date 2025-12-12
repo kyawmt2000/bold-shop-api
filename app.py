@@ -305,6 +305,18 @@ class OutfitCommentLike(db.Model):
         db.UniqueConstraint("comment_id", "user_email", name="uq_comment_like"),
     )
 
+class ProductQALike(db.Model):
+    __tablename__ = "product_qa_likes"
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, index=True, nullable=False)
+    qa_id = db.Column(db.Integer, index=True, nullable=False)  # 被点赞的 qa 记录 id
+    user_email = db.Column(db.String(255), index=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("product_id", "qa_id", "user_email", name="uq_product_qa_like"),
+    )
+
 def create_notification_for_outfit(outfit, action, actor=None, payload=None):
     """
     给帖子作者生成一条通知：
@@ -3049,6 +3061,30 @@ def api_outfit_comment_create(outfit_id):
         },
         "comment_count": int(comment_count)
     })
+
+@app.post("/api/products/<int:pid>/qa/<int:qa_id>/like")
+def api_product_qa_toggle_like(pid, qa_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        email = (data.get("email") or "").strip().lower()
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
+
+        # 是否已点赞
+        like = ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id, user_email=email).first()
+        if like:
+            db.session.delete(like)
+            db.session.commit()
+            liked = False
+        else:
+            db.session.add(ProductQALike(product_id=pid, qa_id=qa_id, user_email=email))
+            db.session.commit()
+            liked = True
+
+        like_count = ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id).count()
+        return jsonify({"ok": True, "liked": liked, "like_count": like_count})
+    except Exception as e:
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
 
 @app.delete("/api/outfits/<int:oid>/comments/<int:comment_id>")
 def api_delete_outfit_comment(oid, comment_id):
