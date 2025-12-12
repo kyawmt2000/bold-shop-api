@@ -2694,27 +2694,65 @@ from flask import request, jsonify
 from datetime import datetime
 
 # 获取某条 outfit 的评论列表
-@app.get("/api/outfits/<int:oid>/comments")
-def api_get_outfit_comments(oid):
-    limit = min(200, int(request.args.get("limit") or 100))
-    rows = (OutfitComment.query
-            .filter_by(outfit_id=oid)
-            .order_by(OutfitComment.created_at.asc())
-            .limit(limit)
-            .all())
-    return jsonify({
-        "ok": True,
-        "items": [
-            {
+@app.get("/api/outfits/<int:cid>/comments")
+def api_outfit_comments(cid):
+    """
+    返回某条穿搭的评论列表，同时带上：
+    - like_count: 这条评论被点了多少个赞
+    - liked: 当前 viewer 自己有没有点过赞
+    """
+    try:
+        viewer = (request.args.get("viewer") or "").strip().lower()
+
+        rows = OutfitComment.query.filter_by(
+            outfit_id=cid
+        ).order_by(OutfitComment.created_at.asc()).all()
+
+        items = []
+        for c in rows:
+            # 默认 0
+            like_count = c.like_count or 0
+
+            liked = False
+            if viewer:
+                rel = OutfitCommentLike.query.filter_by(
+                    comment_id=c.id,
+                    email=viewer
+                ).first()
+                liked = bool(rel)
+
+            items.append({
                 "id": c.id,
                 "outfit_id": c.outfit_id,
-                "author_email": c.author_email,
-                "author_name": c.author_name,
-                "text": c.text,
-                "created_at": c.created_at.isoformat()
-            }
-            for c in rows
-        ]
+                "author_email": c.email,
+                "author_name": c.author_name or "",
+                "text": c.text or "",
+                "created_at": c.created_at.isoformat() if c.created_at else "",
+                "like_count": like_count,
+                "liked": liked,
+            })
+
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        app.logger.exception("api_outfit_comments error")
+        return jsonify({"ok": False, "message": "server_error"}), 500
+
+@app.get("/api/follow/state")
+def api_follow_state():
+    follower = (request.args.get("follower") or "").strip().lower()
+    target   = (request.args.get("target")   or "").strip().lower()
+
+    if not follower or not target or follower == target:
+        return jsonify({"ok": True, "is_following": False})
+
+    rel = UserFollow.query.filter_by(
+        follower_email=follower,
+        target_email=target
+    ).first()
+
+    return jsonify({
+        "ok": True,
+        "is_following": bool(rel),
     })
 
 # 新增一条评论
@@ -2821,48 +2859,46 @@ def outfits_import_draft():
 @app.post("/api/outfits/<int:cid>/comments/<int:comment_id>/like")
 def api_toggle_comment_like(cid, comment_id):
     """
-    点赞 / 取消点赞 outfit 评论
-
-    body JSON:
-      - email: 当前用户邮箱
-      - action: "like" / "unlike" / "toggle"（默认 toggle）
+    切换一条评论的点赞状态：
+    - 如果之前点过赞 -> 取消赞，like_count -1
+    - 如果之前没点过 -> 点赞，like_count +1
+    返回当前这条评论的最新 like_count 和 liked
     """
-    data = request.get_json() or {}
-    email = (data.get("email") or "").strip().lower()
-    action = (data.get("action") or "toggle").lower()
+    try:
+        email = (request.json.get("email") if request.is_json else "") or ""
+        email = (email or request.args.get("email") or "").strip().lower()
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
 
-    if not email:
-        return jsonify(ok=False, message="missing_email"), 400
+        c = OutfitComment.query.filter_by(id=comment_id, outfit_id=cid).first()
+        if not c:
+            return jsonify({"ok": False, "message": "comment_not_found"}), 404
 
-    c = OutfitComment.query.filter_by(id=comment_id, outfit_id=cid).first()
-    if not c:
-        return jsonify(ok=False, message="comment_not_found"), 404
+        rel = OutfitCommentLike.query.filter_by(
+            comment_id=comment_id,
+            email=email
+        ).first()
 
-    like = OutfitCommentLike.query.filter_by(
-        comment_id=comment_id,
-        user_email=email,
-    ).first()
-
-    if action in ("like", "on", "1"):
-        if not like:
-            like = OutfitCommentLike(comment_id=comment_id, user_email=email)
-            db.session.add(like)
-    elif action in ("unlike", "off", "0"):
-        if like:
-            db.session.delete(like)
-    else:  # toggle
-        if like:
-            db.session.delete(like)
+        if rel:
+            # 之前点过赞 -> 取消
+            db.session.delete(rel)
+            c.like_count = max(0, (c.like_count or 0) - 1)
+            liked = False
         else:
-            like = OutfitCommentLike(comment_id=comment_id, user_email=email)
-            db.session.add(like)
+            # 之前没点过 -> 新增
+            rel = OutfitCommentLike(comment_id=comment_id, email=email)
+            db.session.add(rel)
+            c.like_count = (c.like_count or 0) + 1
+            liked = True
 
-    db.session.commit()
+        db.session.commit()
 
-    like_count = OutfitCommentLike.query.filter_by(comment_id=comment_id).count()
-    is_liked = (
-        OutfitCommentLike.query.filter_by(comment_id=comment_id, user_email=email).first()
-        is not None
-    )
-
-    return jsonify(ok=True, like_count=like_count, liked=is_liked)
+        return jsonify({
+            "ok": True,
+            "comment_id": c.id,
+            "like_count": c.like_count or 0,
+            "liked": liked,
+        })
+    except Exception as e:
+        app.logger.exception("api_toggle_comment_like error")
+        return jsonify({"ok": False, "message": "server_error"}), 500
