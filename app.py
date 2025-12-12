@@ -285,6 +285,10 @@ class OutfitComment(db.Model):
     author_avatar = db.Column(db.Text, nullable=True)
 
     text = db.Column(db.Text, nullable=False)
+
+    # ✅ 回复：parent_id 指向被回复的评论 id（顶级评论为 None）
+    parent_id = db.Column(db.Integer, nullable=True, index=True)
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 # 例子：Outfit 评论点赞表
@@ -353,8 +357,14 @@ def ensure_outfit_comment_tables():
                     author_name VARCHAR(255) NOT NULL,
                     author_avatar TEXT,
                     text TEXT NOT NULL,
+                    parent_id INTEGER,
                     created_at TIMESTAMP DEFAULT NOW()
                 )
+            """))
+
+            conn.execute(db.text("""
+                ALTER TABLE outfit_comments
+                ADD COLUMN IF NOT EXISTS parent_id INTEGER
             """))
 
             # comment likes（统一 user_email）
@@ -2702,6 +2712,7 @@ def api_outfit_comments(outfit_id):
                 "author_name": author_name,
                 "author_avatar": author_avatar,
                 "text": c.text or "",
+                "parent_id": c.parent_id,
                 "created_at": c.created_at.isoformat() if c.created_at else None,
                 "like_count": int(like_count),
                 "liked": bool(liked),
@@ -2935,7 +2946,8 @@ def api_outfit_comment_create(outfit_id):
         author_email=author_email,
         author_name=author_name,
         author_avatar=author_avatar,
-        text=text
+        text=text,
+        parent_id=parent_id,
     )
     db.session.add(c)
     db.session.commit()
@@ -2953,11 +2965,48 @@ def api_outfit_comment_create(outfit_id):
             "author_name": c.author_name,
             "author_avatar": c.author_avatar,
             "text": c.text,
+            "parent_id": c.parent_id,
             "created_at": c.created_at.isoformat() + "Z",
         },
         "comment_count": int(comment_count)
     })
 
+@app.delete("/api/outfits/<int:oid>/comments/<int:comment_id>")
+def api_delete_outfit_comment(oid, comment_id):
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or data.get("author_email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "message": "missing_email"}), 400
+
+    try:
+        c = OutfitComment.query.filter_by(id=comment_id, outfit_id=oid).first()
+        if not c:
+            return jsonify({"ok": False, "message": "comment_not_found"}), 404
+
+        # ✅ 只能删自己的评论
+        if (c.author_email or "").strip().lower() != email:
+            return jsonify({"ok": False, "message": "forbidden"}), 403
+
+        # ✅ 先删该评论&其回复的点赞
+        reply_ids = [
+            r.id for r in OutfitComment.query
+            .filter_by(outfit_id=oid, parent_id=comment_id).all()
+        ]
+        all_ids = [comment_id] + reply_ids
+
+        OutfitCommentLike.query.filter(OutfitCommentLike.comment_id.in_(all_ids)).delete(synchronize_session=False)
+
+        # ✅ 先删回复，再删主评论
+        OutfitComment.query.filter_by(outfit_id=oid, parent_id=comment_id).delete(synchronize_session=False)
+        db.session.delete(c)
+        db.session.commit()
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("api_delete_outfit_comment error: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
+      
 @app.get("/api/follow/state")
 def api_follow_state():
     follower = (request.args.get("follower") or "").strip().lower()
