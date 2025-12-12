@@ -2655,11 +2655,12 @@ def api_outfit_comments(oid):
                 "text": c.text or "",
                 "created_at": c.created_at.isoformat() if c.created_at else None,
                 "like_count": like_count,
-                "liked": liked,   # ✅ 前端更好用
+                "liked": liked,
             })
 
         return jsonify({"ok": True, "items": items})
-        except Exception as e:
+
+    except Exception as e:
         app.logger.exception("api_outfit_comments error: %s", e)
         return jsonify({
             "ok": False,
