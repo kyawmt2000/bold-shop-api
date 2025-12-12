@@ -293,12 +293,12 @@ class OutfitCommentLike(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     outfit_id = db.Column(db.Integer, nullable=False)
-    comment_id = db.Column(db.Integer, nullable=False)
-    email = db.Column(db.String(255), nullable=False)
+    comment_id = db.Column(db.Integer, nullable=False, index=True)
+    user_email = db.Column(db.String(255), nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     __table_args__ = (
-        db.UniqueConstraint("comment_id", "email", name="uq_comment_like"),
+        db.UniqueConstraint("comment_id", "user_email", name="uq_comment_like"),
     )
 
 def create_notification_for_outfit(outfit, action, actor=None, payload=None):
@@ -344,7 +344,7 @@ with app.app_context():
 def ensure_outfit_comment_tables():
     try:
         with db.engine.begin() as conn:
-            # 1) comments
+            # comments
             conn.execute(db.text("""
                 CREATE TABLE IF NOT EXISTS outfit_comments (
                     id SERIAL PRIMARY KEY,
@@ -357,43 +357,21 @@ def ensure_outfit_comment_tables():
                 )
             """))
 
-            # 2) comment likes (统一用 user_email)
+            # comment likes（统一 user_email）
             conn.execute(db.text("""
                 CREATE TABLE IF NOT EXISTS outfit_comment_likes (
                     id SERIAL PRIMARY KEY,
+                    outfit_id INTEGER NOT NULL,
                     comment_id INTEGER NOT NULL,
                     user_email VARCHAR(255) NOT NULL,
                     created_at TIMESTAMP DEFAULT NOW()
                 )
             """))
 
-            # 如果旧表是 email 字段/或别的字段，这里做兼容：没有 user_email 就加
-            conn.execute(db.text("""
-                ALTER TABLE outfit_comment_likes
-                ADD COLUMN IF NOT EXISTS user_email VARCHAR(255)
-            """))
-
-            # 如果你以前用的是 email 字段（有些库里可能存在），把 email 复制到 user_email
-            conn.execute(db.text("""
-                DO $$
-                BEGIN
-                    IF EXISTS (
-                        SELECT 1 FROM information_schema.columns
-                        WHERE table_name='outfit_comment_likes' AND column_name='email'
-                    ) THEN
-                        UPDATE outfit_comment_likes
-                        SET user_email = COALESCE(user_email, email);
-                    END IF;
-                END$$;
-            """))
-
-            # ✅ 正确的唯一索引：comment_id + user_email
             conn.execute(db.text("""
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_comment_like
                 ON outfit_comment_likes (comment_id, user_email)
             """))
-
-        app.logger.info("ensure_outfit_comment_tables ok")
     except Exception as e:
         app.logger.exception("ensure_outfit_comment_tables failed: %s", e)
 
@@ -1762,55 +1740,7 @@ def outfit_feed():
     rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
     items = [_outfit_to_dict(o) for o in rows]
     return jsonify({"items": items, "has_more": False})
-
-@app.post("/api/outfits/<int:oid>/comment")
-def outfit_comment(oid):
-    delta = 1
-    body = {}
-    actor = {}
-    comment_text = ""
-
-    try:
-        body = request.get_json(silent=True) or {}
-        if "delta" in body:
-            delta = int(body["delta"])
-    except Exception:
-        body = {}
-
-    try:
-        actor = {
-            "email": body.get("actor_email"),
-            "name": body.get("actor_name"),
-            "avatar": body.get("actor_avatar"),
-        }
-        comment_text = (body.get("text") or "")[:200]  # 评论内容可选，截断一下
-    except Exception:
-        actor = {}
-        comment_text = ""
-
-    row = Outfit.query.get_or_404(oid)
-    old = row.comments or 0
-    row.comments = max(0, old + delta)
-
-    if delta > 0:
-        try:
-            create_notification_for_outfit(
-                row,
-                action="comment",
-                actor=actor,
-                payload={"text": comment_text, "delta": delta},
-            )
-        except Exception as e:
-            app.logger.exception("create comment notification failed: %s", e)
-
-    db.session.commit()
-    comments = row.comments or 0
-    return jsonify({
-        "id": oid,
-        "comments": comments,
-        "comments_count": comments,
-    })
-
+  
 @app.get("/api/notifications")
 def api_notifications():
     """
@@ -2588,55 +2518,6 @@ def outfits_by_ts(ts_ms: int):
 from flask import request, jsonify
 from datetime import datetime
 
-# 获取某条 outfit 的评论列表
-@app.get("/api/outfits/<int:oid>/comments")
-def api_outfit_comments(oid):
-    """
-    返回某条穿搭的评论列表 + 每条评论的点赞数
-    可选参数：
-      ?viewer=xxx@email.com   用于判断当前用户有没有点过赞
-    """
-    viewer = (request.args.get("viewer") or "").strip().lower()
-
-    try:
-        comments = (
-            OutfitComment.query
-            .filter_by(outfit_id=oid)
-            .order_by(OutfitComment.created_at.asc())
-            .all()
-        )
-
-        items = []
-        for c in comments:
-            like_q = OutfitCommentLike.query.filter_by(comment_id=c.id)
-            like_count = like_q.count()
-
-            liked = False
-            if viewer:
-                liked = like_q.filter_by(email=viewer).first() is not None
-
-            items.append({
-                "id": c.id,
-                "outfit_id": c.outfit_id,
-                "author_email": (c.author_email or "").lower(),
-                "author_name": c.author_name or "",
-                "text": c.text or "",
-                "created_at": c.created_at.isoformat() if c.created_at else None,
-                "like_count": like_count,
-                "liked": liked,
-            })
-
-        return jsonify({"ok": True, "items": items})
-
-    except Exception as e:
-        app.logger.exception("api_outfit_comments error: %s", e)
-        return jsonify({
-            "ok": False,
-            "message": "server_error",
-            "detail": str(e),
-            "type": e.__class__.__name__,
-        }), 500
-
 @app.get("/api/debug/comments_tables")
 def debug_comments_tables():
     try:
@@ -2728,7 +2609,7 @@ def api_outfit_comments(outfit_id):
 
             liked = False
             if viewer:
-                liked = like_q.filter_by(email=viewer).first() is not None
+                liked = like_q.filter_by(user_email=viewer).first() is not None
 
             items.append({
                 "id": c.id,
