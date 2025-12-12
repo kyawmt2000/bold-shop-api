@@ -1019,6 +1019,30 @@ with app.app_context():
     except Exception as e:
         app.logger.exception("run ensure_outfits_legacy_columns on startup failed: %s", e)
 
+def ensure_user_settings_columns():
+    try:
+        with db.engine.begin() as conn:
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS gender VARCHAR(16)"))  # ⭐关键
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS phone VARCHAR(64)"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS public_profile BOOLEAN DEFAULT TRUE"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS show_followers BOOLEAN DEFAULT TRUE"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS show_following BOOLEAN DEFAULT TRUE"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS dm_who VARCHAR(16) DEFAULT 'all'"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS blacklist_json TEXT"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS lang VARCHAR(8) DEFAULT 'en'"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP"))
+        app.logger.info("ensure_user_settings_columns: OK")
+    except Exception as e:
+        app.logger.exception("ensure_user_settings_columns failed: %s", e)
+
+with app.app_context():
+    ensure_user_settings_columns()
+
 @app.get("/api/admin/users")
 def api_admin_users():
     """
