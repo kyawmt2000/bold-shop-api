@@ -2653,9 +2653,6 @@ def admin_migrate():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
-
 # ------------------- Additive Outfit helpers (non-breaking) -------------------
 from datetime import datetime, timezone, timedelta
 
@@ -2727,8 +2724,48 @@ def api_outfit_comments(oid):
 
         return jsonify({"ok": True, "items": items})
     except Exception as e:
-        app.logger.exception("api_outfit_comments error: %s", e)
-        return jsonify({"ok": False, "message": "server_error"}), 500
+    app.logger.exception("api_outfit_comments error: %s", e)
+    return jsonify({
+        "ok": False,
+        "message": "server_error",
+        "detail": str(e),
+        "type": e.__class__.__name__,
+    }), 500
+
+@app.get("/api/debug/comments_tables")
+def debug_comments_tables():
+    try:
+        with db.engine.connect() as conn:
+            # 适配 Postgres / SQLite
+            dialect = conn.engine.dialect.name.lower()
+            if "postgres" in dialect:
+                q = db.text("""
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema='public'
+                    AND table_name IN ('outfit_comments','outfit_comment_likes')
+                    ORDER BY table_name
+                """)
+                rows = conn.execute(q).fetchall()
+                tables = [r[0] for r in rows]
+            else:
+                q = db.text("""
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name IN ('outfit_comments','outfit_comment_likes')
+                    ORDER BY name
+                """)
+                rows = conn.execute(q).fetchall()
+                tables = [r[0] for r in rows]
+
+            # 顺便查数量（如果表存在）
+            counts = {}
+            for t in ("outfit_comments", "outfit_comment_likes"):
+                if t in tables:
+                    counts[t] = conn.execute(db.text(f"SELECT COUNT(*) FROM {t}")).scalar()
+
+            return jsonify({"ok": True, "dialect": dialect, "tables": tables, "counts": counts})
+    except Exception as e:
+        return jsonify({"ok": False, "detail": str(e), "type": e.__class__.__name__}), 500
 
 # 新增一条评论
 @app.post("/api/outfits/<int:oid>/comments")
@@ -2878,3 +2915,6 @@ def api_follow_state():
 
     rel = UserFollow.query.filter_by(follower_email=follower, target_email=target).first()
     return jsonify({"ok": True, "is_following": bool(rel)})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
