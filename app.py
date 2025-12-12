@@ -2739,23 +2739,33 @@ def api_toggle_comment_like(oid, comment_id):
         if not c:
             return jsonify({"ok": False, "message": "comment_not_found"}), 404
 
-       rel = OutfitCommentLike.query.filter_by(comment_id=comment_id, user_email=email).first()
+        rel = OutfitCommentLike.query.filter_by(
+            comment_id=comment_id,
+            user_email=email
+        ).first()
 
-if rel:
-    db.session.delete(rel)
-    liked = False
-else:
-    db.session.add(OutfitCommentLike(outfit_id=oid, comment_id=comment_id, user_email=email))
-    liked = True
+        if rel:
+            db.session.delete(rel)
+            liked = False
+        else:
+            db.session.add(
+                OutfitCommentLike(
+                    outfit_id=oid,
+                    comment_id=comment_id,
+                    user_email=email
+                )
+            )
+            liked = True
 
         db.session.commit()
-        like_count = OutfitCommentLike.query.filter_by(comment_id=comment_id).count()
 
-        return jsonify({"ok": True, "like_count": like_count, "liked": liked})
+        like_count = OutfitCommentLike.query.filter_by(comment_id=comment_id).count()
+        return jsonify({"ok": True, "like_count": int(like_count), "liked": bool(liked)})
+
     except Exception as e:
         app.logger.exception("api_toggle_comment_like error: %s", e)
         db.session.rollback()
-        return jsonify({"ok": False, "message": "server_error"}), 500
+        return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
 
 @app.post("/api/outfits/<int:outfit_id>/like")
 def api_outfit_like_toggle(outfit_id):
