@@ -3137,3 +3137,18 @@ def api_follow_state():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
+
+@app.get("/api/products/<int:pid>/qa")
+def api_product_qa_list(pid):
+    viewer = (request.args.get("viewer") or "").strip().lower()
+
+    # items = ... 你原本取 QA 的列表（每条至少有 id）
+    # 假设 items 是 dict list
+    for it in items:
+        qa_id = int(it.get("id") or 0)
+        it["like_count"] = ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id).count()
+        it["liked"] = bool(
+            viewer and ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id, user_email=viewer).first()
+        )
+
+    return jsonify({"ok": True, "items": items})
