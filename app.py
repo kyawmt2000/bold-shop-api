@@ -3252,14 +3252,43 @@ def api_outfit_comment_like_users(oid, cid):
                 .order_by(OutfitCommentLike.created_at.desc())
                 .limit(200).all())
 
+        # 1) 收集所有点赞用户 email
+        emails = list({
+            (r.user_email or "").strip().lower()
+            for r in rows
+            if r.user_email
+        })
+
+        # 2) 一次性查 UserSetting（避免 N+1）
+        setting_map = {}
+        if emails:
+            settings = (UserSetting.query
+                        .filter(func.lower(UserSetting.email).in_(emails))
+                        .all())
+            setting_map = {s.email.lower(): s for s in settings}
+
+        # 3) 组装返回
         items = []
         for r in rows:
             email = (r.user_email or "").strip().lower()
+            s = setting_map.get(email)
+
+            name = (getattr(s, "nickname", "") or "").strip()
+            if not name:
+                name = email.split("@")[0] if email else "User"
+
+            avatar = (getattr(s, "avatar_url", "") or "").strip()
+            if not avatar:
+                avatar = "https://boldmm.shop/default-avatar.png"
+
             items.append({
-                "name": email.split("@")[0] if email else "User",
-                "avatar": "https://boldmm.shop/default-avatar.png"
+                "name": name,
+                "avatar": avatar
+                # 不返回 email（按你的要求）
             })
 
         return jsonify({"ok": True, "items": items})
+
     except Exception as e:
+        app.logger.exception("api_outfit_comment_like_users failed: %s", e)
         return jsonify({"ok": False, "message": str(e)}), 500
