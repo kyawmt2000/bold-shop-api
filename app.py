@@ -1097,7 +1097,7 @@ def _fmt_dt(dt):
 
 @app.get("/api/admin/users")
 def api_admin_users():
-    # ✅ 用 ADMIN_API_KEY 保护（如果你设置了环境变量）
+    # ✅ 用 ADMIN_API_KEY 保护（推荐）
     admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
     if admin_key:
         req_key = (request.headers.get("X-API-Key") or "").strip()
@@ -1105,60 +1105,62 @@ def api_admin_users():
             return jsonify({"ok": False, "message": "forbidden"}), 403
 
     try:
-        limit = min(int(request.args.get("limit") or 500), 2000)
-    except:
-        limit = 500
+        try:
+            limit = int(request.args.get("limit") or 500)
+        except:
+            limit = 500
+        limit = min(max(limit, 1), 2000)
 
-    try:
         rows = db.session.execute(text("""
-    SELECT
-      id,
-      email,
-      COALESCE(user_id,'')     AS user_id,
-      COALESCE(nickname,'')    AS nickname,
-      COALESCE(phone,'')       AS phone,
-      COALESCE(gender,'')      AS gender,
-      COALESCE(birthday,'')    AS birthday,
-      COALESCE(avatar_url,'')  AS avatar_url,
-      created_at,
-      updated_at
-    FROM user_settings
-    ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST, id DESC
-    LIMIT :limit
-"""), {"limit": limit}).mappings().all()
+            SELECT
+              id,
+              email,
+              COALESCE(user_id,'')    AS user_id,
+              COALESCE(nickname,'')   AS nickname,
+              COALESCE(phone,'')      AS phone,
+              COALESCE(gender,'')     AS gender,
+              COALESCE(birthday,'')   AS birthday,
+              COALESCE(avatar_url,'') AS avatar_url,
+              created_at,
+              updated_at
+            FROM user_settings
+            ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST, id DESC
+            LIMIT :limit
+        """), {"limit": limit}).mappings().all()
 
         out = []
-for r in rows:
-    email = (r.get("email") or "").strip().lower()
+        for r in rows:
+            email = (r.get("email") or "").strip().lower()
+            uid = r.get("user_id") or ""
 
-    uid = r.get("user_id") or ""
-    if not uid and email:
-        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-        if not s:
-            s = UserSetting(email=email)
-            # ✅ 给新记录一个 created_at（如果你加了列）
-            if hasattr(s, "created_at"):
-                s.created_at = datetime.utcnow()
-            db.session.add(s)
-            db.session.commit()
+            # 没有 user_id 就补齐（只生成一次并写回 user_settings）
+            if not uid and email:
+                s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+                if not s:
+                    s = UserSetting(email=email)
+                    # 如果你表里有 created_at 列就顺便写入
+                    if hasattr(s, "created_at"):
+                        s.created_at = datetime.utcnow()
+                    db.session.add(s)
+                    db.session.commit()
 
-        uid = _ensure_user_id(s) or ""
+                uid = _ensure_user_id(s) or ""
 
-    ts = r.get("created_at") or r.get("updated_at")
-    created_at_str = ts.isoformat(timespec="seconds") if ts else ""
+            ts = r.get("created_at") or r.get("updated_at")
+            created_at_str = ts.isoformat(timespec="seconds") if ts else ""
 
-    out.append({
-        "user_id": uid,
-        "email": email,
-        "nickname": r.get("nickname") or "",
-        "phone": r.get("phone") or "",
-        "created_at": created_at_str,
-        "gender": r.get("gender") or "",
-        "birthday": r.get("birthday") or "",
-        "avatar": r.get("avatar_url") or "",
-    })
+            out.append({
+                "user_id": uid,
+                "email": email,
+                "nickname": r.get("nickname") or "",
+                "phone": r.get("phone") or "",
+                "created_at": created_at_str,
+                "gender": r.get("gender") or "",
+                "birthday": r.get("birthday") or "",
+                "avatar": r.get("avatar_url") or "",
+            })
 
-return jsonify(out), 200
+        return jsonify(out), 200
 
     except Exception as e:
         app.logger.exception("api_admin_users failed: %s", e)
