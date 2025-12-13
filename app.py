@@ -1057,13 +1057,14 @@ with app.app_context():
 def ensure_user_settings_columns():
     try:
         with db.engine.begin() as conn:
-            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS user_id VARCHAR(14)"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS user_id VARCHAR(32)"))
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS created_at TIMESTAMP"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS birthday VARCHAR(16)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS city VARCHAR(120)"))
-            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS gender VARCHAR(16)"))  # ⭐关键
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS gender VARCHAR(16)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS phone VARCHAR(64)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS public_profile BOOLEAN DEFAULT TRUE"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS show_followers BOOLEAN DEFAULT TRUE"))
@@ -1075,7 +1076,7 @@ def ensure_user_settings_columns():
         app.logger.info("ensure_user_settings_columns: OK")
     except Exception as e:
         app.logger.exception("ensure_user_settings_columns failed: %s", e)
-
+        
 with app.app_context():
     ensure_user_settings_columns()
 
@@ -1110,56 +1111,54 @@ def api_admin_users():
 
     try:
         rows = db.session.execute(text("""
-            SELECT
-              u.id           AS user_pk,
-              u.email        AS email,
-              u.created_at   AS created_at,
-
-              us.user_id     AS user_id,
-              us.nickname    AS nickname,
-              us.phone       AS phone,
-              us.gender      AS gender,
-              us.birthday    AS birthday,
-              us.avatar_url  AS avatar_url
-            FROM users u
-            LEFT JOIN user_settings us
-              ON lower(us.email) = lower(u.email)
-            ORDER BY u.created_at DESC
-            LIMIT :limit
-        """), {"limit": limit}).mappings().all()
+    SELECT
+      id,
+      email,
+      COALESCE(user_id,'')     AS user_id,
+      COALESCE(nickname,'')    AS nickname,
+      COALESCE(phone,'')       AS phone,
+      COALESCE(gender,'')      AS gender,
+      COALESCE(birthday,'')    AS birthday,
+      COALESCE(avatar_url,'')  AS avatar_url,
+      created_at,
+      updated_at
+    FROM user_settings
+    ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST, id DESC
+    LIMIT :limit
+"""), {"limit": limit}).mappings().all()
 
         out = []
-        for r in rows:
-            # 没有 user_settings 行时，这些会是 None
-            uid = r.get("user_id") or ""
+for r in rows:
+    email = (r.get("email") or "").strip().lower()
 
-            # ✅ 如果你想：没有 user_id 就“自动生成并写入 user_settings”
-            # （这样 admin 一打开就把所有账号补齐 user_id）
-            if not uid:
-                email = (r.get("email") or "").strip().lower()
-                if email:
-                    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-                    if not s:
-                        s = UserSetting(email=email)
-                        db.session.add(s)
-                        db.session.commit()
-                    uid = _ensure_user_id(s)  # 你之前写的：4随机+DDMMYY+4随机
+    uid = r.get("user_id") or ""
+    if not uid and email:
+        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+        if not s:
+            s = UserSetting(email=email)
+            # ✅ 给新记录一个 created_at（如果你加了列）
+            if hasattr(s, "created_at"):
+                s.created_at = datetime.utcnow()
+            db.session.add(s)
+            db.session.commit()
 
-            created_at = r.get("created_at")
-            created_at_str = created_at.isoformat(timespec="seconds") if created_at else ""
+        uid = _ensure_user_id(s) or ""
 
-            out.append({
-                "user_id": uid,
-                "email": r.get("email") or "",
-                "nickname": r.get("nickname") or "",
-                "phone": r.get("phone") or "",
-                "created_at": created_at_str,
-                "gender": r.get("gender") or "",
-                "birthday": r.get("birthday") or "",
-                "avatar": r.get("avatar_url") or "",
-            })
+    ts = r.get("created_at") or r.get("updated_at")
+    created_at_str = ts.isoformat(timespec="seconds") if ts else ""
 
-        return jsonify(out), 200
+    out.append({
+        "user_id": uid,
+        "email": email,
+        "nickname": r.get("nickname") or "",
+        "phone": r.get("phone") or "",
+        "created_at": created_at_str,
+        "gender": r.get("gender") or "",
+        "birthday": r.get("birthday") or "",
+        "avatar": r.get("avatar_url") or "",
+    })
+
+return jsonify(out), 200
 
     except Exception as e:
         app.logger.exception("api_admin_users failed: %s", e)
