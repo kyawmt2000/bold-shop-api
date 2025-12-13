@@ -3115,6 +3115,57 @@ def api_product_qa_toggle_like(pid, qa_id):
     except Exception as e:
         return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
 
+from uuid import uuid4
+from datetime import datetime
+from werkzeug.utils import secure_filename
+import os
+
+@app.post("/api/upload/comment-image")
+def upload_comment_image():
+    """
+    上传评论图片到 GCS
+    FormData:
+      - file: 图片文件
+      - pid: 商品 id
+      - kind: review / qa  (可选，用来分目录)
+    return:
+      {"ok": true, "url": "https://...."}
+    """
+    try:
+        if not GCS_BUCKET:
+            return jsonify({"ok": False, "message": "gcs_not_configured"}), 500
+
+        upfile = request.files.get("file")
+        if not upfile or not upfile.filename:
+            return jsonify({"ok": False, "message": "no_file"}), 400
+
+        pid = (request.form.get("pid") or "0").strip()
+        kind = (request.form.get("kind") or "misc").strip().lower()
+        kind = kind if kind in ("review","qa","misc") else "misc"
+
+        raw = secure_filename(upfile.filename or "img.jpg")
+        _, ext = os.path.splitext(raw)
+        ext = (ext or ".jpg").lower()
+        if ext not in (".jpg",".jpeg",".png",".webp"):
+            ext = ".jpg"
+
+        # 路径：comment_images/products/<pid>/<kind>/YYYY/MM/DD/uuid.jpg
+        now = datetime.utcnow()
+        key = f"comment_images/products/{pid}/{kind}/{now:%Y/%m/%d}/{uuid4().hex}{ext}"
+
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(key)
+
+        content_type = upfile.mimetype or "image/jpeg"
+        blob.upload_from_file(upfile.stream, content_type=content_type)
+        blob.make_public() 
+
+        return jsonify({"ok": True, "url": blob.public_url})
+    except Exception as e:
+        app.logger.exception(e)
+        return jsonify({"ok": False, "message": "upload_failed"}), 500
+
 @app.delete("/api/outfits/<int:oid>/comments/<int:comment_id>")
 def api_delete_outfit_comment(oid, comment_id):
     data = request.get_json(silent=True) or {}
@@ -3190,5 +3241,24 @@ def api_product_qa_like_users(pid, qa_id):
             "ok": True,
             "items": users
         })
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 500
+
+@app.get("/api/outfits/<int:oid>/comments/<int:cid>/likes")
+def api_outfit_comment_like_users(oid, cid):
+    try:
+        rows = OutfitCommentLike.query.filter_by(outfit_id=oid, comment_id=cid) \
+            .order_by(OutfitCommentLike.created_at.desc()) \
+            .limit(200).all()
+
+        items = []
+        for r in rows:
+            items.append({
+                "name": (r.user_name or (r.user_email.split("@")[0] if r.user_email else "User")),
+                "avatar": r.user_avatar or "https://boldmm.shop/default-avatar.png"
+                # ✅ 不返回 email（你要求不显示邮箱）
+            })
+
+        return jsonify({"ok": True, "items": items})
     except Exception as e:
         return jsonify({"ok": False, "message": str(e)}), 500
