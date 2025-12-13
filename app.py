@@ -1096,13 +1096,9 @@ def _fmt_dt(dt):
 @app.get("/api/admin/users")
 def api_admin_users():
     """
-    后台用户列表：
-    主来源：UserSetting（因为 user_id 在这里）
-    返回字段：
-      user_id, email, nickname, phone, created_at, gender, birthday, avatar
+    后台用户列表（只读）：
+    来源：UserSetting
     """
-
-    # ✅ 用 ADMIN_API_KEY 保护（推荐）
     admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
     if admin_key:
         req_key = (request.headers.get("X-API-Key") or "").strip()
@@ -1117,7 +1113,6 @@ def api_admin_users():
     try:
         q = UserSetting.query
 
-        # 排序：有 created_at 用 created_at；否则用 updated_at；否则用 id
         if hasattr(UserSetting, "created_at"):
             q = q.order_by(UserSetting.created_at.desc())
         elif hasattr(UserSetting, "updated_at"):
@@ -1129,29 +1124,23 @@ def api_admin_users():
 
         out = []
         for s in rows:
-            # ✅ 确保 user_id 存在（只生成一次）
-            try:
-                uid = _ensure_user_id(s)
-            except:
-                uid = getattr(s, "user_id", "") or ""
-
             ts = getattr(s, "created_at", None) or getattr(s, "updated_at", None)
 
             out.append({
-                "user_id": uid or "",
-                "email": (getattr(s, "email", "") or ""),
-                "nickname": (getattr(s, "nickname", "") or ""),
-                "phone": (getattr(s, "phone", "") or ""),
+                "user_id": getattr(s, "user_id", "") or "",
+                "email": getattr(s, "email", "") or "",
+                "nickname": getattr(s, "nickname", "") or "",
+                "phone": getattr(s, "phone", "") or "",
                 "created_at": ts.isoformat(timespec="seconds") if ts else "",
-                "gender": (getattr(s, "gender", "") or ""),
-                "birthday": (getattr(s, "birthday", "") or ""),
-                "avatar": (getattr(s, "avatar_url", None) or getattr(s, "avatar", None) or ""),
+                "gender": getattr(s, "gender", "") or "",
+                "birthday": getattr(s, "birthday", "") or "",
+                "avatar": getattr(s, "avatar_url", None) or getattr(s, "avatar", None) or "",
             })
 
         return jsonify(out), 200
 
     except Exception as e:
-        app.logger.exception("api_admin_users failed: %s", e)
+        app.logger.exception("api_admin_users failed")
         return jsonify({"ok": False, "error": "db_error"}), 500
         
 # -------------------- 一次性修复 outfits 表字段 --------------------
