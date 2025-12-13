@@ -1095,10 +1095,6 @@ def _fmt_dt(dt):
 
 @app.get("/api/admin/users")
 def api_admin_users():
-    """
-    后台用户列表（只读）：
-    来源：UserSetting
-    """
     admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
     if admin_key:
         req_key = (request.headers.get("X-API-Key") or "").strip()
@@ -1106,42 +1102,30 @@ def api_admin_users():
             return jsonify({"ok": False, "message": "forbidden"}), 403
 
     try:
-        limit = min(int(request.args.get("limit") or 500), 2000)
-    except:
-        limit = 500
-
-    try:
-        q = UserSetting.query
-
-        if hasattr(UserSetting, "created_at"):
-            q = q.order_by(UserSetting.created_at.desc())
-        elif hasattr(UserSetting, "updated_at"):
-            q = q.order_by(UserSetting.updated_at.desc().nullslast())
-        else:
-            q = q.order_by(UserSetting.id.desc())
-
-        rows = q.limit(limit).all()
+        rows = db.session.execute(text("""
+            SELECT id, email
+            FROM user_settings
+            ORDER BY id DESC
+            LIMIT 500
+        """)).mappings().all()
 
         out = []
-        for s in rows:
-            ts = getattr(s, "created_at", None) or getattr(s, "updated_at", None)
-
+        for r in rows:
             out.append({
-                "user_id": getattr(s, "user_id", "") or "",
-                "email": getattr(s, "email", "") or "",
-                "nickname": getattr(s, "nickname", "") or "",
-                "phone": getattr(s, "phone", "") or "",
-                "created_at": ts.isoformat(timespec="seconds") if ts else "",
-                "gender": getattr(s, "gender", "") or "",
-                "birthday": getattr(s, "birthday", "") or "",
-                "avatar": getattr(s, "avatar_url", None) or getattr(s, "avatar", None) or "",
+                "user_id": "",              # 先空
+                "email": r.get("email") or "",
+                "nickname": "",
+                "phone": "",
+                "created_at": "",
+                "gender": "",
+                "birthday": "",
+                "avatar": "",
             })
-
         return jsonify(out), 200
 
     except Exception as e:
         app.logger.exception("api_admin_users failed")
-        return jsonify({"ok": False, "error": "db_error"}), 500
+        return jsonify({"ok": False, "error": "db_error", "detail": str(e)}), 500
         
 # -------------------- 一次性修复 outfits 表字段 --------------------
 @app.get("/api/debug/fix_outfits_columns")
