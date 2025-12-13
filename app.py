@@ -31,6 +31,13 @@ CORS(
     max_age=86400,
 )
 
+@app.after_request
+def add_cors_headers(resp):
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return resp
+
 # 从 Render 环境变量读取 DATABASE_URL
 db_url = os.getenv("DATABASE_URL")
 if not db_url:
