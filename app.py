@@ -1096,6 +1096,7 @@ def _fmt_dt(dt):
 
 @app.get("/api/admin/users")
 def api_admin_users():
+    # ✅ 用 ADMIN_API_KEY 保护（如果你设置了环境变量）
     admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
     if admin_key:
         req_key = (request.headers.get("X-API-Key") or "").strip()
@@ -1103,35 +1104,61 @@ def api_admin_users():
             return jsonify({"ok": False, "message": "forbidden"}), 403
 
     try:
-        try:
-            rows = db.session.execute(text("""
-                SELECT id, email, user_id
-                FROM user_settings
-                ORDER BY id DESC
-                LIMIT 500
-            """)).mappings().all()
-            has_user_id = True
-        except Exception:
-            rows = db.session.execute(text("""
-                SELECT id, email
-                FROM user_settings
-                ORDER BY id DESC
-                LIMIT 500
-            """)).mappings().all()
-            has_user_id = False
+        limit = min(int(request.args.get("limit") or 500), 2000)
+    except:
+        limit = 500
+
+    try:
+        rows = db.session.execute(text("""
+            SELECT
+              u.id           AS user_pk,
+              u.email        AS email,
+              u.created_at   AS created_at,
+
+              us.user_id     AS user_id,
+              us.nickname    AS nickname,
+              us.phone       AS phone,
+              us.gender      AS gender,
+              us.birthday    AS birthday,
+              us.avatar_url  AS avatar_url
+            FROM users u
+            LEFT JOIN user_settings us
+              ON lower(us.email) = lower(u.email)
+            ORDER BY u.created_at DESC
+            LIMIT :limit
+        """), {"limit": limit}).mappings().all()
 
         out = []
         for r in rows:
+            # 没有 user_settings 行时，这些会是 None
+            uid = r.get("user_id") or ""
+
+            # ✅ 如果你想：没有 user_id 就“自动生成并写入 user_settings”
+            # （这样 admin 一打开就把所有账号补齐 user_id）
+            if not uid:
+                email = (r.get("email") or "").strip().lower()
+                if email:
+                    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+                    if not s:
+                        s = UserSetting(email=email)
+                        db.session.add(s)
+                        db.session.commit()
+                    uid = _ensure_user_id(s)  # 你之前写的：4随机+DDMMYY+4随机
+
+            created_at = r.get("created_at")
+            created_at_str = created_at.isoformat(timespec="seconds") if created_at else ""
+
             out.append({
-                "user_id": (r.get("user_id") or "") if has_user_id else "",
+                "user_id": uid,
                 "email": r.get("email") or "",
-                "nickname": "",
-                "phone": "",
-                "created_at": "",
-                "gender": "",
-                "birthday": "",
-                "avatar": "",
+                "nickname": r.get("nickname") or "",
+                "phone": r.get("phone") or "",
+                "created_at": created_at_str,
+                "gender": r.get("gender") or "",
+                "birthday": r.get("birthday") or "",
+                "avatar": r.get("avatar_url") or "",
             })
+
         return jsonify(out), 200
 
     except Exception as e:
