@@ -1057,6 +1057,7 @@ with app.app_context():
 def ensure_user_settings_columns():
     try:
         with db.engine.begin() as conn:
+            conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS user_id VARCHAR(14)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS nickname VARCHAR(80)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)"))
             conn.execute(text("ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS bio VARCHAR(120)"))
@@ -1102,17 +1103,27 @@ def api_admin_users():
             return jsonify({"ok": False, "message": "forbidden"}), 403
 
     try:
-        rows = db.session.execute(text("""
-            SELECT id, email, user_id
-            FROM user_settings
-            ORDER BY id DESC
-            LIMIT 500
-        """)).mappings().all()
+        try:
+            rows = db.session.execute(text("""
+                SELECT id, email, user_id
+                FROM user_settings
+                ORDER BY id DESC
+                LIMIT 500
+            """)).mappings().all()
+            has_user_id = True
+        except Exception:
+            rows = db.session.execute(text("""
+                SELECT id, email
+                FROM user_settings
+                ORDER BY id DESC
+                LIMIT 500
+            """)).mappings().all()
+            has_user_id = False
 
         out = []
         for r in rows:
             out.append({
-                "user_id": r.get("user_id") or "",              # 先空
+                "user_id": (r.get("user_id") or "") if has_user_id else "",
                 "email": r.get("email") or "",
                 "nickname": "",
                 "phone": "",
@@ -1124,7 +1135,7 @@ def api_admin_users():
         return jsonify(out), 200
 
     except Exception as e:
-        app.logger.exception("api_admin_users failed")
+        app.logger.exception("api_admin_users failed: %s", e)
         return jsonify({"ok": False, "error": "db_error", "detail": str(e)}), 500
         
 # -------------------- 一次性修复 outfits 表字段 --------------------
