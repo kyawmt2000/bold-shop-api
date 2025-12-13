@@ -1,4 +1,5 @@
 import os
+import random
 import json
 import logging
 from datetime import datetime
@@ -209,6 +210,8 @@ class UserSetting(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     # Each email maps to one settings record
     email = db.Column(db.String(120), unique=True, nullable=False)
+
+    user_id = db.Column(db.String(14), unique=True, index=True, nullable=True)
 
     # Profile fields
     nickname = db.Column(db.String(80))               # 用户昵称
@@ -2018,17 +2021,62 @@ from flask import current_app, request, jsonify
 # ===========================
 #  新版：获取用户设定
 # ===========================
+def _gen_user_id_ddmmyy():
+    # 4位随机 + DDMMYY + 4位随机  => 共14位
+    ddmmyy = datetime.utcnow().strftime("%d%m%y")
+    left   = f"{random.randint(0, 9999):04d}"
+    right  = f"{random.randint(0, 9999):04d}"
+    return f"{left}{ddmmyy}{right}"
+
+def _ensure_user_id(s):
+    """
+    给 UserSetting 补上 user_id（只在为空时生成一次）
+    并保证尽可能唯一（有碰撞就重试）
+    """
+    if getattr(s, "user_id", None):
+        return s.user_id
+
+    # 如果模型还没加字段，直接跳过（防止你还没迁移就报错）
+    if not hasattr(s, "user_id"):
+        return ""
+
+    for _ in range(30):
+        uid = _gen_user_id_ddmmyy()
+        exists = UserSetting.query.filter_by(user_id=uid).first()
+        if not exists:
+            s.user_id = uid
+            try:
+                db.session.commit()
+            except Exception as e:
+                db.session.rollback()
+                current_app.logger.exception("ensure_user_id commit fail: %s", e)
+                return ""
+            return uid
+
+    # 极低概率到这里：还是给一个，但不强求唯一（避免卡死）
+    uid = _gen_user_id_ddmmyy()
+    s.user_id = uid
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        return ""
+    return uid
+
+
 @app.get("/api/settings")
 def api_get_settings():
     """
     根据 email 返回用户设置：
-    - 找不到记录：返回一份默认配置
+    - 找不到记录：✅ 现在会自动创建一条（保证 user_id 永久固定）
     - avatar 使用 avatar_url 字段（如果有）
     - 新增 phone 字段（如果模型有该字段则读取）
+    - ✅ 新增 user_id：4随机 + DDMMYY + 4随机，创建后永不改变
     """
     def default_payload(email: str):
         return {
             "email": email,
+            "user_id": "",              # ✅ 默认也带上
             "nickname": "",
             "avatar": "",
             "bio": "",
@@ -2062,19 +2110,35 @@ def api_get_settings():
         current_app.logger.exception("GET /api/settings DB error: %s", e)
         return jsonify(default_payload(email)), 200
 
-    # 3) 没有记录 → 默认配置
+    # 3) 没有记录 → ✅ 创建记录（这样 user_id 才能“开账号后固定”）
     if not s:
-        return jsonify(default_payload(email)), 200
+        try:
+            s = UserSetting(email=email)
+            db.session.add(s)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            current_app.logger.exception("GET /api/settings create row error: %s", e)
+            return jsonify(default_payload(email)), 200
+
+    # ✅ 3.5) 确保 user_id 生成并持久化（只生成一次）
+    try:
+        uid = _ensure_user_id(s)
+    except Exception as e:
+        current_app.logger.exception("GET /api/settings ensure user_id error: %s", e)
+        uid = ""
 
     # 4) 组装返回（尽量兼容之前结构）
     try:
-        # 如果你项目里还有 _settings_to_dict，可以先用它打底
         try:
             data = _settings_to_dict(s)
         except Exception:
             data = {}
 
         data["email"] = email
+
+        # ✅ user_id 永久返回
+        data["user_id"] = uid or getattr(s, "user_id", "") or data.get("user_id", "") or ""
 
         # avatar：优先用 avatar_url / avatar
         avatar_val = (
@@ -2100,17 +2164,17 @@ def api_get_settings():
         if hasattr(s, "phone"):
             data["phone"] = getattr(s, "phone", "") or ""
         else:
-            # 没有这个字段的话，也至少给前端一个 key
             data.setdefault("phone", "")
 
-        # 更新时间
         data["updated_at"] = getattr(s, "updated_at", None)
 
         return jsonify(data), 200
 
     except Exception as e:
         current_app.logger.exception("GET /api/settings serialize error: %s", e)
-        return jsonify(default_payload(email)), 200
+        payload = default_payload(email)
+        payload["user_id"] = uid or ""
+        return jsonify(payload), 200
 
 @app.get("/api/follow/following")
 def api_follow_following_list():
