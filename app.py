@@ -1103,7 +1103,7 @@ def api_admin_users():
 
     try:
         rows = db.session.execute(text("""
-            SELECT id, email
+            SELECT id, email, user_id
             FROM user_settings
             ORDER BY id DESC
             LIMIT 500
@@ -1112,7 +1112,7 @@ def api_admin_users():
         out = []
         for r in rows:
             out.append({
-                "user_id": "",              # 先空
+                "user_id": r.get("user_id") or "",              # 先空
                 "email": r.get("email") or "",
                 "nickname": "",
                 "phone": "",
