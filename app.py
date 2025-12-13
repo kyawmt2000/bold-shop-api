@@ -3230,6 +3230,29 @@ def upload_comment_image():
         app.logger.exception(e)
         return jsonify({"ok": False, "message": "upload_failed"}), 500
 
+@app.post("/api/settings/reset_user_id")
+def api_reset_user_id():
+    # 简单鉴权：必须带 X-API-Key
+    if (request.headers.get("X-API-Key") or "") != API_KEY:
+        return jsonify({"ok": False, "message": "unauthorized"}), 401
+
+    js = request.get_json(silent=True) or {}
+    email = (js.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "message": "missing_email"}), 400
+
+    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+    if not s:
+        return jsonify({"ok": False, "message": "not_found"}), 404
+
+    # ✅ 清空旧ID，然后让 _ensure_user_id 重新生成新规则
+    if hasattr(s, "user_id"):
+        s.user_id = None
+        db.session.commit()
+
+    uid = _ensure_user_id(s)
+    return jsonify({"ok": True, "user_id": uid}), 200
+
 @app.delete("/api/outfits/<int:oid>/comments/<int:comment_id>")
 def api_delete_outfit_comment(oid, comment_id):
     data = request.get_json(silent=True) or {}
