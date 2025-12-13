@@ -3247,16 +3247,17 @@ def api_product_qa_like_users(pid, qa_id):
 @app.get("/api/outfits/<int:oid>/comments/<int:cid>/likes")
 def api_outfit_comment_like_users(oid, cid):
     try:
-        rows = OutfitCommentLike.query.filter_by(outfit_id=oid, comment_id=cid) \
-            .order_by(OutfitCommentLike.created_at.desc()) \
-            .limit(200).all()
+        rows = (OutfitCommentLike.query
+                .filter_by(outfit_id=oid, comment_id=cid)
+                .order_by(OutfitCommentLike.created_at.desc())
+                .limit(200).all())
 
         items = []
         for r in rows:
+            email = (r.user_email or "").strip().lower()
             items.append({
-                "name": (r.user_name or (r.user_email.split("@")[0] if r.user_email else "User")),
-                "avatar": r.user_avatar or "https://boldmm.shop/default-avatar.png"
-                # ✅ 不返回 email（你要求不显示邮箱）
+                "name": email.split("@")[0] if email else "User",
+                "avatar": "https://boldmm.shop/default-avatar.png"
             })
 
         return jsonify({"ok": True, "items": items})
