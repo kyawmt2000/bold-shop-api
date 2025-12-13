@@ -1078,78 +1078,81 @@ def ensure_user_settings_columns():
 with app.app_context():
     ensure_user_settings_columns()
 
+def _admin_auth_ok():
+    # ✅ 简单做法：用同一个 X-API-Key 当后台密钥
+    # 你也可以单独用 ADMIN_API_KEY 环境变量（更安全）
+    incoming = (request.headers.get("X-API-Key") or "").strip()
+    return incoming and incoming == API_KEY
+
+def _fmt_dt(dt):
+    if not dt:
+        return ""
+    try:
+        # 统一成字符串，前端直接显示
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return str(dt)
+
 @app.get("/api/admin/users")
 def api_admin_users():
     """
     后台用户列表：
-    - 主来源：users 表（真正注册/出现过的账号）
-    - 额外信息：user_settings 里的昵称、手机、生日等
+    主来源：UserSetting（因为 user_id 在这里）
+    返回字段：
+      user_id, email, nickname, phone, created_at, gender, birthday, avatar
     """
 
-    # 如果你想用 ADMIN_API_KEY 做保护，可以在环境变量里配一个
-    admin_key = os.getenv("ADMIN_API_KEY") or ""
+    # ✅ 用 ADMIN_API_KEY 保护（推荐）
+    admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
     if admin_key:
         req_key = (request.headers.get("X-API-Key") or "").strip()
         if req_key != admin_key:
-            return jsonify({"error": "forbidden"}), 403
+            return jsonify({"ok": False, "message": "forbidden"}), 403
 
     try:
-        q = (
-            db.session
-            .query(User, UserSetting)
-            .outerjoin(
-                UserSetting,
-                func.lower(User.email) == func.lower(UserSetting.email)
-            )
-            .order_by(User.created_at.desc())
-            .limit(500)
-        )
+        limit = min(int(request.args.get("limit") or 500), 2000)
+    except:
+        limit = 500
+
+    try:
+        q = UserSetting.query
+
+        # 排序：有 created_at 用 created_at；否则用 updated_at；否则用 id
+        if hasattr(UserSetting, "created_at"):
+            q = q.order_by(UserSetting.created_at.desc())
+        elif hasattr(UserSetting, "updated_at"):
+            q = q.order_by(UserSetting.updated_at.desc().nullslast())
+        else:
+            q = q.order_by(UserSetting.id.desc())
+
+        rows = q.limit(limit).all()
 
         out = []
-        for u, s in q.all():
-            created_at = u.created_at.isoformat(timespec="seconds") if u.created_at else None
+        for s in rows:
+            # ✅ 确保 user_id 存在（只生成一次）
+            try:
+                uid = _ensure_user_id(s)
+            except:
+                uid = getattr(s, "user_id", "") or ""
+
+            ts = getattr(s, "created_at", None) or getattr(s, "updated_at", None)
 
             out.append({
-                "id": u.id,
-                "email": u.email,
-                "username": getattr(s, "nickname", None),
-                "phone": getattr(s, "phone", None),
-                "created_at": created_at,
-                "gender": getattr(s, "gender", None) if hasattr(s, "gender") else None,
-                "birthday": getattr(s, "birthday", None),
+                "user_id": uid or "",
+                "email": (getattr(s, "email", "") or ""),
+                "nickname": (getattr(s, "nickname", "") or ""),
+                "phone": (getattr(s, "phone", "") or ""),
+                "created_at": ts.isoformat(timespec="seconds") if ts else "",
+                "gender": (getattr(s, "gender", "") or ""),
+                "birthday": (getattr(s, "birthday", "") or ""),
+                "avatar": (getattr(s, "avatar_url", None) or getattr(s, "avatar", None) or ""),
             })
 
-        return jsonify(out)
+        return jsonify(out), 200
+
     except Exception as e:
         app.logger.exception("api_admin_users failed: %s", e)
-        return jsonify({"error": "db_error", "detail": str(e)}), 500
-
-    # 如果你以后想用 ADMIN_API_KEY 来保护这个接口，可以打开下面这几行：
-    admin_key = os.getenv("ADMIN_API_KEY") or ""
-    if admin_key:
-        req_key = (request.headers.get("X-API-Key") or "").strip()
-        if req_key != admin_key:
-            return jsonify({"error": "forbidden"}), 403
-
-    rows = UserSetting.query.order_by(
-        UserSetting.updated_at.desc().nullslast()
-    ).limit(500).all()
-
-    out = []
-    for s in rows:
-        # 注册时间：优先 updated_at，然后 created_at，如果都没有就用当前时间
-        ts = s.updated_at or s.created_at or datetime.utcnow()
-        out.append({
-            "id": s.id,
-            "email": s.email,
-            "username": getattr(s, "nickname", None),
-            "phone": getattr(s, "phone", None),
-            "created_at": ts.isoformat(timespec="seconds"),
-            "gender": getattr(s, "gender", None),      # 你现在表里没有 gender 的话就是 None
-            "birthday": getattr(s, "birthday", None),
-        })
-
-    return jsonify(out)
+        return jsonify({"ok": False, "error": "db_error"}), 500
         
 # -------------------- 一次性修复 outfits 表字段 --------------------
 @app.get("/api/debug/fix_outfits_columns")
