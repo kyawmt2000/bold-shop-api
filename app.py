@@ -1098,8 +1098,10 @@ def _fmt_dt(dt):
 @app.get("/api/admin/users")
 def api_admin_users():
     # ✅ 用 ADMIN_API_KEY 保护（推荐）
-    incoming = (request.headers.get("X-API-Key") or "").strip()
-    if incoming != API_KEY:
+    admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
+if admin_key:
+    req_key = (request.headers.get("X-API-Key") or "").strip()
+    if req_key != admin_key:
         return jsonify({"message": "Unauthorized"}), 401
 
     try:
