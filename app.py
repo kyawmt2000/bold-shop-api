@@ -1105,58 +1105,61 @@ def api_admin_users():
             return jsonify({"ok": False, "message": "forbidden"}), 403
 
     try:
-        try:
-            limit = int(request.args.get("limit") or 500)
-        except:
-            limit = 500
-        limit = min(max(limit, 1), 2000)
+        limit = min(int(request.args.get("limit") or 500), 2000)
+    except:
+        limit = 500
 
+    try:
         rows = db.session.execute(text("""
             SELECT
-              id,
-              email,
-              COALESCE(user_id,'')    AS user_id,
-              COALESCE(nickname,'')   AS nickname,
-              COALESCE(phone,'')      AS phone,
-              COALESCE(gender,'')     AS gender,
-              COALESCE(birthday,'')   AS birthday,
-              COALESCE(avatar_url,'') AS avatar_url,
-              created_at,
-              updated_at
-            FROM user_settings
-            ORDER BY COALESCE(created_at, updated_at) DESC NULLS LAST, id DESC
+              u.id         AS user_pk,
+              u.email      AS email,
+              u.created_at AS registered_at,
+
+              us.user_id    AS user_id,
+              us.nickname   AS nickname,
+              us.phone      AS phone,
+              us.gender     AS gender,
+              us.birthday   AS birthday,
+              us.city       AS city,
+              us.avatar_url AS avatar_url
+            FROM users u
+            LEFT JOIN user_settings us
+              ON lower(us.email) = lower(u.email)
+            ORDER BY u.created_at DESC NULLS LAST, u.id DESC
             LIMIT :limit
         """), {"limit": limit}).mappings().all()
 
         out = []
         for r in rows:
             email = (r.get("email") or "").strip().lower()
-            uid = r.get("user_id") or ""
+            uid   = r.get("user_id") or ""
 
-            # 没有 user_id 就补齐（只生成一次并写回 user_settings）
-            if not uid and email:
+            # ✅ 没有 user_settings / 没有 user_id → 自动补齐并写入
+            if email and not uid:
                 s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
                 if not s:
                     s = UserSetting(email=email)
-                    # 如果你表里有 created_at 列就顺便写入
-                    if hasattr(s, "created_at"):
-                        s.created_at = datetime.utcnow()
+                    # 把注册时间写进 user_settings.created_at（如果字段存在）
+                    if hasattr(UserSetting, "created_at"):
+                        s.created_at = r.get("registered_at")
                     db.session.add(s)
                     db.session.commit()
 
-                uid = _ensure_user_id(s) or ""
+                uid = _ensure_user_id(s)
 
-            ts = r.get("created_at") or r.get("updated_at")
-            created_at_str = ts.isoformat(timespec="seconds") if ts else ""
+            reg = r.get("registered_at")
+            reg_str = reg.isoformat(timespec="seconds") if reg else ""
 
             out.append({
-                "user_id": uid,
-                "email": email,
+                "user_id": uid or "",
+                "email": r.get("email") or "",
                 "nickname": r.get("nickname") or "",
                 "phone": r.get("phone") or "",
-                "created_at": created_at_str,
+                "created_at": reg_str,
                 "gender": r.get("gender") or "",
                 "birthday": r.get("birthday") or "",
+                "city": r.get("city") or "",
                 "avatar": r.get("avatar_url") or "",
             })
 
@@ -2064,7 +2067,7 @@ def _ensure_user_id(s):
                 db.session.commit()
             except Exception as e:
                 db.session.rollback()
-                current_app.logger.exception("ensure_user_id commit fail: %s", e)
+                app.logger.exception("ensure_user_id commit fail: %s", e)
                 return ""
             return uid
 
