@@ -1568,6 +1568,16 @@ def product_image(pid, iid):
 @app.delete("/api/products/<int:pid>/image/<int:iid>")
 def product_image_delete(pid, iid):
     row = ProductImage.query.filter_by(id=iid, product_id=pid).first_or_404()
+
+    # 1) 先删 GCS
+    url = (getattr(row, "url", None) or getattr(row, "image_url", None) or "").strip()
+    if url:
+        try:
+            delete_gcs_objects_by_urls([url])   # 复用你已有的函数
+        except Exception as e:
+            app.logger.warning("delete product image gcs failed: %s", e)
+
+    # 2) 再删 DB
     db.session.delete(row)
     db.session.commit()
     return jsonify({"ok": True, "pid": pid, "iid": iid})
@@ -1632,11 +1642,28 @@ def product_delete(pid):
     if email != (row.merchant_email or "").lower():
         return jsonify({"message":"forbidden"}), 403
     if hard:
-        ProductImage.query.filter_by(product_id=pid).delete()
-        ProductVariant.query.filter_by(product_id=pid).delete()
-        db.session.delete(row)
-        db.session.commit()
-        return jsonify({"ok": True, "id": pid, "deleted": "hard"})
+    # 0) 先收集所有图片 url
+    imgs = ProductImage.query.filter_by(product_id=pid).all()
+    urls = []
+    for r in imgs:
+        u = (getattr(r, "url", None) or getattr(r, "image_url", None) or "").strip()
+        if u: urls.append(u)
+
+    # 1) 删 GCS
+    if urls:
+        try:
+            delete_gcs_objects_by_urls(urls)
+        except Exception as e:
+            app.logger.warning("delete product gcs failed: %s", e)
+
+    # 2) 再删 DB 关联表
+    ProductImage.query.filter_by(product_id=pid).delete(synchronize_session=False)
+    ProductVariant.query.filter_by(product_id=pid).delete(synchronize_session=False)
+
+    # 3) 删商品
+    db.session.delete(row)
+    db.session.commit()
+    return jsonify({"ok": True, "id": pid, "deleted": "hard"})
     else:
         row.status = "removed"
         db.session.commit()
