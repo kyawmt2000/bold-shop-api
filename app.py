@@ -2,10 +2,12 @@ import os
 import random
 import json
 import logging
+import re
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
 
+from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
@@ -66,6 +68,106 @@ if GCS_KEY_JSON and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
     except Exception as e:
         logging.exception("Failed to write GCS_KEY_JSON: %s", e)
+
+def parse_image_urls(image_urls: str):
+    """
+    image_urls 可能是:
+    - JSON string: '["url1","url2"]'
+    - comma string: 'url1,url2'
+    - single url: 'url1'
+    """
+    if not image_urls:
+        return []
+
+    s = str(image_urls).strip()
+    if not s:
+        return []
+
+    # JSON list
+    if s.startswith("[") and s.endswith("]"):
+        try:
+            arr = json.loads(s)
+            if isinstance(arr, list):
+                return [str(x).strip() for x in arr if str(x).strip()]
+        except:
+            pass
+
+    # comma separated
+    if "," in s:
+        return [x.strip() for x in s.split(",") if x.strip()]
+
+    # single
+    return [s]
+
+
+def parse_gcs_bucket_and_blob(url: str):
+    """
+    支持：
+    - https://storage.googleapis.com/bucket/path
+    - https://bucket.storage.googleapis.com/path
+    - gs://bucket/path
+    返回 (bucket, blob_path) or (None, None)
+    """
+    if not url:
+        return None, None
+
+    u = str(url).strip()
+    if not u:
+        return None, None
+
+    # gs://bucket/path
+    if u.startswith("gs://"):
+        rest = u[5:]
+        parts = rest.split("/", 1)
+        if len(parts) == 2:
+            return parts[0], parts[1]
+        return None, None
+
+    # https url
+    try:
+        p = urlparse(u)
+        host = (p.netloc or "").lower()
+        path = (p.path or "").lstrip("/")
+        path = unquote(path)
+
+        # https://storage.googleapis.com/bucket/path
+        if host == "storage.googleapis.com":
+            parts = path.split("/", 1)
+            if len(parts) == 2:
+                return parts[0], parts[1]
+            return None, None
+
+        # https://bucket.storage.googleapis.com/path
+        m = re.match(r"^([a-z0-9.\-_]+)\.storage\.googleapis\.com$", host)
+        if m:
+            bucket = m.group(1)
+            return bucket, path if path else None
+
+    except:
+        return None, None
+
+    return None, None
+
+
+def delete_gcs_objects_by_urls(urls):
+    """
+    给一组 urls，能解析出 bucket/path 的就删。
+    删除失败不中断（避免一张删不了导致整体失败）。
+    """
+    if not urls:
+        return
+
+    client = storage.Client()
+
+    for u in urls:
+        bucket, blob_path = parse_gcs_bucket_and_blob(u)
+        if not bucket or not blob_path:
+            continue
+        try:
+            client.bucket(bucket).blob(blob_path).delete()
+        except Exception:
+            # 你可以在这里 print / logging
+            pass
 
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
@@ -1760,33 +1862,6 @@ def outfits_update(oid):
     db.session.commit()
     return jsonify(_outfit_to_dict(row))
 
-@app.delete("/api/outfits/<int:oid>")
-def outfits_delete(oid):
-    data = request.get_json(silent=True) or {}
-    author_email = (data.get("author_email") or "").strip().lower()
-    if not author_email:
-        return jsonify({"message": "author_email required"}), 400
-
-    row = Outfit.query.get_or_404(oid)
-    if (row.author_email or "").strip().lower() != author_email:
-        return jsonify({"message": "forbidden"}), 403
-
-    try:
-        # 先删关联的媒体
-        OutfitMedia.query.filter_by(outfit_id=oid).delete()
-
-        # ⭐ 再删关联的通知，避免外键错误
-        Notification.query.filter_by(outfit_id=oid).delete()
-
-        # 最后删帖子本身
-        db.session.delete(row)
-        db.session.commit()
-        return jsonify({"ok": True, "deleted_id": oid})
-    except Exception as e:
-        db.session.rollback()
-        app.logger.exception("delete outfit %s failed: %s", oid, e)
-        return jsonify({"ok": False, "error": "delete_failed", "detail": str(e)}), 500
-
 def gcs_delete_by_url(url):
     # 支持 https://storage.googleapis.com/<bucket>/<path>
     # 或 https://<bucket>.storage.googleapis.com/<path>
@@ -1797,30 +1872,44 @@ def gcs_delete_by_url(url):
     storage.Client().bucket(bucket).blob(blob_path).delete()
 
 @app.delete("/api/outfits/<int:oid>")
-def delete_outfit(oid):
+def api_delete_outfit(oid):
     data = request.get_json(silent=True) or {}
-    email = (data.get("author_email") or "").strip().lower()
+    author_email = (data.get("author_email") or "").strip().lower()
+    if not author_email:
+        return jsonify({"ok": False, "message": "author_email required"}), 400
 
     o = Outfit.query.get_or_404(oid)
-    if (o.author_email or "").lower() != email:
-        return jsonify({"ok":False, "message":"not_owner"}), 403
+    if (o.author_email or "").strip().lower() != author_email:
+        return jsonify({"ok": False, "message": "not_owner"}), 403
 
-    # 1) 先删 GCS 文件
-    urls = []
-    if o.image_urls:  # 例如 JSON/CSV
-        urls = parse_urls(o.image_urls)
-    elif o.image_url:
-        urls = [o.image_url]
+    try:
+        # 1) 删 GCS 文件（来自 image_urls）
+        urls = []
+        if getattr(o, "image_urls", None):
+            urls = parse_image_urls(o.image_urls)   # 你用我上次给你的那个 parse_image_urls
+        elif getattr(o, "image_url", None):
+            urls = [o.image_url]
 
-    for u in urls:
-        try: gcs_delete_by_url(u)
-        except Exception as e: pass  # 你也可以记录日志
+        delete_gcs_objects_by_urls(urls)            # 你用我上次给你的 delete_gcs_objects_by_urls
 
-    # 2) 再删 DB（推荐软删）
-    o.status = "deleted"
-    db.session.commit()
+        # 2) 删关联表，避免外键错误
+        OutfitMedia.query.filter_by(outfit_id=oid).delete(synchronize_session=False)
+        Notification.query.filter_by(outfit_id=oid).delete(synchronize_session=False)
 
-    return jsonify({"ok":True})
+        # 3) 删帖子本身（推荐软删）
+        if hasattr(o, "status"):
+            o.status = "deleted"
+            db.session.commit()
+            return jsonify({"ok": True, "deleted_id": oid, "mode": "soft"})
+        else:
+            db.session.delete(o)
+            db.session.commit()
+            return jsonify({"ok": True, "deleted_id": oid, "mode": "hard"})
+
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("delete outfit %s failed: %s", oid, e)
+        return jsonify({"ok": False, "error": "delete_failed", "detail": str(e)}), 500
 
 # ==================== New Feed API (Unified) ====================
 @app.get("/api/outfits/feed")
