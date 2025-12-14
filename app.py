@@ -1787,6 +1787,41 @@ def outfits_delete(oid):
         app.logger.exception("delete outfit %s failed: %s", oid, e)
         return jsonify({"ok": False, "error": "delete_failed", "detail": str(e)}), 500
 
+def gcs_delete_by_url(url):
+    # 支持 https://storage.googleapis.com/<bucket>/<path>
+    # 或 https://<bucket>.storage.googleapis.com/<path>
+    # 或 gs://<bucket>/<path>
+    bucket, blob_path = parse_bucket_and_path(url)
+    if not bucket or not blob_path:
+        return
+    storage.Client().bucket(bucket).blob(blob_path).delete()
+
+@app.delete("/api/outfits/<int:oid>")
+def delete_outfit(oid):
+    data = request.get_json(silent=True) or {}
+    email = (data.get("author_email") or "").strip().lower()
+
+    o = Outfit.query.get_or_404(oid)
+    if (o.author_email or "").lower() != email:
+        return jsonify({"ok":False, "message":"not_owner"}), 403
+
+    # 1) 先删 GCS 文件
+    urls = []
+    if o.image_urls:  # 例如 JSON/CSV
+        urls = parse_urls(o.image_urls)
+    elif o.image_url:
+        urls = [o.image_url]
+
+    for u in urls:
+        try: gcs_delete_by_url(u)
+        except Exception as e: pass  # 你也可以记录日志
+
+    # 2) 再删 DB（推荐软删）
+    o.status = "deleted"
+    db.session.commit()
+
+    return jsonify({"ok":True})
+
 # ==================== New Feed API (Unified) ====================
 @app.get("/api/outfits/feed")
 @app.get("/api/outfit/feed2")
