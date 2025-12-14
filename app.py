@@ -1102,8 +1102,11 @@ def _fmt_dt(dt):
 
 @app.get("/api/admin/users")
 def api_admin_users():
-    # ✅ 鉴权（注意：必须在函数里面）
-    if not _admin_auth_ok():
+    incoming = (request.headers.get("X-API-Key") or "").strip()
+
+    # ✅ 用 ADMIN_API_KEY（你已经设置好了）
+    admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
+    if admin_key and incoming != admin_key:
         return jsonify({"message": "Unauthorized"}), 401
 
     try:
@@ -1134,25 +1137,9 @@ def api_admin_users():
 
         out = []
         for r in rows:
-            email = (r.get("email") or "").strip().lower()
-            uid = r.get("user_id") or ""
-
-            # ✅ 没有 user_settings 行 / 没有 user_id → 自动补齐
-            if email and not uid:
-                s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-                if not s:
-                    s = UserSetting(email=email)
-                    # 可选：把注册时间写入 user_settings.created_at（如果你表里有）
-                    if hasattr(UserSetting, "created_at"):
-                        s.created_at = r.get("registered_at")
-                    db.session.add(s)
-                    db.session.commit()
-
-                uid = _ensure_user_id(s)  # 你已有的生成函数
-
             reg = r.get("registered_at")
             out.append({
-                "user_id": uid or "",
+                "user_id": r.get("user_id") or "",
                 "email": r.get("email") or "",
                 "nickname": r.get("nickname") or "",
                 "phone": r.get("phone") or "",
