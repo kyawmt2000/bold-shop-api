@@ -1081,10 +1081,15 @@ with app.app_context():
     ensure_user_settings_columns()
 
 def _admin_auth_ok():
-    # ✅ 简单做法：用同一个 X-API-Key 当后台密钥
-    # 你也可以单独用 ADMIN_API_KEY 环境变量（更安全）
     incoming = (request.headers.get("X-API-Key") or "").strip()
-    return incoming and incoming == API_KEY
+    admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
+
+    # ✅ 如果你配置了 ADMIN_API_KEY，就必须用它
+    if admin_key:
+        return incoming == admin_key
+
+    # ✅ 否则就用你现有的 API_KEY
+    return incoming == API_KEY
 
 def _fmt_dt(dt):
     if not dt:
@@ -1097,10 +1102,9 @@ def _fmt_dt(dt):
 
 @app.get("/api/admin/users")
 def api_admin_users():
-    # ✅ 用 ADMIN_API_KEY 保护（推荐）
-    incoming = (request.headers.get("X-API-Key") or "").strip()
-if incoming != API_KEY:
-    return jsonify({"message": "Unauthorized"}), 401
+    # ✅ 鉴权（注意：必须在函数里面）
+    if not _admin_auth_ok():
+        return jsonify({"message": "Unauthorized"}), 401
 
     try:
         limit = min(int(request.args.get("limit") or 500), 2000)
@@ -1131,30 +1135,28 @@ if incoming != API_KEY:
         out = []
         for r in rows:
             email = (r.get("email") or "").strip().lower()
-            uid   = r.get("user_id") or ""
+            uid = r.get("user_id") or ""
 
-            # ✅ 没有 user_settings / 没有 user_id → 自动补齐并写入
+            # ✅ 没有 user_settings 行 / 没有 user_id → 自动补齐
             if email and not uid:
                 s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
                 if not s:
                     s = UserSetting(email=email)
-                    # 把注册时间写进 user_settings.created_at（如果字段存在）
+                    # 可选：把注册时间写入 user_settings.created_at（如果你表里有）
                     if hasattr(UserSetting, "created_at"):
                         s.created_at = r.get("registered_at")
                     db.session.add(s)
                     db.session.commit()
 
-                uid = _ensure_user_id(s)
+                uid = _ensure_user_id(s)  # 你已有的生成函数
 
             reg = r.get("registered_at")
-            reg_str = reg.isoformat(timespec="seconds") if reg else ""
-
             out.append({
                 "user_id": uid or "",
                 "email": r.get("email") or "",
                 "nickname": r.get("nickname") or "",
                 "phone": r.get("phone") or "",
-                "created_at": reg_str,
+                "created_at": reg.isoformat(timespec="seconds") if reg else "",
                 "gender": r.get("gender") or "",
                 "birthday": r.get("birthday") or "",
                 "city": r.get("city") or "",
