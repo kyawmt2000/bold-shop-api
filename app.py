@@ -3036,53 +3036,53 @@ def api_outfit_comments(outfit_id):
 
         items = []
 
-        for c in rows:
-    em = (c.author_email or "").lower()
-    s = setting_map.get(em)
+                for c in rows:
+            em = (c.author_email or "").lower()
+            s = setting_map.get(em)
 
-    # ⭐ 核心：用最新 setting 覆盖
-    author_name = (
-        (s.nickname or "").strip() if s and s.nickname
-        else (em.split("@")[0] if em else "User")
-    )
+            # ⭐ 核心：用最新 setting 覆盖
+            author_name = (
+                (s.nickname.strip() if s and s.nickname else "")
+                or (em.split("@")[0] if em else "User")
+            )
 
-    author_avatar = (
-        (s.avatar_url or "").strip() if s and s.avatar_url
-        else ""
-    )
+            author_avatar = (
+                (s.avatar_url.strip() if s and s.avatar_url else "")
+                or ""
+            )
 
-    # ✅ 解析评论图片（不要放在 if viewer 里）
-    images = []
-    try:
-        raw = getattr(c, "images_json", None)
-        if raw:
-            images = json.loads(raw) or []
-            if not isinstance(images, list):
+            # 评论点赞
+            like_q = OutfitCommentLike.query.filter_by(comment_id=c.id)
+            like_count = like_q.count()
+
+            liked = False
+            if viewer:
+                liked = like_q.filter_by(user_email=viewer).first() is not None
+
+            # ✅ 解析评论图片
+            images = []
+            try:
+                raw = getattr(c, "images_json", None)
+                if raw:
+                    images = json.loads(raw) or []
+                    if not isinstance(images, list):
+                        images = []
+            except Exception:
                 images = []
-    except Exception:
-        images = []
 
-    # 评论点赞
-    like_q = OutfitCommentLike.query.filter_by(comment_id=c.id)
-    like_count = like_q.count()
-
-    liked = False
-    if viewer:
-        liked = like_q.filter_by(user_email=viewer).first() is not None
-
-    items.append({
-        "id": c.id,
-        "outfit_id": c.outfit_id,
-        "author_email": em,
-        "author_name": author_name,
-        "author_avatar": author_avatar,
-        "text": c.text or "",
-        "images": images,
-        "parent_id": c.parent_id,
-        "created_at": c.created_at.isoformat() if c.created_at else None,
-        "like_count": int(like_count),
-        "liked": bool(liked),
-    })
+            items.append({
+                "id": c.id,
+                "outfit_id": c.outfit_id,
+                "author_email": em,
+                "author_name": author_name,
+                "author_avatar": author_avatar,
+                "text": c.text or "",
+                "images": images,
+                "parent_id": c.parent_id,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+                "like_count": int(like_count),
+                "liked": bool(liked),
+            })
         return jsonify({"ok": True, "items": items})
 
     except Exception as e:
