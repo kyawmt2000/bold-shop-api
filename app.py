@@ -946,15 +946,15 @@ def _outfit_to_dict(o: Outfit, req=None):
         if raw_tags:
             t = json.loads(raw_tags)
             if isinstance(t, list):
-                tags = [str(x) for x in t]
+                tags = [str(x) for x in t if x]
     except Exception:
         tags = []
 
     # ---------- images / videos ----------
-    images: list[str] = []
-    videos: list[str] = []
+    images = []
+    videos = []
 
-    # 1) 优先使用新字段 images_json / videos_json（如果有）
+    # 1) 新字段 images_json / videos_json
     try:
         raw_img = getattr(o, "images_json", None)
         if raw_img:
@@ -973,7 +973,7 @@ def _outfit_to_dict(o: Outfit, req=None):
     except Exception:
         pass
 
-    # 2) 如果还都是空，再兼容旧字段 media_json
+    # 2) 旧字段 media_json 兜底
     if not images and not videos:
         mlist = []
         try:
@@ -988,7 +988,6 @@ def _outfit_to_dict(o: Outfit, req=None):
             mlist = []
 
         for m in mlist:
-            # 兼容两种情况：dict / str
             if isinstance(m, dict):
                 mtype = (m.get("type") or "image").lower()
                 url = m.get("url") or m.get("src")
@@ -998,7 +997,6 @@ def _outfit_to_dict(o: Outfit, req=None):
 
             if not url:
                 continue
-
             if mtype == "video":
                 videos.append(url)
             else:
@@ -1022,13 +1020,36 @@ def _outfit_to_dict(o: Outfit, req=None):
     if shares_val is None:
         shares_val = getattr(o, "shares", 0) or 0
 
+    # ---------- ✅ 作者信息补齐（关键：让 outfit.html 能搜用户名） ----------
+    author_email = (getattr(o, "author_email", None) or "").strip().lower()
+    author_name = (getattr(o, "author_name", None) or "").strip()
+    author_avatar = (getattr(o, "author_avatar", None) or "").strip()
+    author_id = ""
+
+    try:
+        if author_email:
+            us = UserSetting.query.filter_by(email=author_email).first()
+            if us:
+                if not author_name:
+                    author_name = (us.nickname or "").strip()
+                if not author_avatar:
+                    author_avatar = (us.avatar_url or "").strip()
+                author_id = str(getattr(us, "id", "") or "").strip()
+    except Exception:
+        pass
+
+    if not author_name and author_email:
+        author_name = author_email.split("@")[0]
+
+    # ---------- return（只 return 一次） ----------
     return {
         "id": o.id,
         "created_at": o.created_at.isoformat() if getattr(o, "created_at", None) else None,
 
-        "author_email": getattr(o, "author_email", None),
-        "author_name": getattr(o, "author_name", None),
-        "author_avatar": getattr(o, "author_avatar", None),
+        "author_email": author_email,
+        "author_name": author_name,
+        "author_avatar": author_avatar,
+        "author_id": author_id,
 
         "title": getattr(o, "title", None) or "OOTD",
         "desc": getattr(o, "desc", None),
@@ -1037,11 +1058,9 @@ def _outfit_to_dict(o: Outfit, req=None):
         "images": images,
         "videos": videos,
 
-        # 旧字段（给没改 JS 的地方用）
         "likes": likes_val,
         "comments": comments_val,
 
-        # 新计数字段
         "likes_count": likes_val,
         "comments_count": comments_val,
         "favorites_count": favorites_val,
@@ -1050,29 +1069,6 @@ def _outfit_to_dict(o: Outfit, req=None):
         "status": getattr(o, "status", "active") or "active",
         "location": getattr(o, "location", None),
         "visibility": getattr(o, "visibility", "public") or "public",
-    }
-
-
-    try:
-        tags = json.loads(o.tags_json) if getattr(o, "tags_json", None) else []
-    except Exception:
-        tags = []
-
-    return {
-        "id": o.id,
-        "created_at": (o.created_at.isoformat() if o.created_at else None),
-        "author_email": o.author_email,
-        "author_name": o.author_name,
-        "title": o.title or "OOTD",
-        "desc": o.desc,
-        "tags": tags if tags else (_loads_arr(getattr(o, "tags", "")) if getattr(o, "tags", None) else []),
-        "images": images,
-        "videos": videos,
-        "likes": o.likes or 0,
-        "comments": o.comments or 0,
-        "status": o.status or "active",
-        "location": getattr(o, "location", None),
-        "visibility": getattr(o, "visibility", "public"),
     }
 
 # --- 只在设置了 API_KEY 时才启用强校验 ---
