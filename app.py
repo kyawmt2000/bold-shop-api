@@ -1646,9 +1646,9 @@ def product_delete(pid):
 
     row = Product.query.get_or_404(pid)
     if email != (row.merchant_email or "").lower():
-        return jsonify({"message":"forbidden"}), 403
+        return jsonify({"message": "forbidden"}), 403
 
-        if hard:
+    if hard:
         # 0) 先收集所有图片 url
         imgs = ProductImage.query.filter_by(product_id=pid).all()
         urls = []
@@ -1673,11 +1673,10 @@ def product_delete(pid):
         db.session.commit()
         return jsonify({"ok": True, "id": pid, "deleted": "hard"})
 
-    else:
-        # ✅ 软删除：只改状态，不删数据库，不删图片
-        row.status = "deleted"   # 或者 "removed" 也行，但要和列表过滤一致
-        db.session.commit()
-        return jsonify({"ok": True, "id": pid, "deleted": "soft"})
+    # 软删除（不 hard 的情况）
+    row.status = "deleted"
+    db.session.commit()
+    return jsonify({"ok": True, "id": pid, "deleted": "soft"})
 
 # ==================== Outfit APIs ====================
 
