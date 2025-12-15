@@ -3032,7 +3032,7 @@ def api_outfit_comments(outfit_id):
             .filter(func.lower(UserSetting.email).in_(emails))
             .all()
         )
-                setting_map = {s.email.lower(): s for s in settings}
+        setting_map = {s.email.lower(): s for s in settings}
 
         items = []
 
@@ -3041,14 +3041,10 @@ def api_outfit_comments(outfit_id):
             s = setting_map.get(em)
 
             author_name = (
-                (s.nickname.strip() if s and s.nickname else "")
-                or (em.split("@")[0] if em else "User")
+                s.nickname if s and s.nickname
+                else (em.split("@")[0] if em else "User")
             )
-
-            author_avatar = (
-                (s.avatar_url.strip() if s and s.avatar_url else "")
-                or ""
-            )
+            author_avatar = (s.avatar_url if s and s.avatar_url else "")
 
             like_q = OutfitCommentLike.query.filter_by(comment_id=c.id)
             like_count = like_q.count()
@@ -3057,6 +3053,7 @@ def api_outfit_comments(outfit_id):
             if viewer:
                 liked = like_q.filter_by(user_email=viewer).first() is not None
 
+            # ✅ 解析评论图片
             images = []
             try:
                 raw = getattr(c, "images_json", None)
@@ -3293,22 +3290,19 @@ def api_outfit_like_toggle(outfit_id):
 @app.post("/api/outfits/<int:outfit_id>/comments")
 def api_outfit_comment_create(outfit_id):
     data = request.get_json(silent=True) or {}
-
     author_email = (data.get("author_email") or "").strip().lower()
     text = (data.get("text") or "").strip()
 
-    # ✅ 新增：回复用 parent_id
-    parent_id = data.get("parent_id", None)
+    parent_id = data.get("parent_id")
     try:
         parent_id = int(parent_id) if parent_id is not None else None
     except Exception:
         parent_id = None
 
-    # ✅ 新增：图片数组
     images = data.get("images") or []
     if not isinstance(images, list):
         images = []
-    images = [str(x).strip() for x in images if str(x).strip()][:6]  # 最多 6 张
+    images_json = json.dumps(images, ensure_ascii=False)
 
     if not author_email:
         return jsonify({"ok": False, "message": "missing_author_email"}), 400
@@ -3318,7 +3312,6 @@ def api_outfit_comment_create(outfit_id):
     author_name = (data.get("author_name") or author_email.split("@")[0] or "User").strip()
     author_avatar = (data.get("author_avatar") or "").strip() or None
 
-    # ✅ 存入 images_json
     c = OutfitComment(
         outfit_id=outfit_id,
         author_email=author_email,
@@ -3326,7 +3319,7 @@ def api_outfit_comment_create(outfit_id):
         author_avatar=author_avatar,
         text=text,
         parent_id=parent_id,
-        images_json=json.dumps(images, ensure_ascii=False) if images else None,
+        images_json=images_json,
     )
     db.session.add(c)
     db.session.commit()
@@ -3344,9 +3337,9 @@ def api_outfit_comment_create(outfit_id):
             "author_name": c.author_name,
             "author_avatar": c.author_avatar,
             "text": c.text,
-            "images": images,                 # ✅ 返回给前端立刻渲染
+            "images": images,
             "parent_id": c.parent_id,
-            "created_at": c.created_at.isoformat() if c.created_at else None,
+            "created_at": c.created_at.isoformat() + "Z",
         },
         "comment_count": int(comment_count)
     })
