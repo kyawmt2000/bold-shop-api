@@ -3032,15 +3032,14 @@ def api_outfit_comments(outfit_id):
             .filter(func.lower(UserSetting.email).in_(emails))
             .all()
         )
-        setting_map = {s.email.lower(): s for s in settings}
+                setting_map = {s.email.lower(): s for s in settings}
 
         items = []
 
-                for c in rows:
+        for c in rows:
             em = (c.author_email or "").lower()
             s = setting_map.get(em)
 
-            # ⭐ 核心：用最新 setting 覆盖
             author_name = (
                 (s.nickname.strip() if s and s.nickname else "")
                 or (em.split("@")[0] if em else "User")
@@ -3051,7 +3050,6 @@ def api_outfit_comments(outfit_id):
                 or ""
             )
 
-            # 评论点赞
             like_q = OutfitCommentLike.query.filter_by(comment_id=c.id)
             like_count = like_q.count()
 
@@ -3059,7 +3057,6 @@ def api_outfit_comments(outfit_id):
             if viewer:
                 liked = like_q.filter_by(user_email=viewer).first() is not None
 
-            # ✅ 解析评论图片
             images = []
             try:
                 raw = getattr(c, "images_json", None)
@@ -3083,6 +3080,7 @@ def api_outfit_comments(outfit_id):
                 "like_count": int(like_count),
                 "liked": bool(liked),
             })
+
         return jsonify({"ok": True, "items": items})
 
     except Exception as e:
