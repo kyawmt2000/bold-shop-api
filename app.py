@@ -1382,7 +1382,7 @@ def products_ping():
 def products_list():
     try:
         email = (request.args.get("merchant_email") or "").strip().lower()
-        q = Product.query
+        q = Product.query.filter_by(status="active")
         if email:
             q = q.filter_by(merchant_email=email)
         rows = q.order_by(Product.id.desc()).all()
@@ -1393,6 +1393,11 @@ def products_list():
 @app.get("/api/products/<int:pid>")
 def products_get_one(pid):
     row = Product.query.get_or_404(pid)
+
+    # ✅ 软删商品：详情接口直接当不存在
+    if (getattr(row, "status", "") or "") != "active":
+        return jsonify({"message":"not_found"}), 404
+
     return jsonify(_product_to_dict(row))
 
 @app.route("/api/products/add", methods=["POST"])
@@ -1643,7 +1648,7 @@ def product_delete(pid):
     if email != (row.merchant_email or "").lower():
         return jsonify({"message":"forbidden"}), 403
 
-    if hard:
+        if hard:
         # 0) 先收集所有图片 url
         imgs = ProductImage.query.filter_by(product_id=pid).all()
         urls = []
@@ -1669,7 +1674,8 @@ def product_delete(pid):
         return jsonify({"ok": True, "id": pid, "deleted": "hard"})
 
     else:
-        row.status = "removed"
+        # ✅ 软删除：只改状态，不删数据库，不删图片
+        row.status = "deleted"   # 或者 "removed" 也行，但要和列表过滤一致
         db.session.commit()
         return jsonify({"ok": True, "id": pid, "deleted": "soft"})
 
@@ -1831,6 +1837,8 @@ def outfits_one(oid):
     if request.method == "OPTIONS":
         return _ok()
     row = Outfit.query.get_or_404(oid)
+    if (row.status or "") != "active":
+        return jsonify({"message":"not_found"}), 404
     return jsonify(_outfit_to_dict(row))
 
 @app.get("/api/outfits/<int:oid>/media/<int:mid>")
@@ -1951,7 +1959,7 @@ def api_outfits_feed_list():
     except Exception:
         limit = 50
 
-    q = Outfit.query
+    q = Outfit.query.filter_by(status="active")
     try:
         rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
     except Exception as e:
@@ -1990,7 +1998,7 @@ def outfit_feed():
         limit = 20
 
     qstr = (request.args.get("q") or "").strip().lower()
-    q = Outfit.query   # 先不要按 status 过滤
+    q = Outfit.query.filter_by(status="active")
 
     if qstr:
         like = f"%{qstr}%"
