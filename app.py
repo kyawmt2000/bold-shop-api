@@ -461,6 +461,26 @@ class PaymentOrder(db.Model):
 
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
+class ChatThread(db.Model):
+    __tablename__ = "chat_threads"
+    id = db.Column(db.String(80), primary_key=True)  # t_<hash> 或 uuid
+    user1_id = db.Column(db.String(16), index=True, nullable=False)
+    user2_id = db.Column(db.String(16), index=True, nullable=False)
+    updated_at = db.Column(db.DateTime, server_default=db.func.now(), onupdate=db.func.now())
+
+class ChatMessage(db.Model):
+    __tablename__ = "chat_messages"
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    thread_id = db.Column(db.String(80), index=True, nullable=False)
+    from_id = db.Column(db.String(16), index=True, nullable=False)
+    to_id = db.Column(db.String(16), index=True, nullable=False)
+    type = db.Column(db.String(16), nullable=False, default="text")  # text/image/video/product/order
+    text = db.Column(db.Text, nullable=True)
+    url = db.Column(db.Text, nullable=True)
+    payload_json = db.Column(db.Text, nullable=True)  # product/order 等对象 JSON
+    created_at = db.Column(db.DateTime, server_default=db.func.now(), index=True)
+
+
 def create_notification_for_outfit(outfit, action, actor=None, payload=None):
     """
     给帖子作者生成一条通知：
