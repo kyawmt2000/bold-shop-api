@@ -3808,30 +3808,48 @@ def api_chat_get_or_create_thread():
 
     a, b = _pair_ids(me, peer)
     t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
-    if not t:
-        t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
-        db.session.add(t)
-        db.session.commit()
+if not t:
+    t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
+    db.session.add(t)
+    db.session.flush()
+else:
+    t.updated_at = datetime.utcnow()
+db.session.commit()
 
     return jsonify({"ok": True, "thread_id": t.id, "peer_id": peer})
 
 @app.post("/api/chats/send")
 def chat_send():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True) or {}
 
     me_id   = str(data.get("me", "")).strip()
     peer_id = str(data.get("peer", "")).strip()
 
-    if not re.fullmatch(r"\d{14}", me_id) or not re.fullmatch(r"\d{14}", peer_id):
-        return jsonify({"ok": False, "error": "invalid_user_id"}), 400
+    if not re.fullmatch(r"\d{14}", me_id):
+        return jsonify({"ok": False, "error": "bad_me"}), 400
+    if not re.fullmatch(r"\d{14}", peer_id):
+        return jsonify({"ok": False, "error": "bad_peer"}), 400
+    if me_id == peer_id:
+        return jsonify({"ok": False, "error": "same_user"}), 400
 
-    msg_type = data.get("type", "text")
-    text     = data.get("text", "")
-    url      = data.get("url", "")
-    payload  = data.get("payload", {})
+    msg_type = (data.get("type") or "text").strip()
+    text     = data.get("text", "") or ""
+    url      = data.get("url", "") or ""
+    payload  = data.get("payload", {}) or {}
 
-    # ✅ 这里不查 email，只存 id
+    # ✅ 关键：确保 thread 存在
+    a, b = _pair_ids(me_id, peer_id)
+    t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
+    if not t:
+        t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
+        db.session.add(t)
+        db.session.flush()   # ✅ 不用 commit，也能拿到 t.id
+    else:
+        t.updated_at = datetime.utcnow()
+
+    # ✅ 关键：写入 thread_id，避免 NOT NULL 500
     chat = ChatMessage(
+        thread_id    = t.id,
         from_user_id = me_id,
         to_user_id   = peer_id,
         type         = msg_type,
@@ -3843,5 +3861,4 @@ def chat_send():
 
     db.session.add(chat)
     db.session.commit()
-
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "thread_id": t.id})
