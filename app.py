@@ -3731,59 +3731,50 @@ def api_admin_payments_list():
 
 @app.get("/api/chats/threads")
 def api_chat_threads():
-    me = (request.args.get("me") or "").strip()
+    me = str(request.args.get("me") or "").strip()
     if not re.fullmatch(r"\d{14}", me):
-        return jsonify({"ok": False, "error": "bad_me"}), 400
+        return jsonify({"ok": False}), 400
 
-    q = ChatThread.query.filter(or_(ChatThread.a_id == me, ChatThread.b_id == me))\
-                        .order_by(ChatThread.updated_at.desc())\
-                        .limit(100)
-    items = []
-    for t in q.all():
+    rows = ChatThread.query.filter(
+        (ChatThread.a_id == me) | (ChatThread.b_id == me)
+    ).order_by(ChatThread.updated_at.desc()).all()
+
+    out = []
+    for t in rows:
         peer = t.b_id if t.a_id == me else t.a_id
-        items.append({
+        out.append({
             "thread_id": t.id,
             "peer_id": peer,
-            "updated_at": t.updated_at.isoformat(sep=" ", timespec="seconds"),
+            "updated_at": t.updated_at.isoformat()
         })
-    return jsonify({"ok": True, "items": items})
+
+    return jsonify({"ok": True, "items": out})
 
 @app.get("/api/chats/messages")
 def api_chat_messages():
-    thread_id = request.args.get("thread_id")
-    me = (request.args.get("me") or "").strip()
-    if not re.fullmatch(r"\d{14}", me):
-        return jsonify({"ok": False, "error": "bad_me"}), 400
+    tid = request.args.get("thread_id")
+    me  = request.args.get("me")
 
-    try:
-        tid = int(thread_id)
-    except:
-        return jsonify({"ok": False, "error": "bad_thread"}), 400
+    if not tid or not re.fullmatch(r"\d{14}", me):
+        return jsonify({"ok": False}), 400
 
-    t = ChatThread.query.get(tid)
-    if not t:
-        return jsonify({"ok": False, "error": "thread_not_found"}), 404
+    msgs = ChatMessage.query.filter_by(thread_id=tid)\
+        .order_by(ChatMessage.created_at.asc()).all()
 
-    if me not in (t.a_id, t.b_id):
-        return jsonify({"ok": False, "error": "no_permission"}), 403
-
-    rows = ChatMessage.query.filter_by(thread_id=tid).order_by(ChatMessage.created_at.asc()).limit(500).all()
-    items = []
-    for m in rows:
-        payload = {}
-        if m.payload_json:
-            try: payload = json.loads(m.payload_json)
-            except: payload = {}
-        items.append({
+    out = []
+    for m in msgs:
+        data = json.loads(m.payload_json or "{}")
+        out.append({
             "id": m.id,
             "from": m.sender_id,
-            "type": m.type,
-            "text": m.text or "",
-            "url": m.url or "",
-            "payload": payload,
-            "ts": m.created_at.isoformat(sep=" ", timespec="seconds")
+            "type": data.get("type"),
+            "text": data.get("text"),
+            "url": data.get("url"),
+            "payload": data.get("payload"),
+            "created_at": m.created_at.isoformat()
         })
-    return jsonify({"ok": True, "items": items})
+
+    return jsonify({"ok": True, "items": out})
 
 @app.post("/api/admin/payments/<int:pid>/confirm")
 def api_admin_payments_confirm(pid):
