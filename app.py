@@ -3802,20 +3802,24 @@ def api_chat_get_or_create_thread():
     data = request.get_json(force=True) or {}
     me = (data.get("me") or "").strip()
     peer = (data.get("peer") or "").strip()
-    if not re.fullmatch(r"\d{14}", me):   return jsonify({"ok": False, "error": "bad_me"}), 400
-    if not re.fullmatch(r"\d{14}", peer): return jsonify({"ok": False, "error": "bad_peer"}), 400
-    if me == peer: return jsonify({"ok": False, "error": "same_user"}), 400
+
+    if not re.fullmatch(r"\d{14}", me):
+        return jsonify({"ok": False, "error": "bad_me"}), 400
+    if not re.fullmatch(r"\d{14}", peer):
+        return jsonify({"ok": False, "error": "bad_peer"}), 400
+    if me == peer:
+        return jsonify({"ok": False, "error": "same_user"}), 400
 
     a, b = _pair_ids(me, peer)
     t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
-if not t:
-    t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
-    db.session.add(t)
-    db.session.flush()
-else:
-    t.updated_at = datetime.utcnow()
-db.session.commit()
+    if not t:
+        t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
+        db.session.add(t)
+        db.session.flush()
+    else:
+        t.updated_at = datetime.utcnow()
 
+    db.session.commit()
     return jsonify({"ok": True, "thread_id": t.id, "peer_id": peer})
 
 @app.post("/api/chats/send")
