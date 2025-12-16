@@ -16,6 +16,7 @@ from werkzeug.utils import secure_filename
 from sqlalchemy import func
 from uuid import uuid4
 from google.cloud import storage
+from sqlalchemy import and_, or_
 
 # -----------------------------------------
 #          ⭐ 正确初始化 Flask + DB ⭐
@@ -463,22 +464,25 @@ class PaymentOrder(db.Model):
 
 class ChatThread(db.Model):
     __tablename__ = "chat_threads"
-    id = db.Column(db.String(80), primary_key=True)  # t_<hash> 或 uuid
-    user1_id = db.Column(db.String(16), index=True, nullable=False)
-    user2_id = db.Column(db.String(16), index=True, nullable=False)
-    updated_at = db.Column(db.DateTime, server_default=db.func.now(), onupdate=db.func.now())
+    id = db.Column(db.Integer, primary_key=True)
+    a_id = db.Column(db.String(20), nullable=False, index=True)  # 14位
+    b_id = db.Column(db.String(20), nullable=False, index=True)  # 14位
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        db.UniqueConstraint("a_id", "b_id", name="uq_chat_pair"),
+    )
 
 class ChatMessage(db.Model):
     __tablename__ = "chat_messages"
-    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
-    thread_id = db.Column(db.String(80), index=True, nullable=False)
-    from_id = db.Column(db.String(16), index=True, nullable=False)
-    to_id = db.Column(db.String(16), index=True, nullable=False)
-    type = db.Column(db.String(16), nullable=False, default="text")  # text/image/video/product/order
-    text = db.Column(db.Text, nullable=True)
-    url = db.Column(db.Text, nullable=True)
-    payload_json = db.Column(db.Text, nullable=True)  # product/order 等对象 JSON
-    created_at = db.Column(db.DateTime, server_default=db.func.now(), index=True)
+    id = db.Column(db.Integer, primary_key=True)
+    thread_id = db.Column(db.Integer, db.ForeignKey("chat_threads.id"), nullable=False, index=True)
+    sender_id = db.Column(db.String(20), nullable=False, index=True)
+    type = db.Column(db.String(16), default="text")  # text/image/video/product/order
+    text = db.Column(db.Text)
+    url = db.Column(db.Text)     # image/video url（后面你可以接 GCS）
+    payload_json = db.Column(db.Text)  # product/order 等结构 json
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
 
 def create_notification_for_outfit(outfit, action, actor=None, payload=None):
@@ -3722,6 +3726,62 @@ def api_admin_payments_list():
     except Exception as e:
         return jsonify({"message":"server_error","error":str(e)}), 500
 
+@app.get("/api/chats/threads")
+def api_chat_threads():
+    me = (request.args.get("me") or "").strip()
+    if not re.fullmatch(r"\d{14}", me):
+        return jsonify({"ok": False, "error": "bad_me"}), 400
+
+    q = ChatThread.query.filter(or_(ChatThread.a_id == me, ChatThread.b_id == me))\
+                        .order_by(ChatThread.updated_at.desc())\
+                        .limit(100)
+    items = []
+    for t in q.all():
+        peer = t.b_id if t.a_id == me else t.a_id
+        items.append({
+            "thread_id": t.id,
+            "peer_id": peer,
+            "updated_at": t.updated_at.isoformat(sep=" ", timespec="seconds"),
+        })
+    return jsonify({"ok": True, "items": items})
+
+@app.get("/api/chats/messages")
+def api_chat_messages():
+    thread_id = request.args.get("thread_id")
+    me = (request.args.get("me") or "").strip()
+    if not re.fullmatch(r"\d{14}", me):
+        return jsonify({"ok": False, "error": "bad_me"}), 400
+
+    try:
+        tid = int(thread_id)
+    except:
+        return jsonify({"ok": False, "error": "bad_thread"}), 400
+
+    t = ChatThread.query.get(tid)
+    if not t:
+        return jsonify({"ok": False, "error": "thread_not_found"}), 404
+
+    if me not in (t.a_id, t.b_id):
+        return jsonify({"ok": False, "error": "no_permission"}), 403
+
+    rows = ChatMessage.query.filter_by(thread_id=tid).order_by(ChatMessage.created_at.asc()).limit(500).all()
+    items = []
+    for m in rows:
+        payload = {}
+        if m.payload_json:
+            try: payload = json.loads(m.payload_json)
+            except: payload = {}
+        items.append({
+            "id": m.id,
+            "from": m.sender_id,
+            "type": m.type,
+            "text": m.text or "",
+            "url": m.url or "",
+            "payload": payload,
+            "ts": m.created_at.isoformat(sep=" ", timespec="seconds")
+        })
+    return jsonify({"ok": True, "items": items})
+
 @app.post("/api/admin/payments/<int:pid>/confirm")
 def api_admin_payments_confirm(pid):
     try:
@@ -3736,3 +3796,55 @@ def api_admin_payments_confirm(pid):
         return jsonify({"ok": True, "id": po.id, "status": po.status})
     except Exception as e:
         return jsonify({"message":"server_error","error":str(e)}), 500
+
+@app.post("/api/chats/thread")
+def api_chat_get_or_create_thread():
+    data = request.get_json(force=True) or {}
+    me = (data.get("me") or "").strip()
+    peer = (data.get("peer") or "").strip()
+    if not re.fullmatch(r"\d{14}", me):   return jsonify({"ok": False, "error": "bad_me"}), 400
+    if not re.fullmatch(r"\d{14}", peer): return jsonify({"ok": False, "error": "bad_peer"}), 400
+    if me == peer: return jsonify({"ok": False, "error": "same_user"}), 400
+
+    a, b = _pair_ids(me, peer)
+    t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
+    if not t:
+        t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
+        db.session.add(t)
+        db.session.commit()
+
+    return jsonify({"ok": True, "thread_id": t.id, "peer_id": peer})
+
+@app.post("/api/chats/send")
+def api_chat_send():
+    data = request.get_json(force=True) or {}
+    me = (data.get("me") or "").strip()
+    peer = (data.get("peer") or "").strip()
+    msg_type = (data.get("type") or "text").strip()
+    text = data.get("text") or ""
+    url = data.get("url") or ""
+    payload = data.get("payload") or {}
+
+    if not re.fullmatch(r"\d{14}", me):   return jsonify({"ok": False, "error": "bad_me"}), 400
+    if not re.fullmatch(r"\d{14}", peer): return jsonify({"ok": False, "error": "bad_peer"}), 400
+
+    a, b = _pair_ids(me, peer)
+    t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
+    if not t:
+        t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
+        db.session.add(t)
+        db.session.flush()  # 先拿到 t.id
+
+    m = ChatMessage(
+        thread_id=t.id,
+        sender_id=me,
+        type=msg_type,
+        text=text,
+        url=url,
+        payload_json=json.dumps(payload, ensure_ascii=False)
+    )
+    t.updated_at = datetime.utcnow()
+    db.session.add(m)
+    db.session.commit()
+
+    return jsonify({"ok": True, "message_id": m.id, "thread_id": t.id})
