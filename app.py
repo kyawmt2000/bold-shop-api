@@ -447,7 +447,7 @@ class PaymentOrder(db.Model):
     buyer_phone = db.Column(db.String(50), nullable=True)
 
     # items (包含分类/尺码/颜色/卖家信息等)
-    items = db.Column(JSONB, nullable=False, default=list)
+    items = db.Column(db.JSON, nullable=False, default=list)
 
     subtotal = db.Column(db.Integer, nullable=False, default=0)
     tax = db.Column(db.Integer, nullable=False, default=0)
