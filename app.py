@@ -3823,20 +3823,20 @@ def api_chat_get_or_create_thread():
     return jsonify({"ok": True, "thread_id": t.id, "peer_id": peer})
 
 @app.post("/api/chats/send")
-def api_chat_send():
+def chat_send():
     data = request.get_json(force=True) or {}
 
-    me_id   = str(data.get("me") or "").strip()
-    peer_id = str(data.get("peer") or "").strip()
+    me_id   = str(data.get("me", "")).strip()
+    peer_id = str(data.get("peer", "")).strip()
 
     if not re.fullmatch(r"\d{14}", me_id) or not re.fullmatch(r"\d{14}", peer_id):
         return jsonify({"ok": False, "error": "invalid_user_id"}), 400
     if me_id == peer_id:
         return jsonify({"ok": False, "error": "same_user"}), 400
 
-    msg_type = str(data.get("type") or "text")
-    text     = str(data.get("text") or "")
-    url      = str(data.get("url") or "")
+    msg_type = (data.get("type") or "text").strip()
+    text     = data.get("text") or ""
+    url      = data.get("url") or ""
     payload  = data.get("payload") or {}
 
     # 1) 找/建 thread
@@ -3847,13 +3847,14 @@ def api_chat_send():
         db.session.add(t)
         db.session.flush()  # 先拿到 t.id，不用先 commit
 
-    # 2) 写 message（✅用你模型里的字段：thread_id / sender_id / payload_json）
-    m = ChatMessage(
+    # 2) 写入消息（字段名必须匹配你的 Model）
+    chat = ChatMessage(
         thread_id=t.id,
         sender_id=me_id,
+        receiver_id=peer_id,
         type=msg_type,
-        text=text,
-        url=url,
+        body=text,
+        attachment_url=url,
         payload_json=json.dumps(payload, ensure_ascii=False),
         created_at=datetime.utcnow()
     )
@@ -3861,7 +3862,7 @@ def api_chat_send():
     # 3) 更新 thread 时间
     t.updated_at = datetime.utcnow()
 
-    db.session.add(m)
+    db.session.add(chat)
     db.session.commit()
 
-    return jsonify({"ok": True, "thread_id": t.id, "message_id": m.id})
+    return jsonify({"ok": True, "thread_id": t.id})
