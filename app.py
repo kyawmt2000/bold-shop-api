@@ -3802,67 +3802,76 @@ def api_admin_payments_confirm(pid):
 
 @app.post("/api/chats/thread")
 def api_chat_get_or_create_thread():
-    data = request.get_json(force=True) or {}
-    me = str(data.get("me") or "").strip()
-    peer = str(data.get("peer") or "").strip()
+    try:
+        data = request.get_json(force=True) or {}
+        me   = str(data.get("me") or "").strip()
+        peer = str(data.get("peer") or "").strip()
 
-    if not re.fullmatch(r"\d{14}", me):
-        return jsonify({"ok": False, "error": "bad_me"}), 400
-    if not re.fullmatch(r"\d{14}", peer):
-        return jsonify({"ok": False, "error": "bad_peer"}), 400
-    if me == peer:
-        return jsonify({"ok": False, "error": "same_user"}), 400
+        if not re.fullmatch(r"\d{14}", me):
+            return jsonify({"ok": False, "error": "bad_me"}), 400
+        if not re.fullmatch(r"\d{14}", peer):
+            return jsonify({"ok": False, "error": "bad_peer"}), 400
+        if me == peer:
+            return jsonify({"ok": False, "error": "same_user"}), 400
 
-    a, b = _pair_ids(me, peer)
-    t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
-    if not t:
-        t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
-        db.session.add(t)
-        db.session.commit()
+        a, b = _pair_ids(me, peer)
+        t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
+        if not t:
+            t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
+            db.session.add(t)
+            db.session.commit()
 
-    return jsonify({"ok": True, "thread_id": t.id, "peer_id": peer})
+        return jsonify({"ok": True, "thread_id": t.id, "peer_id": peer})
+    except Exception as e:
+        return jsonify({"ok": False, "error": "thread_failed", "detail": str(e)}), 500
 
 @app.post("/api/chats/send")
-def chat_send():
-    data = request.get_json(force=True) or {}
+def api_chat_send():
+    try:
+        data = request.get_json(force=True) or {}
 
-    me_id   = str(data.get("me", "")).strip()
-    peer_id = str(data.get("peer", "")).strip()
+        me   = str(data.get("me") or "").strip()
+        peer = str(data.get("peer") or "").strip()
 
-    if not re.fullmatch(r"\d{14}", me_id) or not re.fullmatch(r"\d{14}", peer_id):
-        return jsonify({"ok": False, "error": "invalid_user_id"}), 400
-    if me_id == peer_id:
-        return jsonify({"ok": False, "error": "same_user"}), 400
+        if not re.fullmatch(r"\d{14}", me) or not re.fullmatch(r"\d{14}", peer):
+            return jsonify({"ok": False, "error": "invalid_user_id"}), 400
+        if me == peer:
+            return jsonify({"ok": False, "error": "same_user"}), 400
 
-    msg_type = (data.get("type") or "text").strip()
-    text     = data.get("text") or ""
-    url      = data.get("url") or ""
-    payload  = data.get("payload") or {}
+        msg_type = str(data.get("type") or "text").strip()
+        text     = str(data.get("text") or "")
+        url      = str(data.get("url") or "")
+        payload  = data.get("payload") or {}
 
-    # 1) 找/建 thread
-    a, b = _pair_ids(me_id, peer_id)
-    t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
-    if not t:
-        t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
-        db.session.add(t)
-        db.session.flush()  # 先拿到 t.id，不用先 commit
+        # 1) get/create thread
+        a, b = _pair_ids(me, peer)
+        t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
+        if not t:
+            t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
+            db.session.add(t)
+            db.session.flush()  # 先拿到 t.id
 
-    # 2) 写入消息（字段名必须匹配你的 Model）
-    chat = ChatMessage(
-        thread_id=t.id,
-        sender_id=me_id,
-        receiver_id=peer_id,
-        type=msg_type,
-        body=text,
-        attachment_url=url,
-        payload_json=json.dumps(payload, ensure_ascii=False),
-        created_at=datetime.utcnow()
-    )
+        # 2) build payload_json (一定要 json 字符串)
+        payload_json = json.dumps({
+            "type": msg_type,
+            "text": text,
+            "url": url,
+            "payload": payload
+        }, ensure_ascii=False)
 
-    # 3) 更新 thread 时间
-    t.updated_at = datetime.utcnow()
+        # 3) insert message
+        m = ChatMessage(
+            thread_id=t.id,
+            sender_id=me,
+            payload_json=payload_json,
+            created_at=datetime.utcnow()
+        )
+        db.session.add(m)
 
-    db.session.add(chat)
-    db.session.commit()
+        # 4) update thread time
+        t.updated_at = datetime.utcnow()
 
-    return jsonify({"ok": True, "thread_id": t.id})
+        db.session.commit()
+        return jsonify({"ok": True, "thread_id": t.id, "message_id": m.id})
+    except Exception as e:
+        return jsonify({"ok": False, "error": "send_failed", "detail": str(e)}), 500
