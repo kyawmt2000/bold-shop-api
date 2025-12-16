@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import random, string
+import hashlib
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
@@ -173,6 +174,16 @@ def delete_gcs_objects_by_urls(urls):
 
 def _pair_ids(x: str, y: str):
     return (x, y) if x < y else (y, x)
+
+def _peer_profile(uid14: str):
+    s = UserSetting.query.filter_by(user_id=uid14).first()
+    if not s:
+        return {"id": uid14, "username": "User", "avatar": "https://boldmm.shop/default-avatar.png"}
+    return {
+        "id": uid14,
+        "username": (getattr(s, "nickname", None) or "User"),
+        "avatar": (getattr(s, "avatar_url", None) or getattr(s, "avatar", None) or "https://boldmm.shop/default-avatar.png")
+    }
 
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
@@ -3733,19 +3744,42 @@ def api_admin_payments_list():
 def api_chat_threads():
     me = str(request.args.get("me") or "").strip()
     if not re.fullmatch(r"\d{14}", me):
-        return jsonify({"ok": False}), 400
+        return jsonify({"ok": False, "error": "bad_me"}), 400
 
     rows = ChatThread.query.filter(
         (ChatThread.a_id == me) | (ChatThread.b_id == me)
-    ).order_by(ChatThread.updated_at.desc()).all()
+    ).order_by(ChatThread.updated_at.desc()).limit(200).all()
 
     out = []
     for t in rows:
         peer = t.b_id if t.a_id == me else t.a_id
+
+        last = ChatMessage.query.filter_by(thread_id=t.id).order_by(ChatMessage.id.desc()).first()
+        last_obj = None
+        if last:
+            payload = {}
+            try:
+                payload = json.loads(last.payload_json) if last.payload_json else {}
+            except:
+                payload = {}
+            # to 通过 thread 推出来（不用加 receiver_id 也可以）
+            to_id = peer if last.sender_id == me else me
+            last_obj = {
+                "id": last.id,
+                "from": last.sender_id,
+                "to": to_id,
+                "type": last.type or "text",
+                "text": last.text or "",
+                "url": last.url or "",
+                "payload": payload,
+                "ts": last.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            }
+
         out.append({
             "thread_id": t.id,
-            "peer_id": peer,
-            "updated_at": t.updated_at.isoformat()
+            "peer": _peer_profile(peer),
+            "updated_at": t.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "last": last_obj
         })
 
     return jsonify({"ok": True, "items": out})
@@ -3775,6 +3809,44 @@ def api_chat_messages():
         })
 
     return jsonify({"ok": True, "items": out})
+
+@app.get("/api/chats/thread")
+def api_chat_thread():
+    me = str(request.args.get("me") or "").strip()
+    peer = str(request.args.get("peer") or "").strip()
+    limit = int(request.args.get("limit") or 200)
+    limit = max(1, min(limit, 500))
+
+    if not re.fullmatch(r"\d{14}", me) or not re.fullmatch(r"\d{14}", peer):
+        return jsonify({"ok": False, "error": "bad_me_or_peer"}), 400
+
+    a, b = _pair_ids(me, peer)
+    t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
+    if not t:
+        return jsonify({"ok": True, "thread_id": None, "peer": _peer_profile(peer), "items": []})
+
+    msgs = ChatMessage.query.filter_by(thread_id=t.id).order_by(ChatMessage.id.asc()).limit(limit).all()
+
+    items = []
+    for m in msgs:
+        payload = {}
+        try:
+            payload = json.loads(m.payload_json) if m.payload_json else {}
+        except:
+            payload = {}
+        to_id = peer if m.sender_id == me else me
+        items.append({
+            "id": m.id,
+            "from": m.sender_id,
+            "to": to_id,
+            "type": m.type or "text",
+            "text": m.text or "",
+            "url": m.url or "",
+            "payload": payload,
+            "ts": m.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        })
+
+    return jsonify({"ok": True, "thread_id": t.id, "peer": _peer_profile(peer), "items": items})
 
 @app.post("/api/admin/payments/<int:pid>/confirm")
 def api_admin_payments_confirm(pid):
@@ -3819,7 +3891,7 @@ def api_chat_get_or_create_thread():
 @app.post("/api/chats/send")
 def api_chat_send():
     try:
-        data = request.get_json(force=True) or {}
+        data = request.get_json(force=True, silent=True) or {}
 
         me   = str(data.get("me") or "").strip()
         peer = str(data.get("peer") or "").strip()
@@ -3834,35 +3906,46 @@ def api_chat_send():
         url      = str(data.get("url") or "")
         payload  = data.get("payload") or {}
 
+        if msg_type not in ("text","image","video","product","order"):
+            msg_type = "text"
+
         # 1) get/create thread
         a, b = _pair_ids(me, peer)
         t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
         if not t:
             t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
             db.session.add(t)
-            db.session.flush()  # 先拿到 t.id
+            db.session.flush()
 
-        # 2) build payload_json (一定要 json 字符串)
-        payload_json = json.dumps({
-            "type": msg_type,
-            "text": text,
-            "url": url,
-            "payload": payload
-        }, ensure_ascii=False)
-
-        # 3) insert message
+        # 2) insert message (把字段写进列里，payload_json只存payload本身)
         m = ChatMessage(
             thread_id=t.id,
             sender_id=me,
-            payload_json=payload_json,
+            type=msg_type,
+            text=text,
+            url=url,
+            payload_json=json.dumps(payload, ensure_ascii=False) if payload else None,
             created_at=datetime.utcnow()
         )
         db.session.add(m)
 
-        # 4) update thread time
+        # 3) update thread time
         t.updated_at = datetime.utcnow()
-
         db.session.commit()
-        return jsonify({"ok": True, "thread_id": t.id, "message_id": m.id})
+
+        return jsonify({
+            "ok": True,
+            "thread_id": t.id,
+            "message": {
+                "id": m.id,
+                "from": me,
+                "to": peer,
+                "type": msg_type,
+                "text": text,
+                "url": url,
+                "payload": payload,
+                "ts": m.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            }
+        })
     except Exception as e:
         return jsonify({"ok": False, "error": "send_failed", "detail": str(e)}), 500
