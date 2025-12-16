@@ -3816,35 +3816,32 @@ def api_chat_get_or_create_thread():
     return jsonify({"ok": True, "thread_id": t.id, "peer_id": peer})
 
 @app.post("/api/chats/send")
-def api_chat_send():
-    data = request.get_json(force=True) or {}
-    me = (data.get("me") or "").strip()
-    peer = (data.get("peer") or "").strip()
-    msg_type = (data.get("type") or "text").strip()
-    text = data.get("text") or ""
-    url = data.get("url") or ""
-    payload = data.get("payload") or {}
+def chat_send():
+    data = request.get_json(force=True)
 
-    if not re.fullmatch(r"\d{14}", me):   return jsonify({"ok": False, "error": "bad_me"}), 400
-    if not re.fullmatch(r"\d{14}", peer): return jsonify({"ok": False, "error": "bad_peer"}), 400
+    me_id   = str(data.get("me", "")).strip()
+    peer_id = str(data.get("peer", "")).strip()
 
-    a, b = _pair_ids(me, peer)
-    t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
-    if not t:
-        t = ChatThread(a_id=a, b_id=b, updated_at=datetime.utcnow())
-        db.session.add(t)
-        db.session.flush()  # 先拿到 t.id
+    if not re.fullmatch(r"\d{14}", me_id) or not re.fullmatch(r"\d{14}", peer_id):
+        return jsonify({"ok": False, "error": "invalid_user_id"}), 400
 
-    m = ChatMessage(
-        thread_id=t.id,
-        sender_id=me,
-        type=msg_type,
-        text=text,
-        url=url,
-        payload_json=json.dumps(payload, ensure_ascii=False)
+    msg_type = data.get("type", "text")
+    text     = data.get("text", "")
+    url      = data.get("url", "")
+    payload  = data.get("payload", {})
+
+    # ✅ 这里不查 email，只存 id
+    chat = ChatMessage(
+        from_user_id = me_id,
+        to_user_id   = peer_id,
+        type         = msg_type,
+        text         = text,
+        url          = url,
+        payload      = payload,
+        created_at   = datetime.utcnow()
     )
-    t.updated_at = datetime.utcnow()
-    db.session.add(m)
+
+    db.session.add(chat)
     db.session.commit()
 
-    return jsonify({"ok": True, "message_id": m.id, "thread_id": t.id})
+    return jsonify({"ok": True})
