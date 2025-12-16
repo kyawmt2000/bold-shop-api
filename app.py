@@ -3,6 +3,7 @@ import random
 import json
 import logging
 import re
+import random, string
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
@@ -432,6 +433,33 @@ class ProductQALike(db.Model):
     __table_args__ = (
         db.UniqueConstraint("product_id", "qa_id", "user_email", name="uq_product_qa_like"),
     )
+
+class PaymentOrder(db.Model):
+    __tablename__ = "payment_orders"
+
+    id = db.Column(db.Integer, primary_key=True)
+    order_no = db.Column(db.String(32), unique=True, nullable=False)
+
+    # buyer
+    user_id = db.Column(db.String(64), nullable=True)
+    buyer_email = db.Column(db.String(255), nullable=False, index=True)
+    buyer_nickname = db.Column(db.String(120), nullable=True)
+    buyer_phone = db.Column(db.String(50), nullable=True)
+
+    # items (包含分类/尺码/颜色/卖家信息等)
+    items = db.Column(JSONB, nullable=False, default=list)
+
+    subtotal = db.Column(db.Integer, nullable=False, default=0)
+    tax = db.Column(db.Integer, nullable=False, default=0)
+    shipping = db.Column(db.Integer, nullable=False, default=0)
+    total = db.Column(db.Integer, nullable=False, default=0)
+
+    # status
+    status = db.Column(db.String(32), nullable=False, default="pending")  # pending / confirmed
+    paid_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    confirmed_at = db.Column(db.DateTime, nullable=True)
+
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 def create_notification_for_outfit(outfit, action, actor=None, payload=None):
     """
@@ -3568,3 +3596,123 @@ def api_outfit_comment_like_users(oid, cid):
     except Exception as e:
         app.logger.exception("api_outfit_comment_like_users failed: %s", e)
         return jsonify({"ok": False, "message": str(e)}), 500
+
+def gen_order_no():
+    # 例如：BOLD20251216XXXX
+    suffix = ''.join(random.choices(string.digits, k=6))
+    return f"BOLD{datetime.utcnow().strftime('%Y%m%d')}{suffix}"
+
+@app.post("/api/payments/create")
+def api_payment_create():
+    try:
+        data = request.get_json(force=True) or {}
+
+        buyer_email = (data.get("email") or "").strip().lower()
+        if not buyer_email:
+            return jsonify({"message": "missing_email"}), 400
+
+        items = data.get("items") or []
+        if not isinstance(items, list) or len(items) == 0:
+            return jsonify({"message": "empty_items"}), 400
+
+        subtotal = int(data.get("subtotal") or 0)
+        tax = int(data.get("tax") or 0)
+        shipping = int(data.get("shipping") or 0)
+        total = int(data.get("total") or (subtotal + tax + shipping))
+
+        po = PaymentOrder(
+            order_no=gen_order_no(),
+            user_id=str(data.get("user_id") or ""),
+            buyer_email=buyer_email,
+            buyer_nickname=str(data.get("nickname") or ""),
+            buyer_phone=str(data.get("phone") or ""),
+            items=items,
+            subtotal=subtotal,
+            tax=tax,
+            shipping=shipping,
+            total=total,
+            status="pending",
+            paid_at=datetime.utcnow(),
+        )
+        db.session.add(po)
+        db.session.commit()
+
+        return jsonify({
+            "ok": True,
+            "payment_id": po.id,
+            "order_no": po.order_no,
+            "status": po.status
+        })
+    except Exception as e:
+        return jsonify({"message": "server_error", "error": str(e)}), 500
+
+@app.get("/api/payments/<int:pid>")
+def api_payment_get(pid):
+    try:
+        po = PaymentOrder.query.get(pid)
+        if not po:
+            return jsonify({"message":"not_found"}), 404
+
+        return jsonify({
+            "id": po.id,
+            "order_no": po.order_no,
+            "status": po.status,
+            "paid_at": po.paid_at.isoformat() if po.paid_at else None,
+            "confirmed_at": po.confirmed_at.isoformat() if po.confirmed_at else None,
+            "total": po.total
+        })
+    except Exception as e:
+        return jsonify({"message":"server_error","error":str(e)}), 500
+
+@app.get("/api/admin/payments")
+def api_admin_payments_list():
+    try:
+        limit = min(200, int(request.args.get("limit") or 100))
+        rows = PaymentOrder.query.order_by(PaymentOrder.created_at.desc()).limit(limit).all()
+
+        def short_items(items):
+            # 给后台快速展示：最多 3 个商品标题
+            try:
+                names = [str(x.get("title") or "") for x in (items or []) if isinstance(x, dict)]
+                names = [n for n in names if n]
+                return names[:3]
+            except:
+                return []
+
+        out = []
+        for r in rows:
+            out.append({
+                "id": r.id,
+                "order_no": r.order_no,
+                "user_id": r.user_id,
+                "buyer_email": r.buyer_email,
+                "buyer_nickname": r.buyer_nickname,
+                "buyer_phone": r.buyer_phone,
+                "items": r.items or [],
+                "items_preview": short_items(r.items),
+                "subtotal": r.subtotal,
+                "tax": r.tax,
+                "shipping": r.shipping,
+                "total": r.total,
+                "status": r.status,
+                "paid_at": r.paid_at.isoformat() if r.paid_at else None,
+                "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
+            })
+        return jsonify({"items": out})
+    except Exception as e:
+        return jsonify({"message":"server_error","error":str(e)}), 500
+
+@app.post("/api/admin/payments/<int:pid>/confirm")
+def api_admin_payments_confirm(pid):
+    try:
+        po = PaymentOrder.query.get(pid)
+        if not po:
+            return jsonify({"message":"not_found"}), 404
+
+        po.status = "confirmed"
+        po.confirmed_at = datetime.utcnow()
+        db.session.commit()
+
+        return jsonify({"ok": True, "id": po.id, "status": po.status})
+    except Exception as e:
+        return jsonify({"message":"server_error","error":str(e)}), 500
