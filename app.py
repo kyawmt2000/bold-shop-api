@@ -7,7 +7,6 @@ import logging
 import re
 import random, string
 import hashlib
-import request
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
