@@ -1,4 +1,5 @@
 import os
+import uuid
 import random
 import json
 import logging
@@ -4070,3 +4071,64 @@ def api_chat_send():
         })
     except Exception as e:
         return jsonify({"ok": False, "error": "send_failed", "detail": str(e)}), 500
+
+@app.post("/api/chats/upload")
+def api_chat_upload():
+    """
+    FormData:
+      - file: image/video
+      - me: 14位
+      - peer: 14位
+      - kind: image | video   (可选，用于分目录)
+    Return:
+      { ok:true, url:"https://storage.googleapis.com/.../xxx.jpg" }
+    """
+    try:
+        me = (request.form.get("me") or "").strip()
+        peer = (request.form.get("peer") or "").strip()
+        kind = (request.form.get("kind") or "file").strip().lower()
+
+        up = request.files.get("file")
+        if not up or not up.filename:
+            return jsonify({"ok": False, "error": "no_file"}), 400
+
+        # 这里你如果需要，也可以校验 me/peer 是否 14位
+        # if not re.fullmatch(r"\d{14}", me) or not re.fullmatch(r"\d{14}", peer):
+        #     return jsonify({"ok": False, "error": "bad_me_or_peer"}), 400
+
+        if not GCS_BUCKET:
+            return jsonify({"ok": False, "error": "gcs_not_configured"}), 500
+
+        # 文件名
+        raw = secure_filename(up.filename)
+        _, ext = os.path.splitext(raw)
+        ext = (ext or "").lower()
+
+        # 简单限制：防止乱传
+        if kind == "image" and ext not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+            return jsonify({"ok": False, "error": "bad_image_ext"}), 400
+        if kind == "video" and ext not in (".mp4", ".mov", ".webm", ".m4v"):
+            return jsonify({"ok": False, "error": "bad_video_ext"}), 400
+
+        # 路径：chat_uploads/2025/12/17/me_peer/uuid.ext
+        today = datetime.utcnow()
+        folder = f"chat_uploads/{today:%Y/%m/%d}/{me}_{peer}"
+        obj_name = f"{folder}/{uuid.uuid4().hex}{ext}"
+
+        # 上传到 GCS
+        blob = storage_client.bucket(GCS_BUCKET).blob(obj_name)
+        blob.upload_from_file(up.stream, content_type=up.mimetype)
+
+        # 公开访问（两种选一）
+        # A) 如果你的 bucket 是 public read：
+        blob.make_public()
+        url = blob.public_url
+
+        # B) 如果 bucket 不是公开的，用 Signed URL（短时有效）就不适合聊天历史
+        # 所以聊天建议：bucket 内 chat_uploads 前缀做 public read
+
+        return jsonify({"ok": True, "url": url})
+
+    except Exception as e:
+        print("CHAT UPLOAD ERROR:", e)
+        return jsonify({"ok": False, "error": "upload_failed", "detail": str(e)}), 500
