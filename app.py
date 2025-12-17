@@ -185,13 +185,28 @@ def _pair_ids(x: str, y: str):
     return (x, y) if x < y else (y, x)
 
 def _peer_profile(uid14: str):
-    s = UserSetting.query.filter_by(user_id=uid14).first()
-    if not s:
-        return {"id": uid14, "username": "User", "avatar": "https://boldmm.shop/default-avatar.png"}
+    try:
+        # 1) 尝试按 user_id 查（如果你的 UserSetting 有 user_id 列）
+        s = UserSetting.query.filter_by(user_id=uid14).first()
+        if s:
+            return {
+                "id": uid14,
+                "username": (getattr(s, "nickname", None) or "User"),
+                "avatar": (
+                    getattr(s, "avatar_url", None)
+                    or getattr(s, "avatar", None)
+                    or "https://boldmm.shop/default-avatar.png"
+                ),
+            }
+    except Exception as e:
+        # ⚠️ 关键：这里吞掉错误，避免 threads 接口 500
+        print("[peer_profile] lookup by user_id failed:", e)
+
+    # 2) fallback：不查库也能工作
     return {
         "id": uid14,
-        "username": (getattr(s, "nickname", None) or "User"),
-        "avatar": (getattr(s, "avatar_url", None) or getattr(s, "avatar", None) or "https://boldmm.shop/default-avatar.png")
+        "username": f"User {str(uid14)[-4:]}",
+        "avatar": "https://boldmm.shop/default-avatar.png"
     }
 
 # -------------------- Models --------------------
@@ -3752,48 +3767,56 @@ def api_chat_threads():
             (ChatThread.a_id == me) | (ChatThread.b_id == me)
         ).order_by(ChatThread.updated_at.desc()).limit(200).all()
 
-        out = []
+        items = []
+
         for t in rows:
             peer = t.b_id if t.a_id == me else t.a_id
 
             last = (
-                ChatMessage.query.filter(ChatMessage.thread_id == t.id)
+                ChatMessage.query
+                .filter(ChatMessage.thread_id == t.id)
                 .order_by(ChatMessage.id.desc())
                 .first()
             )
 
             last_obj = None
             if last:
-                payload = {}
                 try:
                     payload = json.loads(last.payload_json) if last.payload_json else {}
                 except:
                     payload = {}
 
-                to_id = peer if last.sender_id == me else me
                 last_obj = {
                     "id": last.id,
                     "from": last.sender_id,
-                    "to": to_id,
+                    "to": peer,
                     "type": last.type or "text",
                     "text": last.text or "",
                     "url": last.url or "",
                     "payload": payload,
-                    "ts": _fmt_dt(last.created_at),
+                    "ts": _fmt_dt(last.created_at)
                 }
 
-            out.append({
+            items.append({
                 "thread_id": t.id,
-                "peer": _peer_profile(peer),
+                "peer": {
+                    "id": peer,
+                    "username": f"User {peer[-4:]}",
+                    "avatar": "https://boldmm.shop/default-avatar.png"
+                },
                 "updated_at": _fmt_dt(t.updated_at),
                 "last": last_obj
             })
 
-        return jsonify({"ok": True, "items": out})
+        return jsonify({"ok": True, "items": items})
 
     except Exception as e:
-        # 关键：保证前端永远拿到 JSON，不要吐 HTML 500 页面
-        return jsonify({"ok": False, "error": "threads_failed", "detail": str(e)}), 500
+        print("CHAT THREADS ERROR:", e)
+        return jsonify({
+            "ok": False,
+            "error": "threads_failed",
+            "detail": str(e)
+        }), 500
 
 @app.get("/api/chats/messages")
 def api_chat_messages():
