@@ -1352,15 +1352,15 @@ def api_admin_users():
     try:
         rows = db.session.execute(text("""
             SELECT
-              email,
-              COALESCE(created_at, updated_at) AS created_at,
-              user_id,
-              nickname,
-              phone,
-              gender,
-              birthday,
-              city,
-              avatar_url
+              us.email      AS email,
+              us.created_at AS registered_at,
+              us.user_id    AS user_id,
+              us.nickname   AS nickname,
+              us.phone      AS phone,
+              us.gender     AS gender,
+              us.birthday   AS birthday,
+              us.city       AS city,
+              us.avatar_url AS avatar_url
             FROM user_settings
             ORDER BY created_at DESC NULLS LAST
             LIMIT :limit
