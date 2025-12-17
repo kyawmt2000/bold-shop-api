@@ -3759,47 +3759,43 @@ def api_chat_threads():
         if not re.fullmatch(r"\d{14}", me):
             return jsonify({"ok": False, "error": "bad_me"}), 400
 
-        rows = ChatThread.query.filter(
-            (ChatThread.a_id == me) | (ChatThread.b_id == me)
-        ).order_by(ChatThread.updated_at.desc()).limit(200).all()
+        rows = (ChatThread.query
+                .filter((ChatThread.a_id == me) | (ChatThread.b_id == me))
+                .order_by(ChatThread.updated_at.desc())
+                .limit(200)
+                .all())
 
         items = []
-
         for t in rows:
             peer = t.b_id if t.a_id == me else t.a_id
 
-            last = (
-                ChatMessage.query
-                .filter(ChatMessage.thread_id == t.id)
-                .order_by(ChatMessage.id.desc())
-                .first()
-            )
+            last = (ChatMessage.query
+                    .filter(ChatMessage.thread_id == t.id)
+                    .order_by(ChatMessage.id.desc())
+                    .first())
 
             last_obj = None
             if last:
                 try:
                     payload = json.loads(last.payload_json) if last.payload_json else {}
-                except:
+                except Exception:
                     payload = {}
 
+                to_id = peer if last.sender_id == me else me
                 last_obj = {
                     "id": last.id,
                     "from": last.sender_id,
-                    "to": peer,
+                    "to": to_id,
                     "type": last.type or "text",
                     "text": last.text or "",
                     "url": last.url or "",
                     "payload": payload,
-                    "ts": _fmt_dt(last.created_at)
+                    "ts": _fmt_dt(last.created_at),
                 }
 
             items.append({
                 "thread_id": t.id,
-                "peer": {
-                    "id": peer,
-                    "username": f"User {peer[-4:]}",
-                    "avatar": "https://boldmm.shop/default-avatar.png"
-                },
+                "peer": _peer_profile(peer),   # ✅ 用你的 _peer_profile
                 "updated_at": _fmt_dt(t.updated_at),
                 "last": last_obj
             })
@@ -3807,34 +3803,36 @@ def api_chat_threads():
         return jsonify({"ok": True, "items": items})
 
     except Exception as e:
-        print("CHAT THREADS ERROR:", e)
-        return jsonify({
-            "ok": False,
-            "error": "threads_failed",
-            "detail": str(e)
-        }), 500
+        print("CHAT THREADS ERROR:", repr(e))
+        return jsonify({"ok": False, "error": "threads_failed", "detail": str(e)}), 500
 
 @app.get("/api/chats/messages")
 def api_chat_messages():
     tid = request.args.get("thread_id")
-    me  = request.args.get("me")
+    me  = str(request.args.get("me") or "").strip()
 
     if not tid or not re.fullmatch(r"\d{14}", me):
-        return jsonify({"ok": False}), 400
+        return jsonify({"ok": False, "error":"bad_args"}), 400
 
-    msgs = ChatMessage.query.filter_by(thread_id=tid)\
-        .order_by(ChatMessage.created_at.asc()).all()
+    msgs = (ChatMessage.query
+            .filter_by(thread_id=int(tid))
+            .order_by(ChatMessage.created_at.asc())
+            .all())
 
     out = []
     for m in msgs:
-        data = json.loads(m.payload_json or "{}")
+        try:
+            payload = json.loads(m.payload_json) if m.payload_json else {}
+        except Exception:
+            payload = {}
+
         out.append({
             "id": m.id,
             "from": m.sender_id,
             "type": m.type,
-            "text": m.text,
-            "url": m.url,
-            "payload": json.loads(m.payload_json or "{}"),
+            "text": m.text or "",
+            "url": m.url or "",
+            "payload": payload,
             "created_at": m.created_at.isoformat()
         })
 
