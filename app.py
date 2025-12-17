@@ -45,15 +45,30 @@ def add_cors_headers(resp):
     return resp
 
 # 从 Render 环境变量读取 DATABASE_URL
+import os
+
 db_url = os.getenv("DATABASE_URL")
 if not db_url:
     raise RuntimeError("DATABASE_URL is not set")
-# Render 提供的是 postgres:// 前缀，需要替换成 postgresql:// 才能被 SQLAlchemy 识别
-if db_url and db_url.startswith("postgres://"):
+
+# 1️⃣ Render 的 postgres:// → postgresql://
+if db_url.startswith("postgres://"):
     db_url = db_url.replace("postgres://", "postgresql://", 1)
 
+# 2️⃣ 强制 SSL（非常关键）
+if "sslmode=" not in db_url:
+    joiner = "&" if "?" in db_url else "?"
+    db_url = db_url + f"{joiner}sslmode=require"
+
+# 3️⃣ SQLAlchemy 基本配置
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# 4️⃣ 🔥 关键：防止坏的 SSL 连接被复用（解决你现在的 500）
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "pool_pre_ping": True,   # 每次取连接先 ping，断了就重连
+    "pool_recycle": 300,     # 5 分钟回收连接，避免 SSL 老化
+}
 
 db = SQLAlchemy(app)
 
