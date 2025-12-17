@@ -5,6 +5,7 @@ import logging
 import re
 import random, string
 import hashlib
+import trackback
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
@@ -3746,6 +3747,9 @@ def api_chat_threads():
     if not re.fullmatch(r"\d{14}", me):
         return jsonify({"ok": False, "error": "bad_me"}), 400
 
+    def fmt(dt):
+        return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
+
     rows = ChatThread.query.filter(
         (ChatThread.a_id == me) | (ChatThread.b_id == me)
     ).order_by(ChatThread.updated_at.desc()).limit(200).all()
@@ -3754,15 +3758,16 @@ def api_chat_threads():
     for t in rows:
         peer = t.b_id if t.a_id == me else t.a_id
 
-        last = ChatMessage.query.filter_by(thread_id=t.id).order_by(ChatMessage.id.desc()).first()
+        last = ChatMessage.query.filter(ChatMessage.thread_id == t.id)\
+            .order_by(ChatMessage.id.desc()).first()
+
         last_obj = None
         if last:
-            payload = {}
             try:
                 payload = json.loads(last.payload_json) if last.payload_json else {}
             except:
                 payload = {}
-            # to 通过 thread 推出来（不用加 receiver_id 也可以）
+
             to_id = peer if last.sender_id == me else me
             last_obj = {
                 "id": last.id,
@@ -3772,13 +3777,13 @@ def api_chat_threads():
                 "text": last.text or "",
                 "url": last.url or "",
                 "payload": payload,
-                "ts": last.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                "ts": fmt(last.created_at)
             }
 
         out.append({
             "thread_id": t.id,
             "peer": _peer_profile(peer),
-            "updated_at": t.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": fmt(t.updated_at),
             "last": last_obj
         })
 
