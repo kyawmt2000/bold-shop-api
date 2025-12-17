@@ -3876,6 +3876,19 @@ def api_chat_thread():
 
     return jsonify({"ok": True, "thread_id": t.id, "peer": _peer_profile(peer), "items": items})
 
+@app.get("/api/admin/fix_chats_tables")
+def fix_chats_tables():
+    try:
+        db.session.execute(db.text("DROP TABLE IF EXISTS chat_messages CASCADE;"))
+        db.session.execute(db.text("DROP TABLE IF EXISTS chat_threads CASCADE;"))
+        db.session.commit()
+
+        db.create_all()
+        return jsonify({"ok": True, "message": "chat tables rebuilt"})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.post("/api/admin/payments/<int:pid>/confirm")
 def api_admin_payments_confirm(pid):
     try:
