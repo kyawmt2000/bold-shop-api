@@ -72,6 +72,15 @@ if GCS_KEY_JSON and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
     except Exception as e:
         logging.exception("Failed to write GCS_KEY_JSON: %s", e)
 
+def _fmt_dt(dt):
+    if not dt:
+        return ""
+    try:
+        # 统一成字符串，前端直接显示
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return str(dt)
+
 def parse_image_urls(image_urls: str):
     """
     image_urls 可能是:
@@ -1261,15 +1270,6 @@ def _admin_auth_ok():
 
     # ✅ 否则就用你现有的 API_KEY
     return incoming == API_KEY
-
-def _fmt_dt(dt):
-    if not dt:
-        return ""
-    try:
-        # 统一成字符串，前端直接显示
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
-    except:
-        return str(dt)
 
 @app.get("/api/admin/users")
 def api_admin_users():
@@ -3743,11 +3743,10 @@ def api_admin_payments_list():
 @app.get("/api/chats/threads")
 def api_chat_threads():
     me = str(request.args.get("me") or "").strip()
+
+    # 如果你只允许 14位ID，就保持这样
     if not re.fullmatch(r"\d{14}", me):
         return jsonify({"ok": False, "error": "bad_me"}), 400
-
-    def fmt(dt):
-        return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
 
     rows = ChatThread.query.filter(
         (ChatThread.a_id == me) | (ChatThread.b_id == me)
@@ -3758,33 +3757,34 @@ def api_chat_threads():
         peer = t.b_id if t.a_id == me else t.a_id
 
         last = ChatMessage.query.filter(ChatMessage.thread_id == t.id)\
-            .order_by(ChatMessage.id.desc()).first()
+        .order_by(ChatMessage.id.desc()).first()
 
-        last_obj = None
-        if last:
-            try:
-                payload = json.loads(last.payload_json) if last.payload_json else {}
-            except:
-                payload = {}
+last_obj = None
+if last:
+    payload = {}
+    try:
+        payload = json.loads(last.payload_json) if last.payload_json else {}
+    except:
+        payload = {}
 
-            to_id = peer if last.sender_id == me else me
-            last_obj = {
-                "id": last.id,
-                "from": last.sender_id,
-                "to": to_id,
-                "type": last.type or "text",
-                "text": last.text or "",
-                "url": last.url or "",
-                "payload": payload,
-                "ts": fmt(last.created_at)
-            }
+    to_id = peer if last.sender_id == me else me
+    last_obj = {
+        "id": last.id,
+        "from": last.sender_id,
+        "to": to_id,
+        "type": last.type or "text",
+        "text": last.text or "",
+        "url": last.url or "",
+        "payload": payload,
+        "ts": _fmt_dt(last.created_at),   # ✅ 这里
+    }
 
-        out.append({
-            "thread_id": t.id,
-            "peer": _peer_profile(peer),
-            "updated_at": fmt(t.updated_at),
-            "last": last_obj
-        })
+out.append({
+    "thread_id": t.id,
+    "peer": _peer_profile(peer),
+    "updated_at": _fmt_dt(t.updated_at),  # ✅ 这里
+    "last": last_obj
+})
 
     return jsonify({"ok": True, "items": out})
 
