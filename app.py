@@ -1302,8 +1302,6 @@ def _admin_auth_ok():
 @app.get("/api/admin/users")
 def api_admin_users():
     incoming = (request.headers.get("X-API-Key") or "").strip()
-
-    # ✅ 用 ADMIN_API_KEY（你已经设置好了）
     admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
     if admin_key and incoming != admin_key:
         return jsonify({"message": "Unauthorized"}), 401
@@ -1316,27 +1314,23 @@ def api_admin_users():
     try:
         rows = db.session.execute(text("""
             SELECT
-              u.id         AS user_pk,
-              u.email      AS email,
-              u.created_at AS registered_at,
-
-              us.user_id    AS user_id,
-              us.nickname   AS nickname,
-              us.phone      AS phone,
-              us.gender     AS gender,
-              us.birthday   AS birthday,
-              us.city       AS city,
-              us.avatar_url AS avatar_url
-            FROM users u
-            LEFT JOIN user_settings us
-              ON lower(us.email) = lower(u.email)
-            ORDER BY u.created_at DESC NULLS LAST, u.id DESC
+              email,
+              created_at,
+              user_id,
+              nickname,
+              phone,
+              gender,
+              birthday,
+              city,
+              avatar_url
+            FROM user_settings
+            ORDER BY created_at DESC NULLS LAST
             LIMIT :limit
         """), {"limit": limit}).mappings().all()
 
         out = []
         for r in rows:
-            reg = r.get("registered_at")
+            reg = r.get("created_at")
             out.append({
                 "user_id": r.get("user_id") or "",
                 "email": r.get("email") or "",
