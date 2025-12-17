@@ -1315,7 +1315,7 @@ def api_admin_users():
         rows = db.session.execute(text("""
             SELECT
               email,
-              created_at,
+              COALESCE(created_at, updated_at) AS created_at,
               user_id,
               nickname,
               phone,
