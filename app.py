@@ -186,7 +186,6 @@ def _pair_ids(x: str, y: str):
 
 def _peer_profile(uid14: str):
     try:
-        # 1) 尝试按 user_id 查（如果你的 UserSetting 有 user_id 列）
         s = UserSetting.query.filter_by(user_id=uid14).first()
         if s:
             return {
@@ -199,10 +198,8 @@ def _peer_profile(uid14: str):
                 ),
             }
     except Exception as e:
-        # ⚠️ 关键：这里吞掉错误，避免 threads 接口 500
-        print("[peer_profile] lookup by user_id failed:", e)
+        print("[peer_profile] lookup failed:", e)
 
-    # 2) fallback：不查库也能工作
     return {
         "id": uid14,
         "username": f"User {str(uid14)[-4:]}",
@@ -522,6 +519,10 @@ class ChatMessage(db.Model):
     payload_json = db.Column(db.Text)  # product/order 等结构 json
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
+# -------------------- 初始化：按方言兜底建表 --------------------
+with app.app_context():
+    db.create_all()
+
 
 def create_notification_for_outfit(outfit, action, actor=None, payload=None):
     """
@@ -557,11 +558,6 @@ def create_notification_for_outfit(outfit, action, actor=None, payload=None):
         db.session.add(n)
     except Exception as e:
         app.logger.exception("create_notification_for_outfit failed: %s", e)
-
-# -------------------- 初始化：按方言兜底建表 --------------------
-with app.app_context():
-    db.create_all()
-
 
 def ensure_outfit_comment_tables():
     try:
@@ -3835,10 +3831,10 @@ def api_chat_messages():
         out.append({
             "id": m.id,
             "from": m.sender_id,
-            "type": data.get("type"),
-            "text": data.get("text"),
-            "url": data.get("url"),
-            "payload": data.get("payload"),
+            "type": m.type,
+            "text": m.text,
+            "url": m.url,
+            "payload": json.loads(m.payload_json or "{}"),
             "created_at": m.created_at.isoformat()
         })
 
