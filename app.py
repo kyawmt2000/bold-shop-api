@@ -4133,9 +4133,6 @@ def upload_chat_file():
         # 4) 上传（直接从 file stream）
         blob.upload_from_file(upfile.stream, content_type=content_type, rewind=True)
 
-        # 公开访问（你如果不用 public，可以改成签名 URL 方案）
-        blob.make_public()
-
         return jsonify({"ok": True, "url": blob.public_url})
 
     except Exception as e:
