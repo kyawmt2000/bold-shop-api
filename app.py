@@ -4075,6 +4075,8 @@ def api_chat_send():
 
 @app.post("/api/chats/upload")
 def upload_chat_file():
+    app.logger.warning("CHAT UPLOAD v2 HIT")   # ✅ 加这一行
+
     """
     FormData:
       - file: File
