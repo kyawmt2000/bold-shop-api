@@ -3943,6 +3943,32 @@ def rebuild_chats_tables():
         db.session.rollback()
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.get("/api/admin/db_check")
+def db_check():
+    try:
+        # 1) 当前连接的数据库信息
+        ver = db.session.execute(db.text("select version();")).scalar()
+        dbname = db.session.execute(db.text("select current_database();")).scalar()
+        user = db.session.execute(db.text("select current_user;")).scalar()
+
+        # 2) chat_threads 的列
+        cols = db.session.execute(db.text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='chat_threads'
+            ORDER BY ordinal_position;
+        """)).fetchall()
+
+        return jsonify({
+            "ok": True,
+            "current_database": dbname,
+            "current_user": user,
+            "version": ver,
+            "chat_threads_columns": [c[0] for c in cols],
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.post("/api/admin/payments/<int:pid>/confirm")
 def api_admin_payments_confirm(pid):
     try:
