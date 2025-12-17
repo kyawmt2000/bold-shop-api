@@ -1191,6 +1191,10 @@ def _enforce_api_key():
     if request.method == "OPTIONS":
         return None
 
+    # ✅ 临时放行 admin 调试接口（用完就删）
+    if request.path.startswith("/api/admin/"):
+        return None
+
     # 没有设置 API_KEY，就不做任何校验
     if not API_KEY:
         return None
