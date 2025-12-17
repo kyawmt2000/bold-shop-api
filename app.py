@@ -7,6 +7,7 @@ import logging
 import re
 import random, string
 import hashlib
+import request
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
@@ -1180,6 +1181,44 @@ def _outfit_to_dict(o: Outfit, req=None):
         "location": getattr(o, "location", None),
         "visibility": getattr(o, "visibility", "public") or "public",
     }
+
+import requests
+
+def get_client_ip(req):
+    """
+    Render/反代环境下优先取 X-Forwarded-For
+    """
+    xff = (req.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    if xff:
+        return xff
+    xrip = (req.headers.get("X-Real-IP") or "").strip()
+    if xrip:
+        return xrip
+    return (req.remote_addr or "").strip()
+
+def ip_to_city(ip: str) -> str:
+    """
+    通过 IP 推测城市（不是真 GPS）
+    你可以换成自己的服务/有 key 的服务
+    """
+    if not ip or ip.startswith("127.") or ip == "localhost":
+        return ""
+    try:
+        # 例：ipapi.co 免费接口（可能有频率限制）
+        r = requests.get(f"https://ipapi.co/{ip}/json/", timeout=2.5)
+        if r.status_code != 200:
+            return ""
+        js = r.json() or {}
+        city = (js.get("city") or "").strip()
+        region = (js.get("region") or js.get("region_code") or "").strip()
+        country = (js.get("country_name") or js.get("country") or "").strip()
+
+        # 组合显示：Yangon, Yangon Region, Myanmar
+        parts = [p for p in [city, region, country] if p]
+        return ", ".join(parts).strip()
+    except Exception:
+        return ""
+
 
 # --- 只在设置了 API_KEY 时才启用强校验 ---
 # 只保护后台 / 调试接口，公开接口不需要 key
@@ -2385,6 +2424,20 @@ def api_get_settings():
     except Exception as e:
         current_app.logger.exception("GET /api/settings ensure user_id error: %s", e)
         uid = ""
+
+        # ✅ 3.6) 自动写入 city（仅当数据库 city 为空时）
+    try:
+        cur_city = (getattr(s, "city", "") or "").strip()
+        if not cur_city:
+            ip = get_client_ip(request)
+            geo_city = ip_to_city(ip)
+            if geo_city:
+                s.city = geo_city
+                s.updated_at = datetime.utcnow()
+                db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("GET /api/settings auto city failed: %s", e)
 
     # 4) 组装返回（尽量兼容之前结构）
     try:
