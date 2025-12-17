@@ -3889,6 +3889,45 @@ def fix_chats_tables():
         db.session.rollback()
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.get("/api/admin/db_schema_chat_threads")
+def db_schema_chat_threads():
+    try:
+        rows = db.session.execute(db.text("""
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_name='chat_threads'
+            ORDER BY ordinal_position;
+        """)).fetchall()
+        return jsonify({"ok": True, "columns": [[r[0], r[1]] for r in rows]})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/api/admin/rebuild_chats_tables")
+def rebuild_chats_tables():
+    try:
+        # 1) drop
+        db.session.execute(db.text("DROP TABLE IF EXISTS chat_messages CASCADE;"))
+        db.session.execute(db.text("DROP TABLE IF EXISTS chat_threads CASCADE;"))
+        db.session.commit()
+
+        # 2) create only these 2 tables (不用全库 create_all 以免影响其他表)
+        ChatThread.__table__.create(db.engine, checkfirst=True)
+        ChatMessage.__table__.create(db.engine, checkfirst=True)
+
+        # 3) verify
+        cols = db.session.execute(db.text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name='chat_threads'
+            ORDER BY ordinal_position;
+        """)).fetchall()
+
+        return jsonify({"ok": True, "chat_threads_columns": [c[0] for c in cols]})
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.post("/api/admin/payments/<int:pid>/confirm")
 def api_admin_payments_confirm(pid):
     try:
