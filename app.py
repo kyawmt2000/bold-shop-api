@@ -2410,7 +2410,7 @@ def api_get_settings():
         current_app.logger.exception("GET /api/settings serialize error: %s", e)
         payload = default_payload(email)
         payload["user_id"] = uid or ""
-        return jsonify(payload), 200
+        return jsonify({"ok": True, **payload}), 200
 
 @app.get("/api/follow/following")
 def api_follow_following_list():
@@ -3742,51 +3742,58 @@ def api_admin_payments_list():
 
 @app.get("/api/chats/threads")
 def api_chat_threads():
-    me = str(request.args.get("me") or "").strip()
-
-    # 如果你只允许 14位ID，就保持这样
-    if not re.fullmatch(r"\d{14}", me):
-        return jsonify({"ok": False, "error": "bad_me"}), 400
-
-    rows = ChatThread.query.filter(
-        (ChatThread.a_id == me) | (ChatThread.b_id == me)
-    ).order_by(ChatThread.updated_at.desc()).limit(200).all()
-
-    out = []
-    for t in rows:
-        peer = t.b_id if t.a_id == me else t.a_id
-
-        last = ChatMessage.query.filter(ChatMessage.thread_id == t.id)\
-        .order_by(ChatMessage.id.desc()).first()
-
-last_obj = None
-if last:
-    payload = {}
     try:
-        payload = json.loads(last.payload_json) if last.payload_json else {}
-    except:
-        payload = {}
+        me = str(request.args.get("me") or "").strip()
 
-    to_id = peer if last.sender_id == me else me
-    last_obj = {
-        "id": last.id,
-        "from": last.sender_id,
-        "to": to_id,
-        "type": last.type or "text",
-        "text": last.text or "",
-        "url": last.url or "",
-        "payload": payload,
-        "ts": _fmt_dt(last.created_at),   # ✅ 这里
-    }
+        if not re.fullmatch(r"\d{14}", me):
+            return jsonify({"ok": False, "error": "bad_me"}), 400
 
-out.append({
-    "thread_id": t.id,
-    "peer": _peer_profile(peer),
-    "updated_at": _fmt_dt(t.updated_at),  # ✅ 这里
-    "last": last_obj
-})
+        rows = ChatThread.query.filter(
+            (ChatThread.a_id == me) | (ChatThread.b_id == me)
+        ).order_by(ChatThread.updated_at.desc()).limit(200).all()
 
-    return jsonify({"ok": True, "items": out})
+        out = []
+        for t in rows:
+            peer = t.b_id if t.a_id == me else t.a_id
+
+            last = (
+                ChatMessage.query.filter(ChatMessage.thread_id == t.id)
+                .order_by(ChatMessage.id.desc())
+                .first()
+            )
+
+            last_obj = None
+            if last:
+                payload = {}
+                try:
+                    payload = json.loads(last.payload_json) if last.payload_json else {}
+                except:
+                    payload = {}
+
+                to_id = peer if last.sender_id == me else me
+                last_obj = {
+                    "id": last.id,
+                    "from": last.sender_id,
+                    "to": to_id,
+                    "type": last.type or "text",
+                    "text": last.text or "",
+                    "url": last.url or "",
+                    "payload": payload,
+                    "ts": _fmt_dt(last.created_at),
+                }
+
+            out.append({
+                "thread_id": t.id,
+                "peer": _peer_profile(peer),
+                "updated_at": _fmt_dt(t.updated_at),
+                "last": last_obj
+            })
+
+        return jsonify({"ok": True, "items": out})
+
+    except Exception as e:
+        # 关键：保证前端永远拿到 JSON，不要吐 HTML 500 页面
+        return jsonify({"ok": False, "error": "threads_failed", "detail": str(e)}), 500
 
 @app.get("/api/chats/messages")
 def api_chat_messages():
