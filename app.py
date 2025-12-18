@@ -4230,3 +4230,27 @@ def upload_chat_file():
         return jsonify({"ok": False, "error": "upload_failed", "detail": str(e)}), 500
 
 print("DATABASE_URL =", os.environ.get("DATABASE_URL"))
+
+@app.get("/api/dbinfo")
+def api_dbinfo():
+    r = db.session.execute(db.text("""
+      select
+        current_database() as db,
+        inet_server_addr() as ip,
+        inet_server_port() as port,
+        version() as ver
+    """)).mappings().first()
+
+    cols = db.session.execute(db.text("""
+      select table_name, column_name
+      from information_schema.columns
+      where table_schema='public'
+        and table_name in ('product_reviews','product_qas')
+        and column_name='images'
+      order by table_name
+    """)).mappings().all()
+
+    return jsonify({
+      "db": dict(r) if r else None,
+      "images_columns_found": [dict(x) for x in cols],
+    })
