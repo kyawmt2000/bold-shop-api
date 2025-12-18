@@ -265,7 +265,7 @@ class ProductReview(db.Model):
     rating = db.Column(db.Integer)
     content = db.Column(db.Text, nullable=False)
     parent_id = db.Column(db.Integer, nullable=True)
-    images = db.Column(JSONB, nullable=False, server_default="[]")
+    images = db.Column(db.JSON, default=list)   # ✅ 新增
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class ProductQA(db.Model):
@@ -277,7 +277,7 @@ class ProductQA(db.Model):
     user_name = db.Column(db.String(255))
     content = db.Column(db.Text, nullable=False)
     parent_id = db.Column(db.Integer, nullable=True)
-    images = db.Column(JSONB, nullable=False, server_default="[]")
+    images = db.Column(db.JSON, default=list)   # ✅ 新增
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -1583,7 +1583,9 @@ def add_product():
 # ----------- 商品评价：读取 -----------
 @app.get("/api/products/<int:pid>/reviews")
 def get_reviews(pid):
-    rows = ProductReview.query.filter_by(product_id=pid).order_by(ProductReview.created_at.asc()).all()
+    rows = ProductReview.query.filter_by(product_id=pid)\
+        .order_by(ProductReview.created_at.asc()).all()
+
     return jsonify({"items": [{
         "id": r.id,
         "product_id": r.product_id,
@@ -1592,20 +1594,25 @@ def get_reviews(pid):
         "rating": r.rating,
         "content": r.content,
         "parent_id": r.parent_id,
-        "created_at": r.created_at.isoformat(),
-        "images": (r.images or []) 
+        "images": (r.images or []),                      # ✅ 新增
+        "created_at": r.created_at.isoformat()
     } for r in rows]})
 
 # ----------- 商品评价：新增（含回复） -----------
 @app.post("/api/products/<int:pid>/reviews")
 def add_review(pid):
     data = request.json or {}
-    email = data.get("email")
+    email = (data.get("email") or "").strip().lower()
     if not email:
         return jsonify({"error": "missing_email"}), 400
-    content = data.get("content")
+
+    content = (data.get("content") or "").strip()
     if not content:
         return jsonify({"error": "missing_content"}), 400
+
+    images = data.get("images") or []
+    if not isinstance(images, list):
+        images = []
 
     r = ProductReview(
         product_id=pid,
@@ -1613,12 +1620,13 @@ def add_review(pid):
         user_name=data.get("user_name", ""),
         rating=data.get("rating"),
         content=content,
-        parent_id=data.get("parent_id"),
-        images=images
+        parent_id=data.get("parent_id")
     )
+    r.images = images                                 # ✅ 新增
+
     db.session.add(r)
     db.session.commit()
-    return jsonify({"success": True})
+    return jsonify({"success": True, "id": r.id})
 
 @app.get("/api/products/<int:pid>/qa")
 def get_qa(pid):
@@ -1630,7 +1638,6 @@ def get_qa(pid):
     items = []
     for q in rows:
         qa_id = q.id
-
         like_count = ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id).count()
 
         liked = False
@@ -1646,10 +1653,10 @@ def get_qa(pid):
             "user_name": q.user_name,
             "content": q.content,
             "parent_id": q.parent_id,
+            "images": (q.images or []),                  # ✅ 新增
             "created_at": q.created_at.isoformat(),
-            "images": (q.images or []),
-            "like_count": like_count,   # ✅ 新增
-            "liked": liked              # ✅ 新增
+            "like_count": like_count,
+            "liked": liked
         })
 
     return jsonify({"ok": True, "items": items})
@@ -1658,24 +1665,30 @@ def get_qa(pid):
 @app.post("/api/products/<int:pid>/qa")
 def add_qa(pid):
     data = request.json or {}
-    email = data.get("email")
+    email = (data.get("email") or "").strip().lower()
     if not email:
         return jsonify({"error": "missing_email"}), 400
-    content = data.get("content")
+
+    content = (data.get("content") or "").strip()
     if not content:
         return jsonify({"error": "missing_content"}), 400
+
+    images = data.get("images") or []
+    if not isinstance(images, list):
+        images = []
 
     q = ProductQA(
         product_id=pid,
         user_email=email,
         user_name=data.get("user_name", ""),
         content=content,
-        parent_id=data.get("parent_id"),
-        images=images
+        parent_id=data.get("parent_id")
     )
+    q.images = images                                 # ✅ 新增
+
     db.session.add(q)
     db.session.commit()
-    return jsonify({"success": True})
+    return jsonify({"success": True, "id": q.id})
 
 @app.get("/api/products/<int:pid>/image/<int:iid>")
 def product_image(pid, iid):
