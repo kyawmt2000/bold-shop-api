@@ -257,7 +257,6 @@ class Product(db.Model):
 
 class ProductReview(db.Model):
     __tablename__ = "product_reviews"
-
     id = db.Column(db.Integer, primary_key=True)
     product_id = db.Column(db.Integer, nullable=False, index=True)
     user_email = db.Column(db.String(255), nullable=False)
@@ -265,19 +264,23 @@ class ProductReview(db.Model):
     rating = db.Column(db.Integer)
     content = db.Column(db.Text, nullable=False)
     parent_id = db.Column(db.Integer, nullable=True)
+
     images = db.Column(db.JSON, default=list)   # ✅ 新增
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 
 class ProductQA(db.Model):
     __tablename__ = "product_qas"
-
     id = db.Column(db.Integer, primary_key=True)
     product_id = db.Column(db.Integer, nullable=False, index=True)
     user_email = db.Column(db.String(255), nullable=False)
     user_name = db.Column(db.String(255))
     content = db.Column(db.Text, nullable=False)
     parent_id = db.Column(db.Integer, nullable=True)
+
     images = db.Column(db.JSON, default=list)   # ✅ 新增
+
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
