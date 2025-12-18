@@ -227,6 +227,22 @@ def _peer_profile(uid14: str):
         "avatar": "https://boldmm.shop/default-avatar.png"
     }
 
+def log_dbinfo_once():
+    try:
+        with app.app_context():
+            r = db.session.execute(text("""
+                select
+                  current_database() as db,
+                  inet_server_addr() as ip,
+                  inet_server_port() as port,
+                  version() as ver
+            """)).mappings().first()
+            app.logger.warning("DBINFO: %s", dict(r))
+    except Exception:
+        app.logger.exception("DBINFO print failed")
+
+log_dbinfo_once()
+
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
     __tablename__ = "merchant_applications"
