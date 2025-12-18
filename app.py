@@ -3578,14 +3578,8 @@ def upload_comment_image():
         content_type = upfile.mimetype or "image/jpeg"
 
         # ✅ 关键：只上传一次，并且 rewind=True 防止流位置问题
-        blob.upload_from_file(upfile.stream, content_type=content_type, rewind=True)
-        url = blob.generate_signed_url(
-            version="v4",
-            expiration=timedelta(days=7),
-            method="GET",
-        )
-        return jsonify({"ok": True, "url": url})
-        #return jsonify({"ok": True, "url": blob.public_url})
+        blob.upload_from_file(upfile.stream, content_type=content_type)
+        return jsonify({"ok": True, "url": blob.public_url})
 
     except Exception as e:
         current_app.logger.exception(e)
