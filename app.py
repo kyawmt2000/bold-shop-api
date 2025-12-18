@@ -4212,3 +4212,5 @@ def upload_chat_file():
     except Exception as e:
         app.logger.exception("upload_chat_file failed")
         return jsonify({"ok": False, "error": "upload_failed", "detail": str(e)}), 500
+
+print("DATABASE_URL =", os.environ.get("DATABASE_URL"))
