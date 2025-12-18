@@ -21,6 +21,7 @@ from uuid import uuid4
 from google.cloud import storage
 from sqlalchemy import and_, or_
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import UniqueConstraint
 
 # -----------------------------------------
 #          ⭐ 正确初始化 Flask + DB ⭐
@@ -257,6 +258,7 @@ class Product(db.Model):
 
 class ProductReview(db.Model):
     __tablename__ = "product_reviews"
+
     id = db.Column(db.Integer, primary_key=True)
     product_id = db.Column(db.Integer, nullable=False, index=True)
     user_email = db.Column(db.String(255), nullable=False)
@@ -264,23 +266,19 @@ class ProductReview(db.Model):
     rating = db.Column(db.Integer)
     content = db.Column(db.Text, nullable=False)
     parent_id = db.Column(db.Integer, nullable=True)
-
-    images = db.Column(db.JSON, default=list)   # ✅ 新增
-
+    images = db.Column(JSONB, nullable=False, default=list, server_default='[]')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
 
 class ProductQA(db.Model):
     __tablename__ = "product_qas"
+
     id = db.Column(db.Integer, primary_key=True)
     product_id = db.Column(db.Integer, nullable=False, index=True)
     user_email = db.Column(db.String(255), nullable=False)
     user_name = db.Column(db.String(255))
     content = db.Column(db.Text, nullable=False)
     parent_id = db.Column(db.Integer, nullable=True)
-
-    images = db.Column(db.JSON, default=list)   # ✅ 新增
-
+    images = db.Column(JSONB, nullable=False, default=list, server_default='[]')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -483,10 +481,12 @@ class OutfitCommentLike(db.Model):
 
 class ProductQALike(db.Model):
     __tablename__ = "product_qa_likes"
+
     id = db.Column(db.Integer, primary_key=True)
     product_id = db.Column(db.Integer, index=True, nullable=False)
-    qa_id = db.Column(db.Integer, index=True, nullable=False)  # 被点赞的 qa 记录 id
+    qa_id = db.Column(db.Integer, index=True, nullable=False)
     user_email = db.Column(db.String(255), index=True, nullable=False)
+    user_name = db.Column(db.String(255))   # ✅ 建议加上
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     __table_args__ = (
@@ -1586,20 +1586,24 @@ def add_product():
 # ----------- 商品评价：读取 -----------
 @app.get("/api/products/<int:pid>/reviews")
 def get_reviews(pid):
-    rows = ProductReview.query.filter_by(product_id=pid)\
-        .order_by(ProductReview.created_at.asc()).all()
+    try:
+        rows = ProductReview.query.filter_by(product_id=pid)\
+            .order_by(ProductReview.created_at.asc()).all()
 
-    return jsonify({"items": [{
-        "id": r.id,
-        "product_id": r.product_id,
-        "user_email": r.user_email,
-        "user_name": r.user_name,
-        "rating": r.rating,
-        "content": r.content,
-        "parent_id": r.parent_id,
-        "images": (r.images or []),                      # ✅ 新增
-        "created_at": r.created_at.isoformat()
-    } for r in rows]})
+        return jsonify({"items": [{
+            "id": r.id,
+            "product_id": r.product_id,
+            "user_email": r.user_email,
+            "user_name": r.user_name,
+            "rating": r.rating,
+            "content": r.content,
+            "parent_id": r.parent_id,
+            "images": r.images or [],
+            "created_at": r.created_at.isoformat()
+        } for r in rows]})
+    except Exception as e:
+        current_app.logger.exception("GET reviews failed")
+        return jsonify({"items": []})
 
 # ----------- 商品评价：新增（含回复） -----------
 @app.post("/api/products/<int:pid>/reviews")
@@ -1623,9 +1627,10 @@ def add_review(pid):
         user_name=data.get("user_name", ""),
         rating=data.get("rating"),
         content=content,
-        parent_id=data.get("parent_id")
+        parent_id=data.get("parent_id"),
+        images=(data.get("images") or [])      
     )
-    r.images = images                                 # ✅ 新增
+    #r.images = images                                 # ✅ 新增
 
     db.session.add(r)
     db.session.commit()
@@ -1633,36 +1638,40 @@ def add_review(pid):
 
 @app.get("/api/products/<int:pid>/qa")
 def get_qa(pid):
-    viewer = (request.args.get("viewer") or "").strip().lower()
+    try:
+        viewer = (request.args.get("viewer") or "").strip().lower()
+        rows = ProductQA.query.filter_by(product_id=pid)\
+            .order_by(ProductQA.created_at.asc()).all()
 
-    rows = ProductQA.query.filter_by(product_id=pid)\
-        .order_by(ProductQA.created_at.asc()).all()
+        items = []
+        for q in rows:
+            like_count = ProductQALike.query.filter_by(
+                product_id=pid, qa_id=q.id
+            ).count()
 
-    items = []
-    for q in rows:
-        qa_id = q.id
-        like_count = ProductQALike.query.filter_by(product_id=pid, qa_id=qa_id).count()
+            liked = False
+            if viewer:
+                liked = ProductQALike.query.filter_by(
+                    product_id=pid, qa_id=q.id, user_email=viewer
+                ).first() is not None
 
-        liked = False
-        if viewer:
-            liked = ProductQALike.query.filter_by(
-                product_id=pid, qa_id=qa_id, user_email=viewer
-            ).first() is not None
+            items.append({
+                "id": q.id,
+                "product_id": q.product_id,
+                "user_email": q.user_email,
+                "user_name": q.user_name,
+                "content": q.content,
+                "parent_id": q.parent_id,
+                "images": q.images or [],
+                "created_at": q.created_at.isoformat(),
+                "like_count": like_count,
+                "liked": liked
+            })
 
-        items.append({
-            "id": q.id,
-            "product_id": q.product_id,
-            "user_email": q.user_email,
-            "user_name": q.user_name,
-            "content": q.content,
-            "parent_id": q.parent_id,
-            "images": (q.images or []),                  # ✅ 新增
-            "created_at": q.created_at.isoformat(),
-            "like_count": like_count,
-            "liked": liked
-        })
-
-    return jsonify({"ok": True, "items": items})
+        return jsonify({"ok": True, "items": items})
+    except Exception:
+        current_app.logger.exception("GET qa failed")
+        return jsonify({"ok": True, "items": []})
 
 # ----------- 商品讨论：新增（含回答） -----------
 @app.post("/api/products/<int:pid>/qa")
@@ -1685,9 +1694,10 @@ def add_qa(pid):
         user_email=email,
         user_name=data.get("user_name", ""),
         content=content,
-        parent_id=data.get("parent_id")
+        parent_id=data.get("parent_id"),
+        images=(data.get("images") or [])      # ✅ 新增
     )
-    q.images = images                                 # ✅ 新增
+    #q.images = images                                 # ✅ 新增
 
     db.session.add(q)
     db.session.commit()
@@ -3668,7 +3678,9 @@ def api_product_qa_like_users(pid, qa_id):
         users = []
         for r in rows:
             # 可选：联表 UserSetting，拿头像/昵称
-            s = UserSetting.query.filter_by(email=r.user_email).first()
+            s = UserSetting.query.filter_by(email=r.user_email).first() if UserSetting else None
+            nickname = (getattr(s, "nickname", None) if s else None) or r.user_email.split("@")[0]
+            avatar = (getattr(s, "avatar_url", None) if s else None) or ""
 
             users.append({
                 "email": r.user_email,
