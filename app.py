@@ -3587,9 +3587,15 @@ def upload_comment_image():
 
         content_type = upfile.mimetype or "image/jpeg"
         blob.upload_from_file(upfile.stream, content_type=content_type)
-        blob.make_public() 
+        blob.upload_from_file(upfile.stream, content_type=content_type)
 
-        return jsonify({"ok": True, "url": blob.public_url})
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(days=7),  # 你可以改 30 天
+            method="GET",
+        )
+
+        return jsonify({"ok": True, "url": url})
     except Exception as e:
         app.logger.exception(e)
         return jsonify({"ok": False, "message": "upload_failed"}), 500
