@@ -3550,15 +3550,6 @@ import os
 
 @app.post("/api/upload/comment-image")
 def upload_comment_image():
-    """
-    上传评论图片到 GCS
-    FormData:
-      - file: 图片文件
-      - pid: 商品 id
-      - kind: review / qa  (可选，用来分目录)
-    return:
-      {"ok": true, "url": "https://...."}
-    """
     try:
         if not GCS_BUCKET:
             return jsonify({"ok": False, "message": "gcs_not_configured"}), 500
@@ -3569,15 +3560,14 @@ def upload_comment_image():
 
         pid = (request.form.get("pid") or "0").strip()
         kind = (request.form.get("kind") or "misc").strip().lower()
-        kind = kind if kind in ("review","qa","misc") else "misc"
+        kind = kind if kind in ("review", "qa", "misc") else "misc"
 
         raw = secure_filename(upfile.filename or "img.jpg")
         _, ext = os.path.splitext(raw)
         ext = (ext or ".jpg").lower()
-        if ext not in (".jpg",".jpeg",".png",".webp"):
+        if ext not in (".jpg", ".jpeg", ".png", ".webp"):
             ext = ".jpg"
 
-        # 路径：comment_images/products/<pid>/<kind>/YYYY/MM/DD/uuid.jpg
         now = datetime.utcnow()
         key = f"comment_images/products/{pid}/{kind}/{now:%Y/%m/%d}/{uuid4().hex}{ext}"
 
@@ -3586,19 +3576,20 @@ def upload_comment_image():
         blob = bucket.blob(key)
 
         content_type = upfile.mimetype or "image/jpeg"
-        blob.upload_from_file(upfile.stream, content_type=content_type)
-        blob.upload_from_file(upfile.stream, content_type=content_type)
 
+        # ✅ 关键：只上传一次，并且 rewind=True 防止流位置问题
+        blob.upload_from_file(upfile.stream, content_type=content_type, rewind=True)
         url = blob.generate_signed_url(
             version="v4",
-            expiration=timedelta(days=7),  # 你可以改 30 天
+            expiration=timedelta(days=7),
             method="GET",
         )
-
         return jsonify({"ok": True, "url": url})
+        #return jsonify({"ok": True, "url": blob.public_url})
+
     except Exception as e:
-        app.logger.exception(e)
-        return jsonify({"ok": False, "message": "upload_failed"}), 500
+        current_app.logger.exception(e)
+        return jsonify({"ok": False, "message": str(e)}), 500
 
 @app.post("/api/settings/reset_user_id")
 def api_reset_user_id():
