@@ -20,6 +20,7 @@ from sqlalchemy import func
 from uuid import uuid4
 from google.cloud import storage
 from sqlalchemy import and_, or_
+from sqlalchemy.dialects.postgresql import JSONB
 
 # -----------------------------------------
 #          ⭐ 正确初始化 Flask + DB ⭐
@@ -264,6 +265,7 @@ class ProductReview(db.Model):
     rating = db.Column(db.Integer)
     content = db.Column(db.Text, nullable=False)
     parent_id = db.Column(db.Integer, nullable=True)
+    images = db.Column(JSONB, nullable=False, server_default="[]")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class ProductQA(db.Model):
@@ -275,6 +277,7 @@ class ProductQA(db.Model):
     user_name = db.Column(db.String(255))
     content = db.Column(db.Text, nullable=False)
     parent_id = db.Column(db.Integer, nullable=True)
+    images = db.Column(JSONB, nullable=False, server_default="[]")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
@@ -1589,7 +1592,8 @@ def get_reviews(pid):
         "rating": r.rating,
         "content": r.content,
         "parent_id": r.parent_id,
-        "created_at": r.created_at.isoformat()
+        "created_at": r.created_at.isoformat(),
+        "images": (r.images or []) 
     } for r in rows]})
 
 # ----------- 商品评价：新增（含回复） -----------
@@ -1609,7 +1613,8 @@ def add_review(pid):
         user_name=data.get("user_name", ""),
         rating=data.get("rating"),
         content=content,
-        parent_id=data.get("parent_id")
+        parent_id=data.get("parent_id"),
+        images=images
     )
     db.session.add(r)
     db.session.commit()
@@ -1642,6 +1647,7 @@ def get_qa(pid):
             "content": q.content,
             "parent_id": q.parent_id,
             "created_at": q.created_at.isoformat(),
+            "images": (q.images or []),
             "like_count": like_count,   # ✅ 新增
             "liked": liked              # ✅ 新增
         })
@@ -1664,7 +1670,8 @@ def add_qa(pid):
         user_email=email,
         user_name=data.get("user_name", ""),
         content=content,
-        parent_id=data.get("parent_id")
+        parent_id=data.get("parent_id"),
+        images=images
     )
     db.session.add(q)
     db.session.commit()
