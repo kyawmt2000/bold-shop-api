@@ -1194,7 +1194,7 @@ def _outfit_to_dict(o: Outfit, req=None):
         "images": images,
         "videos": videos,
 
-        "tag_products": _safe_json_loads(o.tag_products_json, []),  # ✅ 关键
+        "tag_products": _safe_json_loads(getattr(o, "tag_products_json", None) or "[]", []),
 
         "likes": likes_val,
         "comments": comments_val,
@@ -1966,8 +1966,6 @@ def outfits_add():
         db.session.rollback()
         app.logger.exception("outfits_add error")
         return jsonify({"message": "server error", "error": str(e)}), 500
-
-
 
 # ✅ 新增：集合路由，修复 405（支持 GET/POST/OPTIONS）
 @app.route("/api/outfits", methods=["GET", "POST", "OPTIONS"])
