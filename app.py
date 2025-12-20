@@ -357,6 +357,8 @@ class Outfit(db.Model):
     shares       = db.Column(db.Integer, default=0)
     status       = db.Column(db.String(20), default="active")
 
+    tag_products_json = db.Column(db.Text)  # JSON 字符串，如 [1,2,3]
+
     # === 新增的最小侵入式列：便于直接存 URL 数组（JSON 字符串）与元信息 ===
     tags       = db.Column(db.String(200))              # 允许简单字符串标签
     location   = db.Column(db.String(200))
@@ -1192,6 +1194,8 @@ def _outfit_to_dict(o: Outfit, req=None):
         "images": images,
         "videos": videos,
 
+        "tag_products": _safe_json_loads(o.tag_products_json, []),  # ✅ 关键
+
         "likes": likes_val,
         "comments": comments_val,
 
@@ -1878,6 +1882,10 @@ def outfits_add():
         tags = _safe_json_loads(tags_raw, [])
         tags_json = _json_dumps(tags)
 
+        # ✅ 关联商品（前端传 JSON 字符串，如 "[1,2,3]"）
+        tag_products_raw = f.get("tag_products") or "[]"
+        tag_products = _safe_json_loads(tag_products_raw, [])
+
         files = request.files.getlist("media")
         if not files:
             return jsonify({"message": "请至少上传 1 个文件"}), 400
@@ -1904,6 +1912,7 @@ def outfits_add():
             title=title,
             desc=desc,
             tags_json=tags_json,
+            tag_products_json=json.dumps(tag_products, ensure_ascii=False),
             status="active",
         )
         db.session.add(o)
