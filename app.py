@@ -1173,9 +1173,9 @@ def _outfit_to_dict(o: Outfit, req=None):
         pass
 
     if not author_name and author_email:
-    author_name = author_email.split("@")[0]
+         author_name = author_email.split("@")[0]
 
-    # ---------- tag_products ----------
+   # ✅ tag_products 一定要在 if 外面（同级缩进）
     tag_products = []
     try:
         raw_tp = getattr(o, "tag_products_json", None) or "[]"
