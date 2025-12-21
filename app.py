@@ -1374,6 +1374,23 @@ def _admin_auth_ok():
     # ✅ 否则就用你现有的 API_KEY
     return incoming == API_KEY
 
+def _get_tag_products(outfit_id: int):
+    try:
+        raw = db.session.execute(
+            text("SELECT tag_products_json FROM outfits WHERE id=:id"),
+            {"id": outfit_id}
+        ).scalar()
+        if not raw:
+            return []
+        if isinstance(raw, (list, tuple)):
+            return [int(x) for x in raw if str(x).isdigit()]
+        arr = json.loads(raw)
+        if isinstance(arr, list):
+            return [int(x) for x in arr if str(x).isdigit()]
+        return []
+    except Exception:
+        return []
+
 @app.get("/api/admin/users")
 def api_admin_users():
     incoming = (request.headers.get("X-API-Key") or "").strip()
@@ -4253,6 +4270,9 @@ def upload_chat_file():
     except Exception as e:
         app.logger.exception("upload_chat_file failed")
         return jsonify({"ok": False, "error": "upload_failed", "detail": str(e)}), 500
+
+app.logger.info("DB configured: %s", bool(os.environ.get("DATABASE_URL")))
+# 或者只打印 host，不打印密码（更麻烦就先用上面那行）
 
 @app.get("/api/dbinfo")
 def api_dbinfo():
