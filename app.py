@@ -4254,8 +4254,6 @@ def upload_chat_file():
         app.logger.exception("upload_chat_file failed")
         return jsonify({"ok": False, "error": "upload_failed", "detail": str(e)}), 500
 
-print("DATABASE_URL =", os.environ.get("DATABASE_URL"))
-
 @app.get("/api/dbinfo")
 def api_dbinfo():
     r = db.session.execute(db.text("""
