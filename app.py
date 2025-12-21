@@ -350,19 +350,19 @@ class Outfit(db.Model):
     author_avatar = db.Column(db.String(500))
     title        = db.Column(db.String(200), default="OOTD")
     desc         = db.Column(db.Text)
-    tags_json    = db.Column(db.Text)   # 原有 JSON 数组（字符串）
+    tags_json    = db.Column(db.Text)  
     likes        = db.Column(db.Integer, default=0)
     comments     = db.Column(db.Integer, default=0)
     favorites    = db.Column(db.Integer, default=0)
     shares       = db.Column(db.Integer, default=0)
     status       = db.Column(db.String(20), default="active")
+    tag_products_json = db.Column(db.Text, nullable=True)
 
-    # === 新增的最小侵入式列：便于直接存 URL 数组（JSON 字符串）与元信息 ===
-    tags       = db.Column(db.String(200))              # 允许简单字符串标签
+    tags       = db.Column(db.String(200))              
     location   = db.Column(db.String(200))
-    visibility = db.Column(db.String(20), default="public")  # public/private
-    images_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
-    videos_json = db.Column(db.Text)                    # 存 URL 数组（JSON 字符串）
+    visibility = db.Column(db.String(20), default="public")  
+    images_json = db.Column(db.Text)                    
+    videos_json = db.Column(db.Text)                    
 
 class User(db.Model):
     __tablename__ = "users"
@@ -1173,7 +1173,17 @@ def _outfit_to_dict(o: Outfit, req=None):
         pass
 
     if not author_name and author_email:
-        author_name = author_email.split("@")[0]
+    author_name = author_email.split("@")[0]
+
+    # ---------- tag_products ----------
+    tag_products = []
+    try:
+        raw_tp = getattr(o, "tag_products_json", None) or "[]"
+        tp = json.loads(raw_tp) if isinstance(raw_tp, str) else (raw_tp or [])
+        if isinstance(tp, list):
+            tag_products = [int(x) for x in tp if str(x).strip().isdigit()]
+    except Exception:
+        tag_products = []
 
     # ---------- return（只 return 一次） ----------
     return {
@@ -1200,10 +1210,13 @@ def _outfit_to_dict(o: Outfit, req=None):
         "favorites_count": favorites_val,
         "shares_count": shares_val,
 
+        "tag_products": tag_products,
+
         "status": getattr(o, "status", "active") or "active",
         "location": getattr(o, "location", None),
         "visibility": getattr(o, "visibility", "public") or "public",
     }
+
 
 import requests
 
@@ -1878,6 +1891,17 @@ def outfits_add():
         tags = _safe_json_loads(tags_raw, [])
         tags_json = _json_dumps(tags)
 
+                # 关联商品：前端传 JSON 字符串，例如 "[12,33]"
+        raw_tp = (f.get("tag_products") or "").strip()
+        tp_list = []
+        if raw_tp:
+            try:
+                tp = json.loads(raw_tp)
+                if isinstance(tp, list):
+                    tp_list = [int(x) for x in tp if str(x).strip().isdigit()]
+            except Exception:
+                tp_list = []
+
         files = request.files.getlist("media")
         if not files:
             return jsonify({"message": "请至少上传 1 个文件"}), 400
@@ -1905,6 +1929,7 @@ def outfits_add():
             desc=desc,
             tags_json=tags_json,
             status="active",
+            tag_products_json=json.dumps(tp_list, ensure_ascii=False)
         )
         db.session.add(o)
         db.session.flush()  # 拿到 o.id
