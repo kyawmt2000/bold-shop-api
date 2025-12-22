@@ -1394,13 +1394,16 @@ def _get_tag_products(outfit_id: int):
 @app.get("/api/admin/users")
 def admin_users_list():
     try:
-        # 用 users.created_at 当注册日期，user_settings.updated_at 只是“资料更新时间”
         sql = text("""
+            WITH all_emails AS (
+              SELECT lower(email) AS email, created_at FROM users
+              UNION
+              SELECT lower(email) AS email, NULL AS created_at FROM user_settings
+            )
             SELECT
-              u.email,
+              e.email,
               u.created_at            AS created_at,
               u.last_seen_at          AS last_seen_at,
-
               s.user_id               AS user_id,
               s.nickname              AS nickname,
               s.avatar_url            AS avatar_url,
@@ -1408,31 +1411,37 @@ def admin_users_list():
               s.birthday              AS birthday,
               s.city                  AS city,
               s.updated_at            AS settings_updated_at
-            FROM users u
+            FROM all_emails e
+            LEFT JOIN users u
+              ON lower(u.email) = e.email
             LEFT JOIN user_settings s
-              ON lower(s.email) = lower(u.email)
-            ORDER BY u.created_at DESC
+              ON lower(s.email) = e.email
+            ORDER BY COALESCE(u.created_at, s.updated_at) DESC
             LIMIT 5000
         """)
 
         rows = db.session.execute(sql).mappings().all()
+
         return jsonify([{
-            "email": r.get("email") or "",
+            "email": r["email"] or "",
             "user_id": r.get("user_id") or "",
             "nickname": r.get("nickname") or "",
             "avatar_url": r.get("avatar_url") or "",
             "gender": r.get("gender") or "",
             "birthday": r.get("birthday") or "",
             "city": r.get("city") or "",
-
-            # ✅ 这是注册日期（稳定不变）
-            "created_at": (r.get("created_at").isoformat() if r.get("created_at") else ""),
-
-            # 可选：最后活跃/登录时间
-            "last_seen_at": (r.get("last_seen_at").isoformat() if r.get("last_seen_at") else ""),
-
-            # 可选：资料更新时间（会变）
-            "settings_updated_at": (r.get("settings_updated_at").isoformat() if r.get("settings_updated_at") else ""),
+            "created_at": (
+                r["created_at"].isoformat()
+                if r.get("created_at") else ""
+            ),
+            "last_seen_at": (
+                r["last_seen_at"].isoformat()
+                if r.get("last_seen_at") else ""
+            ),
+            "settings_updated_at": (
+                r["settings_updated_at"].isoformat()
+                if r.get("settings_updated_at") else ""
+            ),
         } for r in rows])
 
     except Exception as e:
