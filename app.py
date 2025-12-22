@@ -2697,6 +2697,9 @@ def api_post_settings():
     if not email:
         return jsonify({"message": "missing_email"}), 400
 
+    # ✅ 确保 users 表一定有这个账号（没有就创建）
+    _touch_user(email)
+
     try:
         # 2) 找 / 建记录（不区分大小写）
         s = UserSetting.query.filter(
