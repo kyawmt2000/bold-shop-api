@@ -1392,54 +1392,51 @@ def _get_tag_products(outfit_id: int):
         return []
 
 @app.get("/api/admin/users")
-def api_admin_users():
-    incoming = (request.headers.get("X-API-Key") or "").strip()
-    admin_key = (os.getenv("ADMIN_API_KEY") or "").strip()
-    if admin_key and incoming != admin_key:
-        return jsonify({"message": "Unauthorized"}), 401
-
+def admin_users_list():
     try:
-        limit = min(int(request.args.get("limit") or 500), 2000)
-    except:
-        limit = 500
-
-    try:
-        rows = db.session.execute(text("""
+        # 用 users.created_at 当注册日期，user_settings.updated_at 只是“资料更新时间”
+        sql = text("""
             SELECT
-              email,
-              COALESCE(created_at, updated_at) AS created_at,
-              user_id,
-              nickname,
-              phone,
-              gender,
-              birthday,
-              city,
-              avatar_url
-            FROM user_settings
-            ORDER BY created_at DESC NULLS LAST
-            LIMIT :limit
-        """), {"limit": limit}).mappings().all()
+              u.email,
+              u.created_at            AS created_at,
+              u.last_seen_at          AS last_seen_at,
 
-        out = []
-        for r in rows:
-            reg = r.get("created_at")
-            out.append({
-                "user_id": r.get("user_id") or "",
-                "email": r.get("email") or "",
-                "nickname": r.get("nickname") or "",
-                "phone": r.get("phone") or "",
-                "created_at": reg.isoformat(timespec="seconds") if reg else "",
-                "gender": r.get("gender") or "",
-                "birthday": r.get("birthday") or "",
-                "city": r.get("city") or "",
-                "avatar": r.get("avatar_url") or "",
-            })
+              s.user_id               AS user_id,
+              s.nickname              AS nickname,
+              s.avatar_url            AS avatar_url,
+              s.gender                AS gender,
+              s.birthday              AS birthday,
+              s.city                  AS city,
+              s.updated_at            AS settings_updated_at
+            FROM users u
+            LEFT JOIN user_settings s
+              ON lower(s.email) = lower(u.email)
+            ORDER BY u.created_at DESC
+            LIMIT 5000
+        """)
 
-        return jsonify(out), 200
+        rows = db.session.execute(sql).mappings().all()
+        return jsonify([{
+            "email": r.get("email") or "",
+            "user_id": r.get("user_id") or "",
+            "nickname": r.get("nickname") or "",
+            "avatar_url": r.get("avatar_url") or "",
+            "gender": r.get("gender") or "",
+            "birthday": r.get("birthday") or "",
+            "city": r.get("city") or "",
+
+            # ✅ 这是注册日期（稳定不变）
+            "created_at": (r.get("created_at").isoformat() if r.get("created_at") else ""),
+
+            # 可选：最后活跃/登录时间
+            "last_seen_at": (r.get("last_seen_at").isoformat() if r.get("last_seen_at") else ""),
+
+            # 可选：资料更新时间（会变）
+            "settings_updated_at": (r.get("settings_updated_at").isoformat() if r.get("settings_updated_at") else ""),
+        } for r in rows])
 
     except Exception as e:
-        app.logger.exception("api_admin_users failed: %s", e)
-        return jsonify({"ok": False, "error": "db_error", "detail": str(e)}), 500
+        return jsonify({"message": "server_error", "detail": str(e)}), 500
         
 # -------------------- 一次性修复 outfits 表字段 --------------------
 @app.get("/api/debug/fix_outfits_columns")
