@@ -2476,6 +2476,7 @@ def api_get_settings():
             "nickname": "",
             "avatar": "",
             "avatar_url": s.avatar_url,
+            "cover_url": "",
             "bio": "",
             "birthday": "",
             "city": "",
@@ -3382,7 +3383,7 @@ def upload_profile_avatar():
         try:
             u = UserSetting.query.filter_by(email=email).first()
             if u:
-                u.avatar = avatar_url
+                u.avatar_url = avatar_url
                 db.session.commit()
         except Exception:
             db.session.rollback()
@@ -3399,7 +3400,7 @@ def upload_profile_avatar():
 @app.post("/api/profile/cover")
 def upload_profile_cover():
     """
-    上传封面到 GCS
+    上传封面到 GCS（兼容 uniform bucket-level access）
     body:
       {
         "email": "user@email.com",
@@ -3417,17 +3418,15 @@ def upload_profile_cover():
         if not email or not b64.startswith("data:image"):
             return jsonify({"ok": False, "message": "bad_request"}), 400
 
-        # 1️⃣ 解析 base64
         header, encoded = b64.split(",", 1)
-        ext = "png"
-        if "webp" in header:
-            ext = "webp"
-        elif "jpeg" in header or "jpg" in header:
-            ext = "jpg"
+
+        ext = "jpg"
+        if "webp" in header: ext = "webp"
+        elif "png" in header: ext = "png"
+        elif "jpeg" in header or "jpg" in header: ext = "jpg"
 
         raw = base64.b64decode(encoded)
 
-        # 2️⃣ GCS 路径：covers/邮箱/uuid.jpg
         filename = f"covers/{email}/{uuid.uuid4().hex}.{ext}"
 
         client = storage.Client()
@@ -3436,37 +3435,28 @@ def upload_profile_cover():
 
         blob.upload_from_file(
             BytesIO(raw),
-            content_type=f"image/{ext}",
+            content_type=f"image/{'jpeg' if ext=='jpg' else ext}",
             rewind=True
         )
 
-        blob.make_public()  # 和头像保持一致
+        # ✅ UBLA: 不要 make_public()
 
-        cover_url = blob.public_url
+        cover_url = blob.public_url  # 前提：bucket IAM 已经给 allUsers objectViewer
 
-        # 3️⃣ 写入 user_settings.cover_url
+        # ✅ 存 DB
         try:
             u = UserSetting.query.filter_by(email=email).first()
-            if not u:
-                u = UserSetting(email=email)
-                db.session.add(u)
-
-            u.cover_url = cover_url
-            u.updated_at = datetime.utcnow()
-            db.session.commit()
+            if u:
+                u.cover_url = cover_url
+                db.session.commit()
         except Exception:
             db.session.rollback()
-            raise
 
-        return jsonify({
-            "ok": True,
-            "cover_url": cover_url
-        })
+        return jsonify({"ok": True, "cover_url": cover_url})
 
-    except Exception as e:
+    except Exception:
         app.logger.exception("upload_profile_cover failed")
         return jsonify({"ok": False, "message": "server_error"}), 500
-
 
 @app.post("/api/outfits/import_draft")
 def outfits_import_draft():
