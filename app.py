@@ -394,6 +394,7 @@ class UserSetting(db.Model):
     # Profile fields
     nickname = db.Column(db.String(80))               # 用户昵称
     avatar_url = db.Column(db.String(500))            # 头像 URL
+    cover_url  = db.Column(db.String(500))
     bio = db.Column(db.String(120))                   # 个性签名
     birthday = db.Column(db.String(16))               # 生日 YYYY-MM-DD
     city = db.Column(db.String(120))                  # 城市
@@ -2474,6 +2475,7 @@ def api_get_settings():
             "user_id": "",              # ✅ 默认也带上
             "nickname": "",
             "avatar": "",
+            "avatar_url": s.avatar_url,
             "bio": "",
             "birthday": "",
             "city": "",
@@ -3393,6 +3395,78 @@ def upload_profile_avatar():
     except Exception as e:
         app.logger.exception("upload_profile_avatar failed")
         return jsonify({"ok": False, "message": "server_error"}), 500
+
+@app.post("/api/profile/cover")
+def upload_profile_cover():
+    """
+    上传封面到 GCS
+    body:
+      {
+        "email": "user@email.com",
+        "cover_base64": "data:image/jpeg;base64,AAAA..."
+      }
+
+    return:
+      { ok: true, cover_url: "https://storage.googleapis.com/xxx/covers/xxx.jpg" }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        email = (data.get("email") or "").strip().lower()
+        b64   = data.get("cover_base64") or ""
+
+        if not email or not b64.startswith("data:image"):
+            return jsonify({"ok": False, "message": "bad_request"}), 400
+
+        # 1️⃣ 解析 base64
+        header, encoded = b64.split(",", 1)
+        ext = "png"
+        if "webp" in header:
+            ext = "webp"
+        elif "jpeg" in header or "jpg" in header:
+            ext = "jpg"
+
+        raw = base64.b64decode(encoded)
+
+        # 2️⃣ GCS 路径：covers/邮箱/uuid.jpg
+        filename = f"covers/{email}/{uuid.uuid4().hex}.{ext}"
+
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob   = bucket.blob(filename)
+
+        blob.upload_from_file(
+            BytesIO(raw),
+            content_type=f"image/{ext}",
+            rewind=True
+        )
+
+        blob.make_public()  # 和头像保持一致
+
+        cover_url = blob.public_url
+
+        # 3️⃣ 写入 user_settings.cover_url
+        try:
+            u = UserSetting.query.filter_by(email=email).first()
+            if not u:
+                u = UserSetting(email=email)
+                db.session.add(u)
+
+            u.cover_url = cover_url
+            u.updated_at = datetime.utcnow()
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+            raise
+
+        return jsonify({
+            "ok": True,
+            "cover_url": cover_url
+        })
+
+    except Exception as e:
+        app.logger.exception("upload_profile_cover failed")
+        return jsonify({"ok": False, "message": "server_error"}), 500
+
 
 @app.post("/api/outfits/import_draft")
 def outfits_import_draft():
