@@ -7,6 +7,7 @@ import logging
 import re
 import random, string
 import hashlib
+import jwt, requests
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
@@ -243,6 +244,73 @@ def log_dbinfo_once():
 
 log_dbinfo_once()
 
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+APPLE_ISS = "https://appleid.apple.com"
+APPLE_AUD = os.getenv("APPLE_CLIENT_ID", "")  # 你的 Services ID
+
+def verify_apple_id_token(id_token: str):
+    jwks = requests.get(APPLE_JWKS_URL, timeout=8).json()
+    headers = jwt.get_unverified_header(id_token)
+
+    key = None
+    for k in jwks.get("keys", []):
+        if k.get("kid") == headers.get("kid"):
+            key = jwt.algorithms.RSAAlgorithm.from_jwk(k)
+            break
+    if not key:
+        raise Exception("apple_jwk_not_found")
+
+    payload = jwt.decode(
+        id_token,
+        key=key,
+        algorithms=["RS256"],
+        audience=APPLE_AUD,
+        issuer=APPLE_ISS,
+        options={"verify_exp": True},
+    )
+    return payload  # contains sub, email maybe
+
+@app.route("/api/auth/apple", methods=["POST"])
+def auth_apple():
+    data = request.get_json(force=True) or {}
+    id_token = data.get("id_token") or ""
+    if not id_token:
+        return jsonify(ok=False, message="missing id_token"), 400
+
+    try:
+        p = verify_apple_id_token(id_token)
+        sub = p.get("sub")
+        email = (p.get("email") or "").lower().strip()
+
+        if not sub:
+            return jsonify(ok=False, message="missing sub"), 400
+
+        # 1) provider+sub 已绑定 -> 直接登录
+        ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
+        if ident:
+            u = ident.user
+            return jsonify(ok=True, user={"id": u.id, "email": u.email})
+
+        # 2) 没绑定：如果 email 存在且库里已有同邮箱 User -> 合并
+        u = None
+        if email:
+            u = User.query.filter_by(email=email).first()
+
+        # 3) 否则创建新用户（email 可能为空：给个占位，后续再补）
+        if not u:
+            u = User(email=email or f"apple_{sub}@noemail.local")
+            db.session.add(u)
+            db.session.flush()
+
+        ident = AuthIdentity(provider="apple", provider_sub=sub, email=email or None, user_id=u.id)
+        db.session.add(ident)
+        db.session.commit()
+
+        return jsonify(ok=True, user={"id": u.id, "email": u.email})
+
+    except Exception as e:
+        return jsonify(ok=False, message=str(e)), 400
+
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
     __tablename__ = "merchant_applications"
@@ -371,6 +439,21 @@ class User(db.Model):
     email = db.Column(db.String(200), unique=True, nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     last_seen_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+class AuthIdentity(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    provider = db.Column(db.String(20), nullable=False)     # "apple" / "google"
+    provider_sub = db.Column(db.String(255), nullable=False) # Apple/Google 的用户唯一ID(sub)
+
+    email = db.Column(db.String(120), index=True)           # 可能为空/可能是 relay
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+
+    user = db.relationship("User", backref=db.backref("identities", lazy=True))
+
+    __table_args__ = (
+        db.UniqueConstraint("provider", "provider_sub", name="uq_provider_sub"),
+    )
 
 
 # === User Setting（新增 bio 字段） ===
