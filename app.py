@@ -447,7 +447,7 @@ class AuthIdentity(db.Model):
     provider_sub = db.Column(db.String(255), nullable=False) # Apple/Google 的用户唯一ID(sub)
 
     email = db.Column(db.String(120), index=True)           # 可能为空/可能是 relay
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
 
     user = db.relationship("User", backref=db.backref("identities", lazy=True))
 
