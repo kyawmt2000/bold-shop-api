@@ -25,6 +25,8 @@ from google.cloud import storage
 from sqlalchemy import and_, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import UniqueConstraint
+from sqlalchemy.exc import SQLAlchemyError
+
 
 # -----------------------------------------
 #          ⭐ 正确初始化 Flask + DB ⭐
