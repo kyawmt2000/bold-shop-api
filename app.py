@@ -4462,9 +4462,9 @@ def api_delete_account():
 
         # ---------- 先删子表/关联表（避免约束问题） ----------
         # Outfit 相关
-        OutfitCommentLike.query.filter(OutfitCommentLike.viewer_email == email).delete(synchronize_session=False)
+        OutfitCommentLike.query.filter_by(user_email=email).delete(synchronize_session=False)
         OutfitLike.query.filter(OutfitLike.viewer_email == email).delete(synchronize_session=False)
-        OutfitComment.query.filter(OutfitComment.viewer_email == email).delete(synchronize_session=False))
+        OutfitComment.query.filter(OutfitComment.viewer_email == email)
 
         # 如果你的 Outfit 表是 author_email（你代码里是 author_email）
         Outfit.query.filter_by(author_email=email).delete(synchronize_session=False)
