@@ -4460,32 +4460,37 @@ def api_delete_account():
             # 也可以返回 ok True（当作已删除），看你产品策略
             return jsonify({"ok": False, "error": "user_not_found"}), 404
 
-        # ---------- Outfit 相关 ----------
-        # 1) comment likes
+               # ---------- Outfit 相关 ----------
+        # 1) 删评论点赞（一定要最先）
+        OutfitCommentLike.query.join(
+            OutfitComment,
+            OutfitCommentLike.comment_id == OutfitComment.id
+        ).filter(
+            OutfitComment.author_email == email
+        ).delete(synchronize_session=False)
+
+        # 2) 删该用户点过的评论赞（如果存在 viewer_email）
         col = (
-            getattr(OutfitCommentLike, "user_email", None)
-            or getattr(OutfitCommentLike, "author_email", None)
-            or getattr(OutfitCommentLike, "viewer_email", None)
-            or getattr(OutfitCommentLike, "email", None)
+            getattr(OutfitCommentLike, "viewer_email", None)
+            or getattr(OutfitCommentLike, "user_email", None)
         )
         if col is not None:
             OutfitCommentLike.query.filter(col == email).delete(synchronize_session=False)
 
-        # 2) outfit likes（你这个表确定是 viewer_email）
-        OutfitLike.query.filter(OutfitLike.viewer_email == email).delete(synchronize_session=False)
+        # 3) 再删评论
+        OutfitComment.query.filter(
+            OutfitComment.author_email == email
+        ).delete(synchronize_session=False)
 
-        # 3) comments
-        col = (
-            getattr(OutfitComment, "user_email", None)
-            or getattr(OutfitComment, "author_email", None)
-            or getattr(OutfitComment, "viewer_email", None)
-            or getattr(OutfitComment, "email", None)
-        )
-        if col is not None:
-            OutfitComment.query.filter(col == email).delete(synchronize_session=False)
+        # 4) 删 outfit 点赞
+        OutfitLike.query.filter(
+            OutfitLike.viewer_email == email
+        ).delete(synchronize_session=False)
 
-        # 如果你的 Outfit 表是 author_email（你代码里是 author_email）
-        Outfit.query.filter_by(author_email=email).delete(synchronize_session=False)
+        # 5) 删 outfit
+        Outfit.query.filter_by(
+            author_email=email
+        ).delete(synchronize_session=False)
 
         # 通知
         # 你的 Notification 里有 user_email
