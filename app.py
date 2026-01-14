@@ -4471,11 +4471,27 @@ def api_delete_account():
         if apple_id_token:
             p = verify_apple_id_token(apple_id_token)
             sub = p.get("sub")
+
+            # 调试：你已经看到 aud 是 com.boldmm.shop.web
+            app.logger.warning("APPLE DELETE sub=%s aud=%s", sub, p.get("aud"))
+
             if not sub:
                 return jsonify({"ok": False, "error": "missing_sub"}), 400
 
             ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
-            if not ident or not ident.user:
+
+            # ✅ 兼容：如果你旧表字段叫 sub / apple_sub / identity_sub，就用 OR 再查一次
+            if not ident:
+                for colname in ("sub", "apple_sub", "identity_sub"):
+                    if hasattr(AuthIdentity, colname):
+                        ident = AuthIdentity.query.filter(
+                            AuthIdentity.provider == "apple",
+                            getattr(AuthIdentity, colname) == sub
+                        ).first()
+                        if ident:
+                            break
+
+            if not ident or not getattr(ident, "user", None):
                 return jsonify({"ok": False, "error": "identity_not_found"}), 404
 
             user = ident.user
@@ -4492,17 +4508,20 @@ def api_delete_account():
             if not user:
                 return jsonify({"ok": False, "error": "user_not_found"}), 404
 
+        # =========================
+        # 开始删除关联数据（建议保留）
+        # =========================
+
         # ---------- Outfit 相关 ----------
         # 1) 删“我发的评论”的点赞
         comment_ids = db.session.query(OutfitComment.id).filter(
             OutfitComment.author_email == email
         )
-
         OutfitCommentLike.query.filter(
             OutfitCommentLike.comment_id.in_(comment_ids)
         ).delete(synchronize_session=False)
 
-        # 2) 删“我点过的评论赞”
+        # 2) 删“我点过的评论赞”（viewer_email 或 user_email 兼容）
         col = getattr(OutfitCommentLike, "viewer_email", None) or getattr(OutfitCommentLike, "user_email", None)
         if col is not None:
             OutfitCommentLike.query.filter(col == email).delete(synchronize_session=False)
@@ -4512,20 +4531,18 @@ def api_delete_account():
             OutfitComment.author_email == email
         ).delete(synchronize_session=False)
 
-        # 4) 删 outfit 点赞
+        # 4) 删 outfit 点赞（我点过的）
         OutfitLike.query.filter(
             OutfitLike.viewer_email == email
         ).delete(synchronize_session=False)
 
-        # ✅ 4.1) 删我作品被点赞的记录（如果表里有 author_email / outfit_author_email）
+        # 4.1) 删“别人点赞我作品”的记录（如果表里有 author_email/outfit_author_email）
         for colname in ("author_email", "outfit_author_email"):
             if hasattr(OutfitLike, colname):
-                col = getattr(OutfitLike, colname)
-                OutfitLike.query.filter(col == email).delete(synchronize_session=False)
+                OutfitLike.query.filter(getattr(OutfitLike, colname) == email).delete(synchronize_session=False)
 
-        # 4.5) ✅ 先删引用我发布的 outfit 的通知（避免 FK 卡住）
+        # 4.5) 先删引用我 outfit 的通知（避免 FK 卡住）
         my_outfit_ids = db.session.query(Outfit.id).filter(Outfit.author_email == email)
-
         Notification.query.filter(
             Notification.outfit_id.in_(my_outfit_ids)
         ).delete(synchronize_session=False)
@@ -4535,18 +4552,21 @@ def api_delete_account():
             author_email=email
         ).delete(synchronize_session=False)
 
-        # ---------- 其他通知（按 user_email） ----------
+        # ---------- 通知 ----------
+        # 删发给我的通知
         Notification.query.filter_by(user_email=email).delete(synchronize_session=False)
-        # ✅ 如果通知还有 actor/from 字段，把“我发出的通知”也删掉
+
+        # 如果通知还有 actor/from/sender 字段，把“我发出的通知”也删掉
         for colname in ("actor_email", "from_email", "sender_email"):
             if hasattr(Notification, colname):
-                col = getattr(Notification, colname)
-                Notification.query.filter(col == email).delete(synchronize_session=False)
+                Notification.query.filter(getattr(Notification, colname) == email).delete(synchronize_session=False)
 
         # ---------- 商品相关 ----------
         ProductQALike.query.filter_by(user_email=email).delete(synchronize_session=False)
         ProductQA.query.filter_by(user_email=email).delete(synchronize_session=False)
         ProductReview.query.filter_by(user_email=email).delete(synchronize_session=False)
+
+        # ✅ 商家删号是否删商品：保留=商品全删；不想删就把这一行注释掉
         Product.query.filter_by(merchant_email=email).delete(synchronize_session=False)
 
         # ---------- 其他 ----------
@@ -4554,10 +4574,10 @@ def api_delete_account():
         PaymentOrder.query.filter_by(buyer_email=email).delete(synchronize_session=False)
         UserSetting.query.filter_by(email=email).delete(synchronize_session=False)
 
-       # ✅ 删第三方绑定（Apple/Google）
+        # ✅ 删第三方绑定（Apple/Google）
         AuthIdentity.query.filter_by(user_id=user.id).delete(synchronize_session=False)
 
-        # ✅ 最后删用户（只删一次）
+        # ✅ 最后删用户（用 db.session.delete 更稳）
         db.session.delete(user)
 
         db.session.commit()
