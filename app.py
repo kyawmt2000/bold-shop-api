@@ -4496,7 +4496,7 @@ def api_delete_account():
         # 1) 删“我发的评论”的点赞
         comment_ids = db.session.query(OutfitComment.id).filter(
             OutfitComment.author_email == email
-        ).subquery()
+        )
 
         OutfitCommentLike.query.filter(
             OutfitCommentLike.comment_id.in_(comment_ids)
@@ -4517,10 +4517,14 @@ def api_delete_account():
             OutfitLike.viewer_email == email
         ).delete(synchronize_session=False)
 
+        # ✅ 4.1) 删我作品被点赞的记录（如果表里有 author_email / outfit_author_email）
+        for colname in ("author_email", "outfit_author_email"):
+            if hasattr(OutfitLike, colname):
+                col = getattr(OutfitLike, colname)
+                OutfitLike.query.filter(col == email).delete(synchronize_session=False)
+
         # 4.5) ✅ 先删引用我发布的 outfit 的通知（避免 FK 卡住）
-        my_outfit_ids = db.session.query(Outfit.id).filter(
-            Outfit.author_email == email
-        ).subquery()
+        my_outfit_ids = db.session.query(Outfit.id).filter(Outfit.author_email == email)
 
         Notification.query.filter(
             Notification.outfit_id.in_(my_outfit_ids)
@@ -4533,6 +4537,11 @@ def api_delete_account():
 
         # ---------- 其他通知（按 user_email） ----------
         Notification.query.filter_by(user_email=email).delete(synchronize_session=False)
+        # ✅ 如果通知还有 actor/from 字段，把“我发出的通知”也删掉
+        for colname in ("actor_email", "from_email", "sender_email"):
+            if hasattr(Notification, colname):
+                col = getattr(Notification, colname)
+                Notification.query.filter(col == email).delete(synchronize_session=False)
 
         # ---------- 商品相关 ----------
         ProductQALike.query.filter_by(user_email=email).delete(synchronize_session=False)
@@ -4545,11 +4554,11 @@ def api_delete_account():
         PaymentOrder.query.filter_by(buyer_email=email).delete(synchronize_session=False)
         UserSetting.query.filter_by(email=email).delete(synchronize_session=False)
 
-        # ✅ 删第三方绑定（Apple/Google）
+       # ✅ 删第三方绑定（Apple/Google）
         AuthIdentity.query.filter_by(user_id=user.id).delete(synchronize_session=False)
 
-        # ✅ 最后删用户
-        User.query.filter_by(id=user.id).delete(synchronize_session=False)
+        # ✅ 最后删用户（只删一次）
+        db.session.delete(user)
 
         db.session.commit()
         return jsonify({"ok": True, "deleted": True, "email": email})
