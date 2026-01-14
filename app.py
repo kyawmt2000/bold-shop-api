@@ -248,9 +248,23 @@ log_dbinfo_once()
 
 APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
 APPLE_ISS = "https://appleid.apple.com"
-APPLE_AUD = os.getenv("APPLE_CLIENT_ID", "")  # 你的 Services ID
+
+def get_apple_audiences():
+    # 环境变量示例：
+    # APPLE_CLIENT_IDS="com.boldmm.bold,com.boldmm.web"
+    raw = (os.getenv("APPLE_CLIENT_IDS") or "").strip()
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
 
 def verify_apple_id_token(id_token: str):
+    # 🔎 调试：先看看 token 里面 aud/iss 是什么
+    try:
+        claims = jwt.decode(id_token, options={"verify_signature": False})
+        app.logger.warning("APPLE TOKEN aud=%s iss=%s", claims.get("aud"), claims.get("iss"))
+    except Exception as e:
+        app.logger.warning("APPLE TOKEN decode(no-verify) failed: %s", e)
+
     jwks = requests.get(APPLE_JWKS_URL, timeout=8).json()
     headers = jwt.get_unverified_header(id_token)
 
@@ -262,15 +276,22 @@ def verify_apple_id_token(id_token: str):
     if not key:
         raise Exception("apple_jwk_not_found")
 
+    audiences = get_apple_audiences()
+    if not audiences:
+        raise Exception("APPLE_CLIENT_IDS not set")
+
     payload = jwt.decode(
         id_token,
         key=key,
         algorithms=["RS256"],
-        audience=APPLE_AUD,
+        audience=audiences,   # ✅ 用 list，支持多个 aud
         issuer=APPLE_ISS,
         options={"verify_exp": True},
     )
-    return payload  # contains sub, email maybe
+    return payload
+
+claims = jwt.decode(id_token, options={"verify_signature": False})
+app.logger.warning("APPLE TOKEN aud=%s iss=%s", claims.get("aud"), claims.get("iss"))
 
 @app.route("/api/auth/apple", methods=["POST"])
 def auth_apple():
