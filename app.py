@@ -290,9 +290,6 @@ def verify_apple_id_token(id_token: str):
     )
     return payload
 
-claims = jwt.decode(id_token, options={"verify_signature": False})
-app.logger.warning("APPLE TOKEN aud=%s iss=%s", claims.get("aud"), claims.get("iss"))
-
 @app.route("/api/auth/apple", methods=["POST"])
 def auth_apple():
     data = request.get_json(force=True) or {}
