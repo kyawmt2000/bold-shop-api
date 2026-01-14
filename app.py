@@ -4432,6 +4432,74 @@ def upload_chat_file():
 app.logger.info("DB configured: %s", bool(os.environ.get("DATABASE_URL")))
 # 或者只打印 host，不打印密码（更麻烦就先用上面那行）
 
+@app.post("/api/account/delete")
+def api_delete_account():
+    """
+    删除账号（确认邮箱一致才执行）
+    Body JSON:
+      {
+        "email": "current@login.com",
+        "confirm_email": "typed@login.com"
+      }
+    """
+    data = request.get_json(silent=True) or {}
+
+    email = (data.get("email") or "").strip().lower()
+    confirm_email = (data.get("confirm_email") or data.get("confirm") or "").strip().lower()
+
+    if not email or not confirm_email:
+        return jsonify({"ok": False, "error": "email and confirm_email required"}), 400
+
+    if email != confirm_email:
+        return jsonify({"ok": False, "error": "email_not_match"}), 400
+
+    try:
+        # 先确认用户存在（可选，但建议）
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            # 也可以返回 ok True（当作已删除），看你产品策略
+            return jsonify({"ok": False, "error": "user_not_found"}), 404
+
+        # ---------- 先删子表/关联表（避免约束问题） ----------
+        # Outfit 相关
+        OutfitCommentLike.query.filter_by(user_email=email).delete(synchronize_session=False)
+        OutfitLike.query.filter_by(user_email=email).delete(synchronize_session=False)
+        OutfitComment.query.filter_by(user_email=email).delete(synchronize_session=False)
+
+        # 如果你的 Outfit 表是 author_email（你代码里是 author_email）
+        Outfit.query.filter_by(author_email=email).delete(synchronize_session=False)
+
+        # 通知
+        # 你的 Notification 里有 user_email
+        Notification.query.filter_by(user_email=email).delete(synchronize_session=False)
+
+        # 商品相关（如果你要“删除账号=删除他发布的商品/内容”）
+        ProductQALike.query.filter_by(user_email=email).delete(synchronize_session=False)
+        ProductQA.query.filter_by(user_email=email).delete(synchronize_session=False)
+        ProductReview.query.filter_by(user_email=email).delete(synchronize_session=False)
+
+        # Product 里是 merchant_email
+        Product.query.filter_by(merchant_email=email).delete(synchronize_session=False)
+
+        # 商家入驻申请
+        MerchantApplication.query.filter_by(email=email).delete(synchronize_session=False)
+
+        # 支付订单（buyer_email）
+        PaymentOrder.query.filter_by(buyer_email=email).delete(synchronize_session=False)
+
+        # 设置表
+        UserSetting.query.filter_by(email=email).delete(synchronize_session=False)
+
+        # 最后删用户
+        User.query.filter_by(email=email).delete(synchronize_session=False)
+
+        db.session.commit()
+        return jsonify({"ok": True, "deleted": True, "email": email})
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"ok": False, "error": "delete_failed", "message": str(e)}), 500
+
 @app.get("/api/dbinfo")
 def api_dbinfo():
     r = db.session.execute(db.text("""
