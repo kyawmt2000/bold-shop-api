@@ -4460,13 +4460,13 @@ def api_delete_account():
             # 也可以返回 ok True（当作已删除），看你产品策略
             return jsonify({"ok": False, "error": "user_not_found"}), 404
 
-               # ---------- Outfit 相关 ----------
-        # 1) 删评论点赞（一定要最先）
-        OutfitCommentLike.query.join(
-            OutfitComment,
-            OutfitCommentLike.comment_id == OutfitComment.id
-        ).filter(
+        # ---------- Outfit 相关 ----------
+        # 1) 删“我发的评论”的点赞（先找 comment_id，再删 likes）
+        comment_ids = db.session.query(OutfitComment.id).filter(
             OutfitComment.author_email == email
+        ).subquery()
+        OutfitCommentLike.query.filter(
+            OutfitCommentLike.comment_id.in_(comment_ids)
         ).delete(synchronize_session=False)
 
         # 2) 删该用户点过的评论赞（如果存在 viewer_email）
