@@ -7,3 +7,5 @@ google-cloud-storage
 # ... 其他已有的依赖
 PyJWT>=2.8.0
 requests>=2.22.0
+PyJWT[crypto]==2.8.0
+cryptography==42.0.8
