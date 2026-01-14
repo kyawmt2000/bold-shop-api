@@ -4435,49 +4435,61 @@ app.logger.info("DB configured: %s", bool(os.environ.get("DATABASE_URL")))
 @app.post("/api/account/delete")
 def api_delete_account():
     """
-    删除账号（确认邮箱一致才执行）
-    Body JSON:
-      {
-        "email": "current@login.com",
-        "confirm_email": "typed@login.com"
-      }
+    删除账号
+    支持两种确认方式：
+    1) Apple：传 apple_id_token（推荐）
+    2) 其他：传 email + confirm_email
     """
     data = request.get_json(silent=True) or {}
 
+    apple_id_token = (data.get("apple_id_token") or "").strip()
     email = (data.get("email") or "").strip().lower()
     confirm_email = (data.get("confirm_email") or data.get("confirm") or "").strip().lower()
 
-    if not email or not confirm_email:
-        return jsonify({"ok": False, "error": "email and confirm_email required"}), 400
-
-    if email != confirm_email:
-        return jsonify({"ok": False, "error": "email_not_match"}), 400
-
     try:
-        # 先确认用户存在（可选，但建议）
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            # 也可以返回 ok True（当作已删除），看你产品策略
-            return jsonify({"ok": False, "error": "user_not_found"}), 404
+        user = None
+
+        # ✅ 1) Apple：用 id_token -> sub -> AuthIdentity 找 user
+        if apple_id_token:
+            p = verify_apple_id_token(apple_id_token)
+            sub = p.get("sub")
+            if not sub:
+                return jsonify({"ok": False, "error": "missing_sub"}), 400
+
+            ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
+            if not ident or not ident.user:
+                return jsonify({"ok": False, "error": "identity_not_found"}), 404
+
+            user = ident.user
+            email = (user.email or "").lower()  # ✅ 用库里的 email 来删
+
+        # ✅ 2) 其他：用 email 二次确认
+        else:
+            if not email or not confirm_email:
+                return jsonify({"ok": False, "error": "email and confirm_email required"}), 400
+            if email != confirm_email:
+                return jsonify({"ok": False, "error": "email_not_match"}), 400
+
+            user = User.query.filter_by(email=email).first()
+            if not user:
+                return jsonify({"ok": False, "error": "user_not_found"}), 404
 
         # ---------- Outfit 相关 ----------
-        # 1) 删“我发的评论”的点赞（先找 comment_id，再删 likes）
+        # 1) 删“我发的评论”的点赞
         comment_ids = db.session.query(OutfitComment.id).filter(
             OutfitComment.author_email == email
         ).subquery()
+
         OutfitCommentLike.query.filter(
             OutfitCommentLike.comment_id.in_(comment_ids)
         ).delete(synchronize_session=False)
 
-        # 2) 删该用户点过的评论赞（如果存在 viewer_email）
-        col = (
-            getattr(OutfitCommentLike, "viewer_email", None)
-            or getattr(OutfitCommentLike, "user_email", None)
-        )
+        # 2) 删“我点过的评论赞”
+        col = getattr(OutfitCommentLike, "viewer_email", None) or getattr(OutfitCommentLike, "user_email", None)
         if col is not None:
             OutfitCommentLike.query.filter(col == email).delete(synchronize_session=False)
 
-        # 3) 再删评论
+        # 3) 删评论
         OutfitComment.query.filter(
             OutfitComment.author_email == email
         ).delete(synchronize_session=False)
@@ -4487,34 +4499,39 @@ def api_delete_account():
             OutfitLike.viewer_email == email
         ).delete(synchronize_session=False)
 
+        # 4.5) ✅ 先删引用我发布的 outfit 的通知（避免 FK 卡住）
+        my_outfit_ids = db.session.query(Outfit.id).filter(
+            Outfit.author_email == email
+        ).subquery()
+
+        Notification.query.filter(
+            Notification.outfit_id.in_(my_outfit_ids)
+        ).delete(synchronize_session=False)
+
         # 5) 删 outfit
         Outfit.query.filter_by(
             author_email=email
         ).delete(synchronize_session=False)
 
-        # 通知
-        # 你的 Notification 里有 user_email
+        # ---------- 其他通知（按 user_email） ----------
         Notification.query.filter_by(user_email=email).delete(synchronize_session=False)
 
-        # 商品相关（如果你要“删除账号=删除他发布的商品/内容”）
+        # ---------- 商品相关 ----------
         ProductQALike.query.filter_by(user_email=email).delete(synchronize_session=False)
         ProductQA.query.filter_by(user_email=email).delete(synchronize_session=False)
         ProductReview.query.filter_by(user_email=email).delete(synchronize_session=False)
-
-        # Product 里是 merchant_email
         Product.query.filter_by(merchant_email=email).delete(synchronize_session=False)
 
-        # 商家入驻申请
+        # ---------- 其他 ----------
         MerchantApplication.query.filter_by(email=email).delete(synchronize_session=False)
-
-        # 支付订单（buyer_email）
         PaymentOrder.query.filter_by(buyer_email=email).delete(synchronize_session=False)
-
-        # 设置表
         UserSetting.query.filter_by(email=email).delete(synchronize_session=False)
 
-        # 最后删用户
-        User.query.filter_by(email=email).delete(synchronize_session=False)
+        # ✅ 删第三方绑定（Apple/Google）
+        AuthIdentity.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+
+        # ✅ 最后删用户
+        User.query.filter_by(id=user.id).delete(synchronize_session=False)
 
         db.session.commit()
         return jsonify({"ok": True, "deleted": True, "email": email})
