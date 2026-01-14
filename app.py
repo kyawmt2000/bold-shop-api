@@ -4462,11 +4462,21 @@ def api_delete_account():
 
         # ---------- 先删子表/关联表（避免约束问题） ----------
         # Outfit 相关
-        OutfitCommentLike.query.filter(OutfitCommentLike.viewer_email == email).delete(synchronize_session=False)
-        OutfitLike.query.filter(OutfitLike.viewer_email == email).delete(synchronize_session=False)
-        col = getattr(OutfitComment, "user_email", None) or getattr(OutfitComment, "author_email", None) or getattr(OutfitComment, "viewer_email", None) or getattr(OutfitComment, "email", None)
-        if col is not None:
-            OutfitComment.query.filter(col == email).delete(synchronize_session=False)
+       col = (getattr(OutfitCommentLike, "user_email", None)
+       or getattr(OutfitCommentLike, "author_email", None)
+       or getattr(OutfitCommentLike, "viewer_email", None)
+       or getattr(OutfitCommentLike, "email", None))
+if col is not None:
+    OutfitCommentLike.query.filter(col == email).delete(synchronize_session=False)
+
+OutfitLike.query.filter(OutfitLike.viewer_email == email).delete(synchronize_session=False)
+
+col = (getattr(OutfitComment, "user_email", None)
+       or getattr(OutfitComment, "author_email", None)
+       or getattr(OutfitComment, "viewer_email", None)
+       or getattr(OutfitComment, "email", None))
+if col is not None:
+    OutfitComment.query.filter(col == email).delete(synchronize_session=False)
 
         # 如果你的 Outfit 表是 author_email（你代码里是 author_email）
         Outfit.query.filter_by(author_email=email).delete(synchronize_session=False)
