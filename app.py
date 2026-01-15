@@ -4450,7 +4450,7 @@ def upload_chat_file():
 app.logger.info("DB configured: %s", bool(os.environ.get("DATABASE_URL")))
 # 或者只打印 host，不打印密码（更麻烦就先用上面那行）
 
-@app.post("/api/account/delete")
+@app.route("/api/account/delete")
 def api_delete_account():
     """
     删除账号
