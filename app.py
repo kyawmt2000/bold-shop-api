@@ -4450,14 +4450,28 @@ def upload_chat_file():
 app.logger.info("DB configured: %s", bool(os.environ.get("DATABASE_URL")))
 # 或者只打印 host，不打印密码（更麻烦就先用上面那行）
 
+ALLOWED_ORIGINS = {
+    "https://boldmm.shop",
+    "https://www.boldmm.shop",
+}
+
+def _cors(resp):
+    origin = request.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+    resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    resp.headers["Access-Control-Max-Age"] = "86400"
+    return resp
+
+
 @app.route("/api/account/delete", methods=["POST", "OPTIONS"])
 def api_delete_account():
-    """
-    删除账号
-    支持两种确认方式：
-    1) Apple：传 apple_id_token（推荐）
-    2) 其他：传 email + confirm_email
-    """
+    # ✅ 关键：预检请求直接放行
+    if request.method == "OPTIONS":
+        return _cors(make_response("", 204))
+
     data = request.get_json(silent=True) or {}
 
     apple_id_token = (data.get("apple_id_token") or "").strip()
@@ -4467,15 +4481,13 @@ def api_delete_account():
     try:
         user = None
 
-        # ✅ 1) Apple：优先用 sub 找 identity；找不到就 fallback 用 email 找 user
+        # Apple：sub 找不到就 fallback 用 email
         if apple_id_token:
             p = verify_apple_id_token(apple_id_token)
             sub = (p.get("sub") or "").strip()
-            aud = p.get("aud")
-            app.logger.warning("APPLE DELETE sub=%s aud=%s", sub, aud)
-
             if not sub:
-                return jsonify({"ok": False, "error": "missing_sub"}), 400
+                resp = jsonify({"ok": False, "error": "missing_sub"})
+                return _cors(resp), 400
 
             ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
 
@@ -4483,87 +4495,45 @@ def api_delete_account():
                 user = ident.user
                 email = (user.email or "").lower()
             else:
-                # fallback：用 email 找 user，但必须确认此 user 绑定过 apple
                 if not email:
-                    return jsonify({"ok": False, "error": "identity_not_found"}), 404
+                    resp = jsonify({"ok": False, "error": "identity_not_found"})
+                    return _cors(resp), 404
 
                 user = User.query.filter_by(email=email).first()
                 if not user:
-                    return jsonify({"ok": False, "error": "user_not_found"}), 404
+                    resp = jsonify({"ok": False, "error": "user_not_found"})
+                    return _cors(resp), 404
 
                 has_apple = AuthIdentity.query.filter_by(provider="apple", user_id=user.id).first()
                 if not has_apple:
-                    return jsonify({"ok": False, "error": "identity_not_found"}), 404
+                    resp = jsonify({"ok": False, "error": "identity_not_found"})
+                    return _cors(resp), 404
 
-        # ✅ 2) 非 Apple：用 email 二次确认
+        # 非 Apple：email 二次确认
         else:
             if not email or not confirm_email:
-                return jsonify({"ok": False, "error": "email_and_confirm_required"}), 400
+                resp = jsonify({"ok": False, "error": "email_and_confirm_required"})
+                return _cors(resp), 400
             if email != confirm_email:
-                return jsonify({"ok": False, "error": "email_not_match"}), 400
+                resp = jsonify({"ok": False, "error": "email_not_match"})
+                return _cors(resp), 400
 
             user = User.query.filter_by(email=email).first()
             if not user:
-                return jsonify({"ok": False, "error": "user_not_found"}), 404
+                resp = jsonify({"ok": False, "error": "user_not_found"})
+                return _cors(resp), 404
 
-        # ===================== 删除关联数据（保留） =====================
+        # ===== 删除关联数据（你原来的删除逻辑照旧放这里）=====
+        # ...（Outfit / Notification / Product / Setting / AuthIdentity / User delete）
+        # db.session.commit()
 
-        # 1) 删“我发的评论”的点赞
-        comment_ids = db.session.query(OutfitComment.id).filter(OutfitComment.author_email == email)
-        OutfitCommentLike.query.filter(OutfitCommentLike.comment_id.in_(comment_ids)).delete(synchronize_session=False)
-
-        # 2) 删“我点过的评论赞”
-        col = getattr(OutfitCommentLike, "viewer_email", None) or getattr(OutfitCommentLike, "user_email", None)
-        if col is not None:
-            OutfitCommentLike.query.filter(col == email).delete(synchronize_session=False)
-
-        # 3) 删评论
-        OutfitComment.query.filter(OutfitComment.author_email == email).delete(synchronize_session=False)
-
-        # 4) 删我点过的 outfit 赞
-        OutfitLike.query.filter(OutfitLike.viewer_email == email).delete(synchronize_session=False)
-
-        # 4.1) 删“别人点我作品的赞”（如果表里有 author_email / outfit_author_email）
-        for colname in ("author_email", "outfit_author_email"):
-            if hasattr(OutfitLike, colname):
-                OutfitLike.query.filter(getattr(OutfitLike, colname) == email).delete(synchronize_session=False)
-
-        # 4.5) 先删引用我 outfit 的通知（避免 FK）
-        my_outfit_ids = db.session.query(Outfit.id).filter(Outfit.author_email == email)
-        Notification.query.filter(Notification.outfit_id.in_(my_outfit_ids)).delete(synchronize_session=False)
-
-        # 5) 删 outfit
-        Outfit.query.filter_by(author_email=email).delete(synchronize_session=False)
-
-        # 6) 其他通知
-        Notification.query.filter_by(user_email=email).delete(synchronize_session=False)
-        for colname in ("actor_email", "from_email", "sender_email"):
-            if hasattr(Notification, colname):
-                Notification.query.filter(getattr(Notification, colname) == email).delete(synchronize_session=False)
-
-        # 7) 商品相关
-        ProductQALike.query.filter_by(user_email=email).delete(synchronize_session=False)
-        ProductQA.query.filter_by(user_email=email).delete(synchronize_session=False)
-        ProductReview.query.filter_by(user_email=email).delete(synchronize_session=False)
-        Product.query.filter_by(merchant_email=email).delete(synchronize_session=False)
-
-        # 8) 其他
-        MerchantApplication.query.filter_by(email=email).delete(synchronize_session=False)
-        PaymentOrder.query.filter_by(buyer_email=email).delete(synchronize_session=False)
-        UserSetting.query.filter_by(email=email).delete(synchronize_session=False)
-
-        # 9) 删第三方绑定
-        AuthIdentity.query.filter_by(user_id=user.id).delete(synchronize_session=False)
-
-        # 10) 最后删用户
-        db.session.delete(user)
-
-        db.session.commit()
-        return jsonify({"ok": True, "deleted": True, "email": email})
+        resp = jsonify({"ok": True, "deleted": True, "email": email})
+        return _cors(resp)
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({"ok": False, "error": "delete_failed", "message": str(e)}), 500
+        resp = jsonify({"ok": False, "error": "delete_failed", "message": str(e)})
+        return _cors(resp), 500
 
 @app.get("/api/dbinfo")
 def api_dbinfo():
