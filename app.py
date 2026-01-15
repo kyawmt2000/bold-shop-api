@@ -4464,9 +4464,6 @@ ALLOWED_ORIGINS = {
     "https://www.boldmm.shop",
 }
 
-def verify_apple_id_token(token):
-    return {}  # 临时占位，防 500
-
 def _cors(resp):
     origin = request.headers.get("Origin", "")
     if origin in ALLOWED_ORIGINS:
@@ -4475,18 +4472,19 @@ def _cors(resp):
 
     resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
 
+    # ✅ 预检要什么 header 就放行什么（最稳）
     req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
     resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "Content-Type, X-API-Key"
 
     resp.headers["Access-Control-Max-Age"] = "86400"
-    # 可选：如果你以后要 cookie
-    # resp.headers["Access-Control-Allow-Credentials"] = "true"
     return resp
 
 def safe_model_delete(model, *filters):
     try:
         q = model.query
         for f in filters:
+            if f is None:
+                return True  # 没这个条件就当跳过
             q = q.filter(f)
         q.delete(synchronize_session=False)
         return True
@@ -4497,12 +4495,10 @@ def safe_model_delete(model, *filters):
 
 @app.route("/api/account/delete", methods=["POST", "OPTIONS"])
 def api_delete_account():
-    # ✅ 关键：预检请求直接放行
     if request.method == "OPTIONS":
         return _cors(make_response("", 204))
 
     data = request.get_json(silent=True) or {}
-
     apple_id_token = (data.get("apple_id_token") or "").strip()
     email = (data.get("email") or "").strip().lower()
     confirm_email = (data.get("confirm_email") or data.get("confirm") or "").strip().lower()
@@ -4510,42 +4506,21 @@ def api_delete_account():
     try:
         user = None
 
-        # Apple：sub 找不到就 fallback 用 email
+        # ✅ 1) Apple：如果 token 验证失败/拿不到 sub，就不要硬走 Apple 删除
+        # （否则你现在这种“临时占位verify”会永远 invalid）
         if apple_id_token:
-            p = verify_apple_id_token(apple_id_token)
-            sub = (p.get("sub") or "").strip()
+            try:
+                p = verify_apple_id_token(apple_id_token)   # 你后面再补真正验证
+                sub = (p.get("sub") or "").strip()
+            except Exception:
+                sub = ""
+
+            # 没 sub：当作普通账号处理（用 email 确认）
             if not sub:
-                resp = jsonify({"ok": False, "error": "invalid_apple_token"})
-                return _cors(resp), 400
-                
-                if not user:
-                    resp = jsonify({"ok": False, "error": "user_not_found"})
-                    return _cors(resp), 404
+                apple_id_token = ""  # 强制走普通流程
 
-            ident = None
-            if sub:
-                ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
-
-            if ident and getattr(ident, "user", None):
-                user = ident.user
-                email = (user.email or "").lower()
-            else:
-                if not email:
-                    resp = jsonify({"ok": False, "error": "identity_not_found"})
-                    return _cors(resp), 404
-
-                user = User.query.filter_by(email=email).first()
-                if not user:
-                    resp = jsonify({"ok": False, "error": "user_not_found"})
-                    return _cors(resp), 404
-
-                has_apple = AuthIdentity.query.filter_by(provider="apple", user_id=user.id).first()
-                if not has_apple:
-                    resp = jsonify({"ok": False, "error": "identity_not_found"})
-                    return _cors(resp), 404
-
-        # 非 Apple：email 二次确认
-        else:
+        # ✅ 2) 普通账号流程（email 二次确认）
+        if not apple_id_token:
             if not email or not confirm_email:
                 resp = jsonify({"ok": False, "error": "email_and_confirm_required"})
                 return _cors(resp), 400
@@ -4558,40 +4533,53 @@ def api_delete_account():
                 resp = jsonify({"ok": False, "error": "user_not_found"})
                 return _cors(resp), 404
 
-        # ===================== 安全删除（不炸版） =====================
+        else:
+            # ✅ 真·Apple 删除（你未来 verify 写好以后再用）
+            p = verify_apple_id_token(apple_id_token)
+            sub = (p.get("sub") or "").strip()
+            if not sub:
+                resp = jsonify({"ok": False, "error": "invalid_apple_token"})
+                return _cors(resp), 400
 
-        # Outfit / 社交相关（全部保护）
-        safe_model_delete(OutfitCommentLike, OutfitCommentLike.viewer_email == email)
-        safe_model_delete(OutfitCommentLike, OutfitCommentLike.user_email == email)
+            ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
+            if ident and getattr(ident, "user", None):
+                user = ident.user
+                email = (user.email or "").lower()
+            else:
+                resp = jsonify({"ok": False, "error": "identity_not_found"})
+                return _cors(resp), 404
+
+        # ===================== 删除关联数据（安全不炸） =====================
+        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "viewer_email", None) == email)
+        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "user_email", None) == email)
+        safe_model_delete(OutfitCommentLike, OutfitCommentLike.comment_id.in_(
+            db.session.query(OutfitComment.id).filter(OutfitComment.author_email == email)
+        ))
         safe_model_delete(OutfitComment, OutfitComment.author_email == email)
 
-        safe_model_delete(OutfitLike, OutfitLike.viewer_email == email)
-        safe_model_delete(OutfitLike, OutfitLike.user_email == email)
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "viewer_email", None) == email)
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "user_email", None) == email)
         safe_model_delete(OutfitLike, getattr(OutfitLike, "author_email", None) == email)
         safe_model_delete(OutfitLike, getattr(OutfitLike, "outfit_author_email", None) == email)
 
-        safe_model_delete(Notification, Notification.user_email == email)
+        safe_model_delete(Notification, getattr(Notification, "user_email", None) == email)
         safe_model_delete(Notification, getattr(Notification, "actor_email", None) == email)
         safe_model_delete(Notification, getattr(Notification, "from_email", None) == email)
         safe_model_delete(Notification, getattr(Notification, "sender_email", None) == email)
 
         safe_model_delete(Outfit, Outfit.author_email == email)
 
-        # 商品相关（你已经对了）
         safe_model_delete(ProductQALike, ProductQALike.user_email == email)
         safe_model_delete(ProductQA, ProductQA.user_email == email)
         safe_model_delete(ProductReview, ProductReview.user_email == email)
         safe_model_delete(Product, Product.merchant_email == email)
 
-        # 其它
         safe_model_delete(MerchantApplication, MerchantApplication.email == email)
         safe_model_delete(PaymentOrder, PaymentOrder.buyer_email == email)
         safe_model_delete(UserSetting, UserSetting.email == email)
 
-        # 第三方绑定
         safe_model_delete(AuthIdentity, AuthIdentity.user_id == user.id)
 
-        # 最后删用户
         db.session.delete(user)
         db.session.commit()
 
