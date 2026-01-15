@@ -946,9 +946,19 @@ def ok(): return {"ok": True}
 
 def _ok():
     resp = make_response(("", 204))
-    resp.headers["Access-Control-Allow-Origin"]  = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+
+    origin = request.headers.get("Origin", "")
+    if origin in ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+
+    # 让浏览器把它请求的 header 原样放行（最稳）
+    req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
+    resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "Content-Type, X-API-Key"
+
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
+    resp.headers["Access-Control-Max-Age"] = "86400"
+    resp.headers["Access-Control-Allow-Credentials"] = "true"
     return resp
 
 def check_key(req):
