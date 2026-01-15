@@ -260,13 +260,6 @@ def get_apple_audiences():
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 def verify_apple_id_token(id_token: str):
-    # 🔎 调试：先看看 token 里面 aud/iss 是什么
-    try:
-        claims = jwt.decode(id_token, options={"verify_signature": False})
-        app.logger.warning("APPLE TOKEN aud=%s iss=%s", claims.get("aud"), claims.get("iss"))
-    except Exception as e:
-        app.logger.warning("APPLE TOKEN decode(no-verify) failed: %s", e)
-
     jwks = requests.get(APPLE_JWKS_URL, timeout=8).json()
     headers = jwt.get_unverified_header(id_token)
 
@@ -278,15 +271,17 @@ def verify_apple_id_token(id_token: str):
     if not key:
         raise Exception("apple_jwk_not_found")
 
-    audiences = get_apple_audiences()
-    if not audiences:
-        raise Exception("APPLE_CLIENT_IDS not set")
+    APPLE_AUDIENCES = [
+        "com.boldmm.shop.web",  # ✅ 你日志里真实 aud
+        os.getenv("APPLE_CLIENT_ID", "").strip(),  # 你环境变量（有就加）
+    ]
+    APPLE_AUDIENCES = [a for a in APPLE_AUDIENCES if a]
 
     payload = jwt.decode(
         id_token,
         key=key,
         algorithms=["RS256"],
-        audience=audiences,   # ✅ 用 list，支持多个 aud
+        audience=APPLE_AUDIENCES,   # ✅ 这里改成 list
         issuer=APPLE_ISS,
         options={"verify_exp": True},
     )
@@ -952,12 +947,14 @@ def _ok():
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
 
-    # 让浏览器把它请求的 header 原样放行（最稳）
+    # ✅ 关键：浏览器预检要什么 header，就放行什么 header（最稳）
     req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
     resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "Content-Type, X-API-Key"
 
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
     resp.headers["Access-Control-Max-Age"] = "86400"
+
+    # ✅ 如果你前端会带 cookie/credential，就加；不带也不影响
     resp.headers["Access-Control-Allow-Credentials"] = "true"
     return resp
 
