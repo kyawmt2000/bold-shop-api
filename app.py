@@ -4450,7 +4450,7 @@ def upload_chat_file():
 app.logger.info("DB configured: %s", bool(os.environ.get("DATABASE_URL")))
 # 或者只打印 host，不打印密码（更麻烦就先用上面那行）
 
-@app.route("/api/account/delete")
+@app.route("/api/account/delete", methods=["POST", "OPTIONS"])
 def api_delete_account():
     """
     删除账号
@@ -4479,11 +4479,11 @@ def api_delete_account():
 
             ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
 
-            if ident and ident.user:
+            if ident and getattr(ident, "user", None):
                 user = ident.user
                 email = (user.email or "").lower()
             else:
-                # 🔁 fallback：用 email 找 user，但必须确认此 user 绑定过 apple
+                # fallback：用 email 找 user，但必须确认此 user 绑定过 apple
                 if not email:
                     return jsonify({"ok": False, "error": "identity_not_found"}), 404
 
@@ -4506,15 +4506,11 @@ def api_delete_account():
             if not user:
                 return jsonify({"ok": False, "error": "user_not_found"}), 404
 
-        # ===================== 开始删除关联数据（这些要保留） =====================
+        # ===================== 删除关联数据（保留） =====================
 
         # 1) 删“我发的评论”的点赞
-        comment_ids = db.session.query(OutfitComment.id).filter(
-            OutfitComment.author_email == email
-        )
-        OutfitCommentLike.query.filter(
-            OutfitCommentLike.comment_id.in_(comment_ids)
-        ).delete(synchronize_session=False)
+        comment_ids = db.session.query(OutfitComment.id).filter(OutfitComment.author_email == email)
+        OutfitCommentLike.query.filter(OutfitCommentLike.comment_id.in_(comment_ids)).delete(synchronize_session=False)
 
         # 2) 删“我点过的评论赞”
         col = getattr(OutfitCommentLike, "viewer_email", None) or getattr(OutfitCommentLike, "user_email", None)
@@ -4522,14 +4518,10 @@ def api_delete_account():
             OutfitCommentLike.query.filter(col == email).delete(synchronize_session=False)
 
         # 3) 删评论
-        OutfitComment.query.filter(
-            OutfitComment.author_email == email
-        ).delete(synchronize_session=False)
+        OutfitComment.query.filter(OutfitComment.author_email == email).delete(synchronize_session=False)
 
         # 4) 删我点过的 outfit 赞
-        OutfitLike.query.filter(
-            OutfitLike.viewer_email == email
-        ).delete(synchronize_session=False)
+        OutfitLike.query.filter(OutfitLike.viewer_email == email).delete(synchronize_session=False)
 
         # 4.1) 删“别人点我作品的赞”（如果表里有 author_email / outfit_author_email）
         for colname in ("author_email", "outfit_author_email"):
@@ -4538,14 +4530,10 @@ def api_delete_account():
 
         # 4.5) 先删引用我 outfit 的通知（避免 FK）
         my_outfit_ids = db.session.query(Outfit.id).filter(Outfit.author_email == email)
-        Notification.query.filter(
-            Notification.outfit_id.in_(my_outfit_ids)
-        ).delete(synchronize_session=False)
+        Notification.query.filter(Notification.outfit_id.in_(my_outfit_ids)).delete(synchronize_session=False)
 
         # 5) 删 outfit
-        Outfit.query.filter_by(
-            author_email=email
-        ).delete(synchronize_session=False)
+        Outfit.query.filter_by(author_email=email).delete(synchronize_session=False)
 
         # 6) 其他通知
         Notification.query.filter_by(user_email=email).delete(synchronize_session=False)
