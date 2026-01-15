@@ -49,7 +49,9 @@ CORS(
 @app.after_request
 def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+    req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
+    resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "Content-Type, X-API-Key"
+    resp.headers["Access-Control-Allow-Credentials"] = "true"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     return resp
 
@@ -4506,12 +4508,9 @@ def api_delete_account():
             p = verify_apple_id_token(apple_id_token)
             sub = (p.get("sub") or "").strip()
             if not sub:
-                # token 无法解析时，fallback 用 email + confirm
-                if not email or not confirm_email or email != confirm_email:
-                    resp = jsonify({"ok": False, "error": "email_and_confirm_required"})
-                    return _cors(resp), 400
-
-                user = User.query.filter_by(email=email).first()
+                resp = jsonify({"ok": False, "error": "invalid_apple_token"})
+                return _cors(resp), 400
+                
                 if not user:
                     resp = jsonify({"ok": False, "error": "user_not_found"})
                     return _cors(resp), 404
