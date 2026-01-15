@@ -4516,7 +4516,9 @@ def api_delete_account():
                     resp = jsonify({"ok": False, "error": "user_not_found"})
                     return _cors(resp), 404
 
-            ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
+            ident = None
+            if sub:
+                ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
 
             if ident and getattr(ident, "user", None):
                 user = ident.user
