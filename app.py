@@ -4506,8 +4506,17 @@ def api_delete_account():
             p = verify_apple_id_token(apple_id_token)
             sub = (p.get("sub") or "").strip()
             if not sub:
-                resp = jsonify({"ok": False, "error": "missing_sub"})
-                return _cors(resp), 400
+                # ✅ token 不可用时，fallback 用 email（但必须要求 email + confirm）
+                if not email or not confirm_email or email != confirm_email:
+                    resp = jsonify({"ok": False, "error": "email_and_confirm_required"})
+                    return _cors(resp), 400
+
+                user = User.query.filter_by(email=email).first()
+                if not user:
+                    resp = jsonify({"ok": False, "error": "user_not_found"})
+                    return _cors(resp), 404
+
+    # 继续走删除流程（不用 sub）
 
             ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
 
