@@ -4460,10 +4460,27 @@ def _cors(resp):
     if origin in ALLOWED_ORIGINS:
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
+
     resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-API-Key"
+
+    req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
+    resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "Content-Type, X-API-Key"
+
     resp.headers["Access-Control-Max-Age"] = "86400"
+    # 可选：如果你以后要 cookie
+    # resp.headers["Access-Control-Allow-Credentials"] = "true"
     return resp
+
+def safe_model_delete(model, *filters):
+    try:
+        q = model.query
+        for f in filters:
+            q = q.filter(f)
+        q.delete(synchronize_session=False)
+        return True
+    except Exception as e:
+        app.logger.warning("safe delete skip %s: %s", getattr(model, "__name__", model), e)
+        return False
 
 
 @app.route("/api/account/delete", methods=["POST", "OPTIONS"])
@@ -4559,10 +4576,10 @@ def api_delete_account():
                 Notification.query.filter(getattr(Notification, colname) == email).delete(synchronize_session=False)
 
         # 7) 商品相关
-        ProductQALike.query.filter_by(user_email=email).delete(synchronize_session=False)
-        ProductQA.query.filter_by(user_email=email).delete(synchronize_session=False)
-        ProductReview.query.filter_by(user_email=email).delete(synchronize_session=False)
-        Product.query.filter_by(merchant_email=email).delete(synchronize_session=False)
+        safe_model_delete(ProductQALike, ProductQALike.user_email == email)
+        safe_model_delete(ProductQA, ProductQA.user_email == email)
+        safe_model_delete(ProductReview, ProductReview.user_email == email)
+        safe_model_delete(Product, Product.merchant_email == email)
 
         # 8) 其他
         MerchantApplication.query.filter_by(email=email).delete(synchronize_session=False)
@@ -4582,6 +4599,7 @@ def api_delete_account():
 
     except Exception as e:
         db.session.rollback()
+        app.logger.exception("DELETE ACCOUNT FAILED email=%s", email)
         resp = jsonify({"ok": False, "error": "delete_failed", "message": str(e)})
         return _cors(resp), 500
 
