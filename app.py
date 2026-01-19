@@ -357,6 +357,7 @@ class Product(db.Model):
     sizes_json  = db.Column(db.Text)
     colors_json = db.Column(db.Text)
     images_json = db.Column(db.Text)
+    quantity = db.Column(db.Integer, nullable=False, default=0)
     status  = db.Column(db.String(20), default="active")
 
 class ProductReview(db.Model):
@@ -1141,6 +1142,7 @@ def _product_to_dict(p: Product, req=None):
         "sizes": _safe_json_loads(getattr(p, "sizes_json", None), []),
         "colors": _safe_json_loads(getattr(p, "colors_json", None), []),
         "images": urls,
+        "quantity": int(getattr(p, "quantity", 0) or 0),
         "variants": [_variant_to_dict(v) for v in variants],
         "status": getattr(p, "status", "active") or "active",
     }
@@ -1708,11 +1710,31 @@ def add_product():
     title = request.form.get("title", "").strip()
     gender = request.form.get("gender", "")
     category = request.form.get("category", "")
-    price = request.form.get("price", "0")
+    price_raw = request.form.get("price", "0")
     desc = request.form.get("desc", "")
 
     sizes = request.form.get("sizes", "[]")
     colors = request.form.get("colors", "[]")
+
+    # ✅ quantity
+    quantity_raw = request.form.get("quantity", "0")
+
+    # ------- 基础校验 -------
+    if not merchant_email or not title:
+        return jsonify({"ok": False, "error": "Missing merchant_email or title"}), 400
+
+    try:
+        price = int(float(price_raw or 0))
+    except:
+        return jsonify({"ok": False, "error": "Invalid price"}), 400
+
+    try:
+        quantity = int(float(quantity_raw or 0))
+    except:
+        return jsonify({"ok": False, "error": "Invalid quantity"}), 400
+
+    if quantity < 0:
+        return jsonify({"ok": False, "error": "Quantity must be >= 0"}), 400
 
     try:
         sizes_list = json.loads(sizes)
@@ -1723,7 +1745,6 @@ def add_product():
     # 上传图片（GCS）
     files = request.files.getlist("images")
     image_urls = []
-
     for f in files:
         if f:
             filename = uuid4().hex + os.path.splitext(f.filename)[1]
@@ -1740,15 +1761,15 @@ def add_product():
         desc=desc,
         sizes_json=json.dumps(sizes_list),
         colors_json=json.dumps(colors_list),
-        images_json=json.dumps(image_urls),   # <<< 关键
-        status="active",
-        created_at=datetime.utcnow()
+        images_json=json.dumps(image_urls),
+        quantity=quantity,          # ✅ 现在 quantity 已定义
+        status="active"
     )
 
     db.session.add(p)
     db.session.commit()
 
-    return jsonify({"ok": True, "id": p.id, "images": image_urls})
+    return jsonify({"ok": True, "id": p.id, "images": image_urls, "quantity": p.quantity})
 
 # ----------- 商品评价：读取 -----------
 @app.get("/api/products/<int:pid>/reviews")
