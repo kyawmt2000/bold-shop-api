@@ -1372,9 +1372,8 @@ PROTECTED_PREFIXES = ["/api/admin", "/api/debug"]
 
 @app.before_request
 def handle_preflight():
-    # ✅ 所有 OPTIONS 预检请求：直接返回 204 + cors headers（关键）
     if request.method == "OPTIONS":
-        return _add_cors(make_response("", 204))
+        return _cors(make_response("", 204))
 
 # -------------------- Health --------------------
 @app.route("/health")
