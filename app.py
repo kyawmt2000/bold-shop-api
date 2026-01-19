@@ -425,6 +425,10 @@ class OutfitMedia(db.Model):
 class Outfit(db.Model):
     __tablename__ = "outfits"
     id = db.Column(db.Integer, primary_key=True)
+    
+    is_pinned = db.Column(db.Boolean, default=False, nullable=False)
+    pinned_at = db.Column(db.DateTime, nullable=True)
+    
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     author_email = db.Column(db.String(200), index=True, nullable=False)
     author_name  = db.Column(db.String(200))
@@ -1299,6 +1303,9 @@ def _outfit_to_dict(o: Outfit, req=None):
     return {
         "id": o.id,
         "created_at": o.created_at.isoformat() if getattr(o, "created_at", None) else None,
+
+        "is_pinned": bool(getattr(o, "is_pinned", False)),
+        "pinned_at": (getattr(o, "pinned_at", None).isoformat() if getattr(o, "pinned_at", None) else None),
 
         "author_email": author_email,
         "author_name": author_name,
@@ -2308,7 +2315,11 @@ def api_outfits_feed_list():
 
     q = Outfit.query.filter_by(status="active")
     try:
-        rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
+        rows = q.order_by(
+            Outfit.is_pinned.desc(),
+            Outfit.pinned_at.desc().nullslast(),
+            Outfit.created_at.desc()
+        ).limit(limit).all()
     except Exception as e:
         app.logger.exception(
             "outfits_feed order_by created_at failed, fallback to id desc: %s", e
@@ -2318,7 +2329,11 @@ def api_outfits_feed_list():
         except Exception:
             pass
 
-        rows = Outfit.query.order_by(Outfit.id.desc()).limit(limit).all()
+        rows = Outfit.query.filter_by(status="active").order_by(
+            Outfit.is_pinned.desc(),
+            Outfit.pinned_at.desc().nullslast(),
+            Outfit.id.desc()
+        ).limit(limit).all()
 
     items = []
     for o in rows:
@@ -2330,7 +2345,6 @@ def api_outfits_feed_list():
             )
 
     return jsonify({"items": items, "has_more": False})
-
 
 @app.get("/api/outfit/feed")
 def outfit_feed():
@@ -2357,7 +2371,11 @@ def outfit_feed():
             )
         )
 
-    rows = q.order_by(Outfit.created_at.desc()).limit(limit).all()
+    rows = q.order_by(
+        Outfit.is_pinned.desc(),
+        Outfit.pinned_at.desc().nullslast(),
+        Outfit.created_at.desc()
+    ).limit(limit).all()
     items = [_outfit_to_dict(o) for o in rows]
     return jsonify({"items": items, "has_more": False})
   
@@ -4621,3 +4639,22 @@ def api_dbinfo():
       "db": dict(r) if r else None,
       "images_columns_found": [dict(x) for x in cols],
     })
+
+@app.post("/api/admin/outfits/<int:outfit_id>/pin")
+def admin_pin_outfit(outfit_id):
+    # 1) 权限校验（示例：用 X-API-Key）
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key != ADMIN_API_KEY:   # 建议单独做一个 ADMIN_API_KEY
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    pinned = bool(data.get("pinned"))
+
+    outfit = Outfit.query.get(outfit_id)
+    if not outfit:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    outfit.is_pinned = pinned
+    outfit.pinned_at = datetime.utcnow() if pinned else None
+    db.session.commit()
+    return jsonify({"ok": True, "id": outfit_id, "is_pinned": outfit.is_pinned})
