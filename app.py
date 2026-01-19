@@ -4637,9 +4637,11 @@ def api_dbinfo():
 
 @app.post("/api/admin/outfits/<int:outfit_id>/pin")
 def admin_pin_outfit(outfit_id):
-    # 1) 权限校验（示例：用 X-API-Key）
+    if not API_KEY:
+        return jsonify({"ok": False, "error": "API_KEY_not_set"}), 500
+
     api_key = request.headers.get("X-API-Key", "")
-    if api_key != ADMIN_API_KEY:   # 建议单独做一个 ADMIN_API_KEY
+    if api_key != API_KEY:
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
