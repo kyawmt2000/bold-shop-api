@@ -48,7 +48,7 @@ CORS(
 
 @app.after_request
 def add_cors_headers(resp):
-    return _add_cors(resp)
+    return _cors(resp)
 
 # 从 Render 环境变量读取 DATABASE_URL
 import os
