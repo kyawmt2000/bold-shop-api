@@ -1668,7 +1668,7 @@ def admin_image(rid):
 def products_ping():
     return jsonify({"ok": True})
 
-@app.route("/api/products", methods=["GET", "OPTIONS"])
+@app.route("/api/products", methods=["GET", "OPTIONS"], strict_slashes=False)
 def products_list():
     if request.method == "OPTIONS":
         return _cors(make_response("", 204))
@@ -1680,7 +1680,17 @@ def products_list():
             q = q.filter_by(merchant_email=email)
 
         rows = q.order_by(Product.id.desc()).all()
-        resp = jsonify([_product_to_dict(r) for r in rows])
+
+        items = []
+        for r in rows:
+            try:
+                items.append(_product_to_dict(r))
+            except Exception as e:
+                app.logger.exception("product_to_dict failed id=%s: %s", getattr(r, "id", None), e)
+                # 跳过坏数据，不让整页 500
+                continue
+
+        resp = jsonify(items)   # 仍然保持你前端兼容：返回数组
         return _cors(resp)
 
     except Exception as e:
