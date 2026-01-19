@@ -48,12 +48,7 @@ CORS(
 
 @app.after_request
 def add_cors_headers(resp):
-    resp.headers["Access-Control-Allow-Origin"] = "*"
-    req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
-    resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "Content-Type, X-API-Key"
-    resp.headers["Access-Control-Allow-Credentials"] = "true"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    return resp
+    return _add_cors(resp)
 
 # 从 Render 环境变量读取 DATABASE_URL
 import os
@@ -1376,25 +1371,10 @@ def ip_to_city(ip: str) -> str:
 PROTECTED_PREFIXES = ["/api/admin", "/api/debug"]
 
 @app.before_request
-def _enforce_api_key():
-    # health / 预检 直接放行
-    if request.path == "/health":
-        return None
+def handle_preflight():
+    # ✅ 所有 OPTIONS 预检请求：直接返回 204 + cors headers（关键）
     if request.method == "OPTIONS":
-        return None
-
-    # 没有设置 API_KEY，就不做任何校验
-    if not API_KEY:
-        return None
-
-    # 只有这些前缀才需要 key
-    if not any(request.path.startswith(p) for p in PROTECTED_PREFIXES):
-        return None
-
-    # 校验失败返回 401
-    if not check_key(request):
-        return jsonify({"message": "Unauthorized"}), 401
-
+        return _add_cors(make_response("", 204))
 
 # -------------------- Health --------------------
 @app.route("/health")
@@ -4485,18 +4465,20 @@ ALLOWED_ORIGINS = {
     "https://www.boldmm.shop",
 }
 
-def _cors(resp):
+def _add_cors(resp):
     origin = request.headers.get("Origin", "")
     if origin in ALLOWED_ORIGINS:
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
 
-    resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        # ✅ 只有当你真的用 cookie/credentials 才需要 true
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
 
-    # ✅ 预检要什么 header 就放行什么（最稳）
+    # ✅ 预检要什么 header 放什么
     req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
     resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "Content-Type, X-API-Key"
 
+    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
     resp.headers["Access-Control-Max-Age"] = "86400"
     return resp
 
