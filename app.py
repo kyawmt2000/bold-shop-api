@@ -1305,7 +1305,7 @@ def _outfit_to_dict(o: Outfit, req=None):
         "created_at": o.created_at.isoformat() if getattr(o, "created_at", None) else None,
 
         "is_pinned": bool(getattr(o, "is_pinned", False)),
-        "pinned_at": (getattr(o, "pinned_at", None).isoformat() if getattr(o, "pinned_at", None) else None),
+        "pinned_at": o.pinned_at.isoformat() if getattr(o, "pinned_at", None) else None,
 
         "author_email": author_email,
         "author_name": author_name,
