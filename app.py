@@ -2317,7 +2317,7 @@ def api_outfits_feed_list():
     try:
         rows = q.order_by(
             Outfit.is_pinned.desc(),
-            Outfit.pinned_at.desc().nullslast(),
+            Outfit.pinned_at.desc(),
             Outfit.created_at.desc()
         ).limit(limit).all()
     except Exception as e:
@@ -2331,7 +2331,7 @@ def api_outfits_feed_list():
 
         rows = Outfit.query.filter_by(status="active").order_by(
             Outfit.is_pinned.desc(),
-            Outfit.pinned_at.desc().nullslast(),
+            Outfit.pinned_at.desc(),
             Outfit.id.desc()
         ).limit(limit).all()
 
@@ -2373,7 +2373,7 @@ def outfit_feed():
 
     rows = q.order_by(
         Outfit.is_pinned.desc(),
-        Outfit.pinned_at.desc().nullslast(),
+        Outfit.pinned_at.desc(),
         Outfit.created_at.desc()
     ).limit(limit).all()
     items = [_outfit_to_dict(o) for o in rows]
