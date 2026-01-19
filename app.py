@@ -1662,17 +1662,24 @@ def admin_image(rid):
 def products_ping():
     return jsonify({"ok": True})
 
-@app.get("/api/products")
+@app.route("/api/products", methods=["GET", "OPTIONS"])
 def products_list():
+    if request.method == "OPTIONS":
+        return _cors(make_response("", 204))
+
     try:
         email = (request.args.get("merchant_email") or "").strip().lower()
         q = Product.query.filter_by(status="active")
         if email:
             q = q.filter_by(merchant_email=email)
+
         rows = q.order_by(Product.id.desc()).all()
-        return jsonify([_product_to_dict(r) for r in rows])
+        resp = jsonify([_product_to_dict(r) for r in rows])
+        return _cors(resp)
+
     except Exception as e:
-        return jsonify({"message":"server_error", "detail": str(e)}), 500
+        resp = jsonify({"message":"server_error", "detail": str(e)})
+        return _cors(resp), 500
 
 @app.get("/api/products/<int:pid>")
 def products_get_one(pid):
@@ -1684,7 +1691,7 @@ def products_get_one(pid):
 
     return jsonify(_product_to_dict(row))
 
-@app.route("/api/products/add", methods=["POST"])
+@app.route("/api/products/add", methods=["POST", "OPTIONS"])
 def add_product():
     merchant_email = request.form.get("merchant_email", "").strip().lower()
     title = request.form.get("title", "").strip()
@@ -4465,23 +4472,20 @@ ALLOWED_ORIGINS = {
     "https://www.boldmm.shop",
 }
 
-def _add_cors(resp):
+def _cors(resp):
     origin = request.headers.get("Origin", "")
     if origin in ALLOWED_ORIGINS:
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
 
-        # ✅ 只有当你真的用 cookie/credentials 才需要 true
-        resp.headers["Access-Control-Allow-Credentials"] = "true"
+    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
 
-    # ✅ 预检要什么 header 放什么
     req_hdrs = request.headers.get("Access-Control-Request-Headers", "")
     resp.headers["Access-Control-Allow-Headers"] = req_hdrs or "Content-Type, X-API-Key"
 
-    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS"
     resp.headers["Access-Control-Max-Age"] = "86400"
     return resp
-
+    
 def safe_model_delete(model, *filters):
     try:
         q = model.query
