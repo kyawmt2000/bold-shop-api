@@ -79,6 +79,8 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
 db = SQLAlchemy(app)
 
 API_KEY = os.getenv("API_KEY", "")
+if not API_KEY:
+    raise RuntimeError("Missing API_KEY env var")
 
 GCS_BUCKET   = (os.getenv("GCS_BUCKET") or "").strip()
 GCS_KEY_JSON = os.getenv("GCS_KEY_JSON")  # Render 里存整个 JSON
@@ -4673,7 +4675,7 @@ from datetime import datetime
 @app.post("/api/admin/products/<int:pid>/pin")
 def admin_pin_product(pid):
     api_key = request.headers.get("X-API-Key", "")
-    if api_key != ADMIN_API_KEY:
+    if api_key != API_KEY:
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
     data = request.get_json(silent=True) or {}
