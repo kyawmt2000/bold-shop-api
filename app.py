@@ -2314,35 +2314,30 @@ def api_outfits_feed_list():
         limit = 50
 
     q = Outfit.query.filter_by(status="active")
+
     try:
         rows = q.order_by(
             Outfit.is_pinned.desc(),
             Outfit.pinned_at.desc(),
             Outfit.created_at.desc()
         ).limit(limit).all()
+
     except Exception as e:
-        app.logger.exception(
-            "outfits_feed order_by created_at failed, fallback to id desc: %s", e
-        )
+        app.logger.exception("feed pinned order failed: %s", e)
         try:
             db.session.rollback()
         except Exception:
             pass
 
-        rows = Outfit.query.filter_by(status="active").order_by(
-            Outfit.is_pinned.desc(),
-            Outfit.pinned_at.desc(),
-            Outfit.id.desc()
-        ).limit(limit).all()
+        # ✅ fallback：不要再引用 is_pinned/pinned_at（否则会继续 500）
+        rows = q.order_by(Outfit.created_at.desc(), Outfit.id.desc()).limit(limit).all()
 
     items = []
     for o in rows:
         try:
             items.append(_outfit_to_dict(o))
         except Exception as e:
-            app.logger.exception(
-                "outfit_to_dict failed for id=%s: %s", getattr(o, "id", None), e
-            )
+            app.logger.exception("outfit_to_dict failed id=%s: %s", getattr(o, "id", None), e)
 
     return jsonify({"items": items, "has_more": False})
 
