@@ -342,6 +342,8 @@ class MerchantApplication(db.Model):
 class Product(db.Model):
     __tablename__ = "products"
     id = db.Column(db.Integer, primary_key=True)
+    is_pinned = db.Column(db.Boolean, default=False, nullable=False)
+    pinned_at = db.Column(db.DateTime, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     merchant_email = db.Column(db.String(200), index=True, nullable=False)
     title   = db.Column(db.String(200), nullable=False)
@@ -1085,45 +1087,40 @@ def _product_to_dict(p: Product, req=None):
     """把 Product 转成前端需要的结构，尽量防止旧数据导致 500"""
     r = req or request
 
-    # created_at 可能是 None，用 try/except 包一下最安全
+    # created_at
     try:
         created_at = p.created_at.isoformat() if getattr(p, "created_at", None) else None
     except Exception:
         created_at = None
 
-    # 商品图片：现在还是走 /api/products/<pid>/image/<iid> 的老逻辑
-        # 商品图片：
-    # - 如果 filename 是 http(s) 开头 => 直接当成 GCS URL
-    # - 否则还是走 /api/products/<pid>/image/<iid> 老逻辑
-    try:
-        imgs = ProductImage.query.filter_by(product_id=p.id).all()
-    except Exception:
-        imgs = []
-
+    # images
     urls = []
+    imgs = []  # ✅ 先定义，避免 images_json 有数据时 imgs 未定义
+
     imgs_from_product = _safe_json_loads(getattr(p, "images_json", None), [])
     if imgs_from_product:
         urls = [u for u in imgs_from_product if isinstance(u, str) and u]
     else:
-        # 2) 旧逻辑：从 product_images 表拼 URL
         try:
             imgs = ProductImage.query.filter_by(product_id=p.id).all()
         except Exception:
             imgs = []
-    base = (r.url_root or "").rstrip("/")
-    for im in imgs:
-        try:
-            if im.filename and isinstance(im.filename, str) and im.filename.startswith("http"):
-                # GCS URL 直接返回
-                urls.append(im.filename)
-            else:
-                # 老的二进制图片走本地接口
-                urls.append(f"{base}/api/products/{p.id}/image/{im.id}")
-        except Exception:
-            continue
 
+        base = (r.url_root or "").rstrip("/")
+        for im in imgs:
+            try:
+                if im.filename and isinstance(im.filename, str) and im.filename.startswith("http"):
+                    urls.append(im.filename)  # GCS URL
+                else:
+                    urls.append(f"{base}/api/products/{p.id}/image/{im.id}")  # 老接口
+            except Exception:
+                continue
 
-    # 变体列表
+    # ✅ 去重（保持顺序）
+    seen = set()
+    urls = [u for u in urls if (u not in seen and not seen.add(u))]
+
+    # variants
     try:
         variants = ProductVariant.query.filter_by(product_id=p.id).all()
     except Exception:
@@ -1132,6 +1129,8 @@ def _product_to_dict(p: Product, req=None):
     return {
         "id": p.id,
         "created_at": created_at,
+        "is_pinned": bool(getattr(p, "is_pinned", False)),
+        "pinned_at": p.pinned_at.isoformat() if getattr(p, "pinned_at", None) else None,
         "merchant_email": getattr(p, "merchant_email", "") or "",
         "title": p.title,
         "price": p.price,
@@ -1145,7 +1144,6 @@ def _product_to_dict(p: Product, req=None):
         "variants": [_variant_to_dict(v) for v in variants],
         "status": getattr(p, "status", "active") or "active",
     }
-
 
 def _loads_arr(v):
     """把任意输入稳健转成 list[str]"""
@@ -1679,7 +1677,11 @@ def products_list():
         if email:
             q = q.filter_by(merchant_email=email)
 
-        rows = q.order_by(Product.id.desc()).all()
+        rows = q.order_by(
+            Product.is_pinned.desc(),
+            Product.pinned_at.desc().nullslast(),
+            Product.id.desc()
+        ).all()
 
         items = []
         for r in rows:
@@ -4665,3 +4667,38 @@ def admin_pin_outfit(outfit_id):
     outfit.pinned_at = datetime.utcnow() if pinned else None
     db.session.commit()
     return jsonify({"ok": True, "id": outfit_id, "is_pinned": outfit.is_pinned})
+
+from datetime import datetime
+
+@app.post("/api/admin/products/<int:pid>/pin")
+def admin_pin_product(pid):
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key != ADMIN_API_KEY:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    pinned = bool(data.get("pinned"))
+
+    p = Product.query.get(pid)
+    if not p:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    p.is_pinned = pinned
+    p.pinned_at = datetime.utcnow() if pinned else None
+    db.session.commit()
+    return jsonify({"ok": True, "id": pid, "is_pinned": p.is_pinned})
+
+@app.delete("/api/admin/products/<int:pid>")
+def admin_delete_product(pid):
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key != ADMIN_API_KEY:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    p = Product.query.get(pid)
+    if not p:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    # 软删：不真正删除行，避免外键/历史数据问题
+    p.status = "deleted"
+    db.session.commit()
+    return jsonify({"ok": True, "id": pid})
