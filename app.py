@@ -13,7 +13,7 @@ from io import BytesIO
 from sqlalchemy import text
 from datetime import timedelta
 from functools import wraps
-
+from flask import request, jsonify
 
 from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
@@ -31,9 +31,39 @@ from sqlalchemy.exc import SQLAlchemyError
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
-JWT_SECRET = os.getenv("JWT_SECRET", "change-me-please") 
-JWT_ALG = "HS256"
-JWT_EXPIRE_DAYS = 30
+JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
+JWT_ALG = os.getenv("JWT_ALG", "HS256").strip()
+
+def get_uid_from_request():
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        return int(payload.get("uid"))
+    except Exception:
+        return None
+
+def require_login(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        uid = get_uid_from_request()
+        if not uid:
+            return jsonify(ok=False, error="unauthorized", message="missing/invalid token"), 401
+
+        u = User.query.get(uid)
+        if not u:
+            return jsonify(ok=False, error="unauthorized", message="user not found"), 401
+
+        if getattr(u, "status", "active") == "deleted":
+            return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+
+        request.current_user = u
+        return fn(*args, **kwargs)
+    return wrapper
 
 
 # -----------------------------------------
@@ -3344,7 +3374,6 @@ def outfits_by_ts(ts_ms: int):
     except Exception as e:
         return jsonify({"message": "server_error", "detail": str(e)}), 500
 
-from flask import request, jsonify
 from datetime import datetime
 
 @app.get("/api/debug/comments_tables")
@@ -4760,38 +4789,6 @@ def make_token(user_id: int):
         "exp": int((datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS)).timestamp())
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
-
-def get_uid_from_request():
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return None
-    token = auth.split(" ", 1)[1].strip()
-    if not token:
-        return None
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        return int(payload.get("uid"))
-    except Exception:
-        return None
-
-def require_login(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        uid = get_uid_from_request()
-        if not uid:
-            return jsonify(ok=False, error="unauthorized", message="missing/invalid token"), 401
-
-        u = User.query.get(uid)
-        if not u:
-            return jsonify(ok=False, error="unauthorized", message="user not found"), 401
-
-        # ✅ 被删除账号永远不能登录/访问
-        if getattr(u, "status", "active") == "deleted":
-            return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
-
-        request.current_user = u
-        return fn(*args, **kwargs)
-    return wrapper
 
 @app.route("/api/auth/google", methods=["POST"])
 def auth_google():
