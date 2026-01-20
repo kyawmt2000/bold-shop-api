@@ -31,6 +31,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-please")
+JWT_ALG = "HS256"
+JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
+
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 JWT_ALG = os.getenv("JWT_ALG", "HS256").strip()
 
@@ -65,6 +69,89 @@ def require_login(fn):
         return fn(*args, **kwargs)
     return wrapper
 
+@app.route("/api/me", methods=["GET"])
+@require_login
+def api_me():
+    u = request.current_user
+    return jsonify(ok=True, user={
+        "id": u.id,
+        "email": u.email,
+        "status": getattr(u, "status", "active")
+    })
+
+@app.route("/api/account/delete", methods=["POST", "OPTIONS"])
+@require_login
+def api_delete_account():
+    if request.method == "OPTIONS":
+        return _cors(make_response("", 204))
+
+    u = request.current_user
+    data = request.get_json(silent=True) or {}
+    confirm_email = (data.get("confirm_email") or "").strip().lower()
+
+    email = (u.email or "").strip().lower()
+    if not email:
+        return _cors(jsonify({"ok": False, "error": "unauthorized"})), 401
+
+    # ✅ 必须输入邮箱确认
+    if not confirm_email:
+        return _cors(jsonify({"ok": False, "error": "confirm_required"})), 400
+    if confirm_email != email:
+        return _cors(jsonify({"ok": False, "error": "email_not_match"})), 400
+
+    try:
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return _cors(jsonify({"ok": False, "error": "user_not_found"})), 404
+
+        if getattr(user, "status", "active") == "deleted":
+            return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
+
+        # ====== 删除关联数据（你原来的 safe_model_delete 全部保留） ======
+        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "viewer_email", None) == email)
+        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "user_email", None) == email)
+        safe_model_delete(OutfitCommentLike, OutfitCommentLike.comment_id.in_(
+            db.session.query(OutfitComment.id).filter(OutfitComment.author_email == email)
+        ))
+        safe_model_delete(OutfitComment, OutfitComment.author_email == email)
+
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "viewer_email", None) == email)
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "user_email", None) == email)
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "author_email", None) == email)
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "outfit_author_email", None) == email)
+
+        safe_model_delete(Notification, getattr(Notification, "user_email", None) == email)
+        safe_model_delete(Notification, getattr(Notification, "actor_email", None) == email)
+        safe_model_delete(Notification, getattr(Notification, "from_email", None) == email)
+        safe_model_delete(Notification, getattr(Notification, "sender_email", None) == email)
+
+        safe_model_delete(Outfit, Outfit.author_email == email)
+
+        safe_model_delete(ProductQALike, ProductQALike.user_email == email)
+        safe_model_delete(ProductQA, ProductQA.user_email == email)
+        safe_model_delete(ProductReview, ProductReview.user_email == email)
+        safe_model_delete(Product, Product.merchant_email == email)
+
+        safe_model_delete(MerchantApplication, MerchantApplication.email == email)
+        safe_model_delete(PaymentOrder, PaymentOrder.buyer_email == email)
+        safe_model_delete(UserSetting, UserSetting.email == email)
+
+        # ✅ 不删 AuthIdentity，不然 Apple sub 又能重新绑定
+        # safe_model_delete(AuthIdentity, AuthIdentity.user_id == user.id)
+
+        # ✅ 软删 user：以后永远不能登录
+        user.status = "deleted"
+        user.deleted_at = datetime.utcnow()
+        user.last_seen_at = datetime.utcnow()
+        db.session.add(user)
+        db.session.commit()
+
+        return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
+
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("DELETE ACCOUNT FAILED email=%s", email)
+        return _cors(jsonify({"ok": False, "error": "delete_failed", "message": str(e)})), 500
 
 # -----------------------------------------
 #          ⭐ 正确初始化 Flask + DB ⭐
@@ -4689,80 +4776,6 @@ def get_session_payload():
     except Exception:
         return None
 
-@app.route("/api/account/delete", methods=["POST", "OPTIONS"])
-@require_login
-def api_delete_account():
-    if request.method == "OPTIONS":
-        return _cors(make_response("", 204))
-
-    u = request.current_user
-    data = request.get_json(silent=True) or {}
-    confirm_email = (data.get("confirm_email") or "").strip().lower()
-
-    email = (u.email or "").strip().lower()
-    if not email:
-        return _cors(jsonify({"ok": False, "error": "unauthorized"})), 401
-
-    # ✅ 必须输入邮箱确认
-    if not confirm_email:
-        return _cors(jsonify({"ok": False, "error": "confirm_required"})), 400
-    if confirm_email != email:
-        return _cors(jsonify({"ok": False, "error": "email_not_match"})), 400
-
-    try:
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return _cors(jsonify({"ok": False, "error": "user_not_found"})), 404
-
-        if getattr(user, "status", "active") == "deleted":
-            return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
-
-        # ====== 删除关联数据（你原来的 safe_model_delete 全部保留） ======
-        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "viewer_email", None) == email)
-        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "user_email", None) == email)
-        safe_model_delete(OutfitCommentLike, OutfitCommentLike.comment_id.in_(
-            db.session.query(OutfitComment.id).filter(OutfitComment.author_email == email)
-        ))
-        safe_model_delete(OutfitComment, OutfitComment.author_email == email)
-
-        safe_model_delete(OutfitLike, getattr(OutfitLike, "viewer_email", None) == email)
-        safe_model_delete(OutfitLike, getattr(OutfitLike, "user_email", None) == email)
-        safe_model_delete(OutfitLike, getattr(OutfitLike, "author_email", None) == email)
-        safe_model_delete(OutfitLike, getattr(OutfitLike, "outfit_author_email", None) == email)
-
-        safe_model_delete(Notification, getattr(Notification, "user_email", None) == email)
-        safe_model_delete(Notification, getattr(Notification, "actor_email", None) == email)
-        safe_model_delete(Notification, getattr(Notification, "from_email", None) == email)
-        safe_model_delete(Notification, getattr(Notification, "sender_email", None) == email)
-
-        safe_model_delete(Outfit, Outfit.author_email == email)
-
-        safe_model_delete(ProductQALike, ProductQALike.user_email == email)
-        safe_model_delete(ProductQA, ProductQA.user_email == email)
-        safe_model_delete(ProductReview, ProductReview.user_email == email)
-        safe_model_delete(Product, Product.merchant_email == email)
-
-        safe_model_delete(MerchantApplication, MerchantApplication.email == email)
-        safe_model_delete(PaymentOrder, PaymentOrder.buyer_email == email)
-        safe_model_delete(UserSetting, UserSetting.email == email)
-
-        # ✅ 不删 AuthIdentity，不然 Apple sub 又能重新绑定
-        # safe_model_delete(AuthIdentity, AuthIdentity.user_id == user.id)
-
-        # ✅ 软删 user：以后永远不能登录
-        user.status = "deleted"
-        user.deleted_at = datetime.utcnow()
-        user.last_seen_at = datetime.utcnow()
-        db.session.add(user)
-        db.session.commit()
-
-        return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
-
-    except Exception as e:
-        db.session.rollback()
-        app.logger.exception("DELETE ACCOUNT FAILED email=%s", email)
-        return _cors(jsonify({"ok": False, "error": "delete_failed", "message": str(e)})), 500
-
 def get_google_audiences():
     # 环境变量示例：
     # GOOGLE_CLIENT_IDS="xxx.apps.googleusercontent.com,yyy.apps.googleusercontent.com"
@@ -4843,12 +4856,3 @@ def auth_google():
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
 
-@app.route("/api/me", methods=["GET"])
-@require_login
-def api_me():
-    u = request.current_user
-    return jsonify(ok=True, user={
-        "id": u.id,
-        "email": u.email,
-        "status": getattr(u, "status", "active")
-    })
