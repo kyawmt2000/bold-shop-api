@@ -12,6 +12,8 @@ from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
 from datetime import timedelta
+from functools import wraps
+
 
 from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
@@ -28,6 +30,10 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
+
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-please") 
+JWT_ALG = "HS256"
+JWT_EXPIRE_DAYS = 30
 
 
 # -----------------------------------------
@@ -312,7 +318,7 @@ def auth_apple():
 
             u.last_seen_at = datetime.utcnow()
             db.session.commit()
-            token = issue_session_token(u.id, u.email, provider="apple")
+            token = make_token(u.id)
             return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
         # 2) 没绑定：如果 email 存在且库里已有同邮箱 User -> 合并
@@ -333,7 +339,7 @@ def auth_apple():
         db.session.add(ident)
         db.session.commit()
 
-        token = issue_session_token(u.id, u.email, provider="apple")
+        token = make_token(u.id)
         return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
     except Exception as e:
@@ -4655,37 +4661,30 @@ def get_session_payload():
         return None
 
 @app.route("/api/account/delete", methods=["POST", "OPTIONS"])
+@require_login
 def api_delete_account():
     if request.method == "OPTIONS":
         return _cors(make_response("", 204))
 
+    u = request.current_user
     data = request.get_json(silent=True) or {}
-    email = (data.get("email") or "").strip().lower()
     confirm_email = (data.get("confirm_email") or "").strip().lower()
 
-    sess = get_session_payload()
-    if not sess:
+    email = (u.email or "").strip().lower()
+    if not email:
         return _cors(jsonify({"ok": False, "error": "unauthorized"})), 401
 
-    sess_email = (sess.get("email") or "").strip().lower()
-    if not sess_email:
-        return _cors(jsonify({"ok": False, "error": "unauthorized"})), 401
-
-    if email != sess_email:
-            return _cors(jsonify({"ok": False, "error": "forbidden"})), 403
+    # ✅ 必须输入邮箱确认
+    if not confirm_email:
+        return _cors(jsonify({"ok": False, "error": "confirm_required"})), 400
+    if confirm_email != email:
+        return _cors(jsonify({"ok": False, "error": "email_not_match"})), 400
 
     try:
-        # ✅ 必须输入邮箱 + 再输入一次邮箱确认
-        if not email or not confirm_email:
-            return _cors(jsonify({"ok": False, "error": "email_and_confirm_required"})), 400
-        if email != confirm_email:
-            return _cors(jsonify({"ok": False, "error": "email_not_match"})), 400
-
         user = User.query.filter_by(email=email).first()
         if not user:
             return _cors(jsonify({"ok": False, "error": "user_not_found"})), 404
 
-        # ✅ 已经删除过就直接返回（防止重复删）
         if getattr(user, "status", "active") == "deleted":
             return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
 
@@ -4754,6 +4753,46 @@ def verify_google_id_token(id_token: str):
 
     return payload
 
+def make_token(user_id: int):
+    payload = {
+        "uid": int(user_id),
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS)).timestamp())
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+
+def get_uid_from_request():
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        return int(payload.get("uid"))
+    except Exception:
+        return None
+
+def require_login(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        uid = get_uid_from_request()
+        if not uid:
+            return jsonify(ok=False, error="unauthorized", message="missing/invalid token"), 401
+
+        u = User.query.get(uid)
+        if not u:
+            return jsonify(ok=False, error="unauthorized", message="user not found"), 401
+
+        # ✅ 被删除账号永远不能登录/访问
+        if getattr(u, "status", "active") == "deleted":
+            return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+
+        request.current_user = u
+        return fn(*args, **kwargs)
+    return wrapper
+
 @app.route("/api/auth/google", methods=["POST"])
 def auth_google():
     data = request.get_json(force=True) or {}
@@ -4780,7 +4819,7 @@ def auth_google():
             u.last_seen_at = datetime.utcnow()
             db.session.commit()
 
-            token = issue_session_token(u.id, u.email, provider="google")
+            token = make_token(u.id)
             return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
         # 2) 没绑定：如果 email 存在且库里已有同邮箱 User -> 合并
@@ -4801,8 +4840,18 @@ def auth_google():
         db.session.add(ident)
         db.session.commit()
 
-        token = issue_session_token(u.id, u.email, provider="google")
+        token = make_token(u.id)
         return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
+
+@app.route("/api/me", methods=["GET"])
+@require_login
+def api_me():
+    u = request.current_user
+    return jsonify(ok=True, user={
+        "id": u.id,
+        "email": u.email,
+        "status": getattr(u, "status", "active")
+    })
