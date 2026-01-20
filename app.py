@@ -303,12 +303,22 @@ def auth_apple():
         ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
         if ident:
             u = ident.user
+
+            # ✅ 关键：被删除过的账号永远不能登录
+            if getattr(u, "status", "active") == "deleted":
+                return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+
+            u.last_seen_at = datetime.utcnow()
+            db.session.commit()
             return jsonify(ok=True, user={"id": u.id, "email": u.email})
 
         # 2) 没绑定：如果 email 存在且库里已有同邮箱 User -> 合并
         u = None
         if email:
             u = User.query.filter_by(email=email).first()
+
+        if u and getattr(u, "status", "active") == "deleted":
+            return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
 
         # 3) 否则创建新用户（email 可能为空：给个占位，后续再补）
         if not u:
@@ -460,6 +470,9 @@ class User(db.Model):
     email = db.Column(db.String(200), unique=True, nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     last_seen_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    status = db.Column(db.String(20), default="active", index=True)
+    deleted_at = db.Column(db.DateTime)
 
 class AuthIdentity(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -4611,10 +4624,18 @@ def api_delete_account():
         safe_model_delete(PaymentOrder, PaymentOrder.buyer_email == email)
         safe_model_delete(UserSetting, UserSetting.email == email)
 
-        safe_model_delete(AuthIdentity, AuthIdentity.user_id == user.id)
+        # ✅ 不删 AuthIdentity（否则下次同 sub 又能重新绑定）
+        # safe_model_delete(AuthIdentity, AuthIdentity.user_id == user.id)  # ❌ 删掉这行
 
-        db.session.delete(user)
+        # ✅ 不 delete user：改软删
+        user.status = "deleted"
+        user.deleted_at = datetime.utcnow()
+        user.last_seen_at = datetime.utcnow()
+        db.session.add(user)
+
         db.session.commit()
+        resp = jsonify({"ok": True, "deleted": True, "email": email})
+        return _cors(resp)
 
         resp = jsonify({"ok": True, "deleted": True, "email": email})
         return _cors(resp)
