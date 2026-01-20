@@ -4538,114 +4538,6 @@ def safe_model_delete(model, *filters):
         app.logger.warning("safe delete skip %s: %s", getattr(model, "__name__", model), e)
         return False
 
-
-@app.route("/api/account/delete", methods=["POST", "OPTIONS"])
-def api_delete_account():
-    if request.method == "OPTIONS":
-        return _cors(make_response("", 204))
-
-    data = request.get_json(silent=True) or {}
-    apple_id_token = (data.get("apple_id_token") or "").strip()
-    email = (data.get("email") or "").strip().lower()
-    confirm_email = (data.get("confirm_email") or data.get("confirm") or "").strip().lower()
-
-    try:
-        user = None
-
-        # ✅ 1) Apple：如果 token 验证失败/拿不到 sub，就不要硬走 Apple 删除
-        # （否则你现在这种“临时占位verify”会永远 invalid）
-        if apple_id_token:
-            try:
-                p = verify_apple_id_token(apple_id_token)   # 你后面再补真正验证
-                sub = (p.get("sub") or "").strip()
-            except Exception:
-                sub = ""
-
-            # 没 sub：当作普通账号处理（用 email 确认）
-            if not sub:
-                apple_id_token = ""  # 强制走普通流程
-
-        # ✅ 2) 普通账号流程（email 二次确认）
-        if not apple_id_token:
-            if not email or not confirm_email:
-                resp = jsonify({"ok": False, "error": "email_and_confirm_required"})
-                return _cors(resp), 400
-            if email != confirm_email:
-                resp = jsonify({"ok": False, "error": "email_not_match"})
-                return _cors(resp), 400
-
-            user = User.query.filter_by(email=email).first()
-            if not user:
-                resp = jsonify({"ok": False, "error": "user_not_found"})
-                return _cors(resp), 404
-
-        else:
-            # ✅ 真·Apple 删除（你未来 verify 写好以后再用）
-            p = verify_apple_id_token(apple_id_token)
-            sub = (p.get("sub") or "").strip()
-            if not sub:
-                resp = jsonify({"ok": False, "error": "invalid_apple_token"})
-                return _cors(resp), 400
-
-            ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
-            if ident and getattr(ident, "user", None):
-                user = ident.user
-                email = (user.email or "").lower()
-            else:
-                resp = jsonify({"ok": False, "error": "identity_not_found"})
-                return _cors(resp), 404
-
-        # ===================== 删除关联数据（安全不炸） =====================
-        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "viewer_email", None) == email)
-        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "user_email", None) == email)
-        safe_model_delete(OutfitCommentLike, OutfitCommentLike.comment_id.in_(
-            db.session.query(OutfitComment.id).filter(OutfitComment.author_email == email)
-        ))
-        safe_model_delete(OutfitComment, OutfitComment.author_email == email)
-
-        safe_model_delete(OutfitLike, getattr(OutfitLike, "viewer_email", None) == email)
-        safe_model_delete(OutfitLike, getattr(OutfitLike, "user_email", None) == email)
-        safe_model_delete(OutfitLike, getattr(OutfitLike, "author_email", None) == email)
-        safe_model_delete(OutfitLike, getattr(OutfitLike, "outfit_author_email", None) == email)
-
-        safe_model_delete(Notification, getattr(Notification, "user_email", None) == email)
-        safe_model_delete(Notification, getattr(Notification, "actor_email", None) == email)
-        safe_model_delete(Notification, getattr(Notification, "from_email", None) == email)
-        safe_model_delete(Notification, getattr(Notification, "sender_email", None) == email)
-
-        safe_model_delete(Outfit, Outfit.author_email == email)
-
-        safe_model_delete(ProductQALike, ProductQALike.user_email == email)
-        safe_model_delete(ProductQA, ProductQA.user_email == email)
-        safe_model_delete(ProductReview, ProductReview.user_email == email)
-        safe_model_delete(Product, Product.merchant_email == email)
-
-        safe_model_delete(MerchantApplication, MerchantApplication.email == email)
-        safe_model_delete(PaymentOrder, PaymentOrder.buyer_email == email)
-        safe_model_delete(UserSetting, UserSetting.email == email)
-
-        # ✅ 不删 AuthIdentity（否则下次同 sub 又能重新绑定）
-        # safe_model_delete(AuthIdentity, AuthIdentity.user_id == user.id)  # ❌ 删掉这行
-
-        # ✅ 不 delete user：改软删
-        user.status = "deleted"
-        user.deleted_at = datetime.utcnow()
-        user.last_seen_at = datetime.utcnow()
-        db.session.add(user)
-
-        db.session.commit()
-        resp = jsonify({"ok": True, "deleted": True, "email": email})
-        return _cors(resp)
-
-        resp = jsonify({"ok": True, "deleted": True, "email": email})
-        return _cors(resp)
-
-    except Exception as e:
-        db.session.rollback()
-        app.logger.exception("DELETE ACCOUNT FAILED email=%s", email)
-        resp = jsonify({"ok": False, "error": "delete_failed", "message": str(e)})
-        return _cors(resp), 500
-
 @app.get("/api/dbinfo")
 def api_dbinfo():
     r = db.session.execute(db.text("""
@@ -4725,3 +4617,116 @@ def admin_delete_product(pid):
     p.status = "deleted"
     db.session.commit()
     return jsonify({"ok": True, "id": pid})
+
+SESSION_SECRET = os.getenv("SESSION_SECRET", "change_me_now")  # ✅ Render 里设置成随机长字符串
+SESSION_EXPIRE_DAYS = 30
+
+def issue_session_token(user_id: int, email: str, provider: str = "apple"):
+    payload = {
+        "uid": user_id,
+        "email": (email or "").lower().strip(),
+        "provider": provider,
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(days=SESSION_EXPIRE_DAYS)).timestamp()),
+    }
+    return jwt.encode(payload, SESSION_SECRET, algorithm="HS256")
+
+def get_session_payload():
+    # 1) Authorization: Bearer xxx
+    auth = (request.headers.get("Authorization") or "").strip()
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+
+    # 2) 兼容：X-User-Token: xxx（可选）
+    if not token:
+        token = (request.headers.get("X-User-Token") or "").strip()
+
+    if not token:
+        return None
+
+    try:
+        return jwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
+    except Exception:
+        return None
+
+@app.route("/api/account/delete", methods=["POST", "OPTIONS"])
+def api_delete_account():
+    if request.method == "OPTIONS":
+        return _cors(make_response("", 204))
+
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip().lower()
+    confirm_email = (data.get("confirm_email") or "").strip().lower()
+
+    sess = get_session_payload()
+    if not sess:
+        return _cors(jsonify({"ok": False, "error": "unauthorized"})), 401
+
+    sess_email = (sess.get("email") or "").strip().lower()
+    if not sess_email:
+        return _cors(jsonify({"ok": False, "error": "unauthorized"})), 401
+
+    if email != sess_email:
+            return _cors(jsonify({"ok": False, "error": "forbidden"})), 403
+
+    try:
+        # ✅ 必须输入邮箱 + 再输入一次邮箱确认
+        if not email or not confirm_email:
+            return _cors(jsonify({"ok": False, "error": "email_and_confirm_required"})), 400
+        if email != confirm_email:
+            return _cors(jsonify({"ok": False, "error": "email_not_match"})), 400
+
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return _cors(jsonify({"ok": False, "error": "user_not_found"})), 404
+
+        # ✅ 已经删除过就直接返回（防止重复删）
+        if getattr(user, "status", "active") == "deleted":
+            return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
+
+        # ====== 删除关联数据（你原来的 safe_model_delete 全部保留） ======
+        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "viewer_email", None) == email)
+        safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "user_email", None) == email)
+        safe_model_delete(OutfitCommentLike, OutfitCommentLike.comment_id.in_(
+            db.session.query(OutfitComment.id).filter(OutfitComment.author_email == email)
+        ))
+        safe_model_delete(OutfitComment, OutfitComment.author_email == email)
+
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "viewer_email", None) == email)
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "user_email", None) == email)
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "author_email", None) == email)
+        safe_model_delete(OutfitLike, getattr(OutfitLike, "outfit_author_email", None) == email)
+
+        safe_model_delete(Notification, getattr(Notification, "user_email", None) == email)
+        safe_model_delete(Notification, getattr(Notification, "actor_email", None) == email)
+        safe_model_delete(Notification, getattr(Notification, "from_email", None) == email)
+        safe_model_delete(Notification, getattr(Notification, "sender_email", None) == email)
+
+        safe_model_delete(Outfit, Outfit.author_email == email)
+
+        safe_model_delete(ProductQALike, ProductQALike.user_email == email)
+        safe_model_delete(ProductQA, ProductQA.user_email == email)
+        safe_model_delete(ProductReview, ProductReview.user_email == email)
+        safe_model_delete(Product, Product.merchant_email == email)
+
+        safe_model_delete(MerchantApplication, MerchantApplication.email == email)
+        safe_model_delete(PaymentOrder, PaymentOrder.buyer_email == email)
+        safe_model_delete(UserSetting, UserSetting.email == email)
+
+        # ✅ 不删 AuthIdentity，不然 Apple sub 又能重新绑定
+        # safe_model_delete(AuthIdentity, AuthIdentity.user_id == user.id)
+
+        # ✅ 软删 user：以后永远不能登录
+        user.status = "deleted"
+        user.deleted_at = datetime.utcnow()
+        user.last_seen_at = datetime.utcnow()
+        db.session.add(user)
+        db.session.commit()
+
+        return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
+
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("DELETE ACCOUNT FAILED email=%s", email)
+        return _cors(jsonify({"ok": False, "error": "delete_failed", "message": str(e)})), 500
