@@ -13,7 +13,6 @@ from io import BytesIO
 from sqlalchemy import text
 from datetime import timedelta
 
-
 from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
@@ -26,6 +25,9 @@ from sqlalchemy import and_, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.exc import SQLAlchemyError
+
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 
 
 # -----------------------------------------
@@ -4732,3 +4734,75 @@ def api_delete_account():
         db.session.rollback()
         app.logger.exception("DELETE ACCOUNT FAILED email=%s", email)
         return _cors(jsonify({"ok": False, "error": "delete_failed", "message": str(e)})), 500
+
+def get_google_audiences():
+    # 环境变量示例：
+    # GOOGLE_CLIENT_IDS="xxx.apps.googleusercontent.com,yyy.apps.googleusercontent.com"
+    raw = (os.getenv("GOOGLE_CLIENT_IDS") or "").strip()
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+def verify_google_id_token(id_token: str):
+    req = google_requests.Request()
+    payload = google_id_token.verify_oauth2_token(id_token, req, audience=None)
+
+    aud = payload.get("aud")
+    allowed = get_google_audiences()
+    if allowed and aud not in allowed:
+        raise Exception("google_bad_audience")
+
+    return payload
+
+@app.route("/api/auth/google", methods=["POST"])
+def auth_google():
+    data = request.get_json(force=True) or {}
+    id_token = data.get("id_token") or ""
+    if not id_token:
+        return jsonify(ok=False, message="missing id_token"), 400
+
+    try:
+        p = verify_google_id_token(id_token)
+
+        sub = p.get("sub")
+        email = (p.get("email") or "").lower().strip()
+
+        if not sub:
+            return jsonify(ok=False, message="missing sub"), 400
+
+        # 1) provider+sub 已绑定 -> 直接登录
+        ident = AuthIdentity.query.filter_by(provider="google", provider_sub=sub).first()
+        if ident:
+            u = ident.user
+            if getattr(u, "status", "active") == "deleted":
+                return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+
+            u.last_seen_at = datetime.utcnow()
+            db.session.commit()
+
+            token = issue_session_token(u.id, u.email, provider="google")
+            return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
+
+        # 2) 没绑定：如果 email 存在且库里已有同邮箱 User -> 合并
+        u = None
+        if email:
+            u = User.query.filter_by(email=email).first()
+
+        if u and getattr(u, "status", "active") == "deleted":
+            return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+
+        # 3) 否则创建新用户
+        if not u:
+            u = User(email=email or f"google_{sub}@noemail.local")
+            db.session.add(u)
+            db.session.flush()
+
+        ident = AuthIdentity(provider="google", provider_sub=sub, email=email or None, user_id=u.id)
+        db.session.add(ident)
+        db.session.commit()
+
+        token = issue_session_token(u.id, u.email, provider="google")
+        return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
+
+    except Exception as e:
+        return jsonify(ok=False, message=str(e)), 400
