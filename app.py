@@ -31,6 +31,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
 
+app = Flask(__name__)
+
 JWT_SECRET = os.getenv("JWT_SECRET", "change-me-please")
 JWT_ALG = "HS256"
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
@@ -157,7 +159,6 @@ def api_delete_account():
 #          ⭐ 正确初始化 Flask + DB ⭐
 # -----------------------------------------
 
-app = Flask(__name__)
 from flask_cors import CORS
 
 from flask_cors import CORS
