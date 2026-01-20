@@ -39,6 +39,7 @@ JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
 
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 JWT_ALG = os.getenv("JWT_ALG", "HS256").strip()
+JWT_SECRET = os.getenv("JWT_SECRET", "change_me")
 
 def get_uid_from_request():
     auth = request.headers.get("Authorization", "")
@@ -414,6 +415,8 @@ def verify_apple_id_token(id_token: str):
 def auth_apple():
     data = request.get_json(force=True) or {}
     id_token = data.get("id_token") or ""
+    mode = (data.get("mode") or "login").lower().strip()   # ✅ 新增：login / signup
+
     if not id_token:
         return jsonify(ok=False, message="missing id_token"), 400
 
@@ -425,29 +428,36 @@ def auth_apple():
         if not sub:
             return jsonify(ok=False, message="missing sub"), 400
 
-        # 1) provider+sub 已绑定 -> 直接登录
         ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
         if ident:
             u = ident.user
 
-            # ✅ 关键：被删除过的账号永远不能登录
             if getattr(u, "status", "active") == "deleted":
-                return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+                if mode != "signup":
+                    return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+                u.status = "active"
+                u.deleted_at = None
+                db.session.add(u)
+                db.session.commit()
 
             u.last_seen_at = datetime.utcnow()
             db.session.commit()
-            token = make_token(u.id)
+
+            token = issue_session_token(u.id, u.email, provider="apple")
             return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
-        # 2) 没绑定：如果 email 存在且库里已有同邮箱 User -> 合并
         u = None
         if email:
             u = User.query.filter_by(email=email).first()
 
         if u and getattr(u, "status", "active") == "deleted":
-            return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+            if mode != "signup":
+                return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+            u.status = "active"
+            u.deleted_at = None
+            db.session.add(u)
+            db.session.commit()
 
-        # 3) 否则创建新用户（email 可能为空：给个占位，后续再补）
         if not u:
             u = User(email=email or f"apple_{sub}@noemail.local")
             db.session.add(u)
@@ -457,7 +467,7 @@ def auth_apple():
         db.session.add(ident)
         db.session.commit()
 
-        token = make_token(u.id)
+        token = issue_session_token(u.id, u.email, provider="apple")
         return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
     except Exception as e:
@@ -4808,38 +4818,51 @@ def make_token(user_id: int):
 def auth_google():
     data = request.get_json(force=True) or {}
     id_token = data.get("id_token") or ""
+    mode = (data.get("mode") or "login").lower().strip()   # ✅ 新增：login / signup
+
     if not id_token:
         return jsonify(ok=False, message="missing id_token"), 400
 
     try:
         p = verify_google_id_token(id_token)
-
         sub = p.get("sub")
         email = (p.get("email") or "").lower().strip()
 
         if not sub:
             return jsonify(ok=False, message="missing sub"), 400
 
-        # 1) provider+sub 已绑定 -> 直接登录
+        # 1) provider+sub 已绑定
         ident = AuthIdentity.query.filter_by(provider="google", provider_sub=sub).first()
         if ident:
             u = ident.user
+
+            # ✅ 如果账号 deleted：login 继续禁止；signup 允许激活
             if getattr(u, "status", "active") == "deleted":
-                return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+                if mode != "signup":
+                    return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+                u.status = "active"
+                u.deleted_at = None
+                db.session.add(u)
+                db.session.commit()
 
             u.last_seen_at = datetime.utcnow()
             db.session.commit()
 
-            token = make_token(u.id)
+            token = issue_session_token(u.id, u.email, provider="google")
             return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
-        # 2) 没绑定：如果 email 存在且库里已有同邮箱 User -> 合并
+        # 2) 没绑定：email 合并
         u = None
         if email:
             u = User.query.filter_by(email=email).first()
 
         if u and getattr(u, "status", "active") == "deleted":
-            return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+            if mode != "signup":
+                return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+            u.status = "active"
+            u.deleted_at = None
+            db.session.add(u)
+            db.session.commit()
 
         # 3) 否则创建新用户
         if not u:
@@ -4851,7 +4874,7 @@ def auth_google():
         db.session.add(ident)
         db.session.commit()
 
-        token = make_token(u.id)
+        token = issue_session_token(u.id, u.email, provider="google")
         return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
     except Exception as e:
