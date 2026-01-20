@@ -310,7 +310,8 @@ def auth_apple():
 
             u.last_seen_at = datetime.utcnow()
             db.session.commit()
-            return jsonify(ok=True, user={"id": u.id, "email": u.email})
+            token = issue_session_token(u.id, u.email, provider="apple")
+            return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
         # 2) 没绑定：如果 email 存在且库里已有同邮箱 User -> 合并
         u = None
@@ -330,7 +331,8 @@ def auth_apple():
         db.session.add(ident)
         db.session.commit()
 
-        return jsonify(ok=True, user={"id": u.id, "email": u.email})
+        token = issue_session_token(u.id, u.email, provider="apple")
+        return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
