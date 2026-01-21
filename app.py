@@ -57,16 +57,23 @@ def get_uid_from_request():
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
+        # ✅ 预检放行（一定要在最前面）
+        if request.method == "OPTIONS":
+            return _cors(make_response("", 204))
+
         uid = get_uid_from_request()
         if not uid:
-            return jsonify(ok=False, error="unauthorized", message="missing/invalid token"), 401
+            return _cors(jsonify(ok=False, error="unauthorized",
+                                 message="missing/invalid token")), 401
 
         u = User.query.get(uid)
         if not u:
-            return jsonify(ok=False, error="unauthorized", message="user not found"), 401
+            return _cors(jsonify(ok=False, error="unauthorized",
+                                 message="user not found")), 401
 
         if getattr(u, "status", "active") == "deleted":
-            return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
+            return _cors(jsonify(ok=False, error="account_deleted",
+                                 message="account deleted")), 403
 
         request.current_user = u
         return fn(*args, **kwargs)
