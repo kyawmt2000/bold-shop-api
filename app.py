@@ -174,6 +174,7 @@ CORS(
     allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     max_age=86400,
+)
 
 @app.after_request
 def add_cors_headers(resp):
