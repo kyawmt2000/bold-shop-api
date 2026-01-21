@@ -163,15 +163,17 @@ def api_delete_account():
 from flask_cors import CORS
 
 from flask_cors import CORS
-
+    
 CORS(
     app,
-    resources={r"/api/*": {"origins": "*"}},
-    supports_credentials=False,
-    allow_headers="*",
+    resources={r"/api/*": {"origins": [
+        "https://www.boldmm.shop",
+        "https://boldmm.shop"
+    ]}},
+    supports_credentials=False,  # 你现在不用 cookie 就保持 False
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     max_age=86400,
-)
 
 @app.after_request
 def add_cors_headers(resp):
