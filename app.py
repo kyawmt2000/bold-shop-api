@@ -41,16 +41,25 @@ JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 JWT_ALG = os.getenv("JWT_ALG", "HS256").strip()
 JWT_SECRET = os.getenv("JWT_SECRET", "change_me")
 
+def get_token_from_request():
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        auth = auth[7:].strip()
+
+    token = auth or (request.headers.get("X-Auth-Token") or "").strip()
+    return token.strip().strip('"').strip("'")
+
 def get_uid_from_request():
-    auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        return None
-    token = auth.split(" ", 1)[1].strip()
+    token = get_token_from_request()
     if not token:
         return None
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        return int(payload.get("uid"))
+
+        uid = payload.get("uid") or payload.get("user_id") or payload.get("id") or payload.get("sub")
+        if uid is None:
+            return None
+        return int(uid)
     except Exception:
         return None
 
