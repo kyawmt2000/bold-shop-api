@@ -43,11 +43,25 @@ app.config["JWT_SECRET_KEY"] = JWT_SECRET
 app.config["JWT_ALG"] = JWT_ALG
 
 def get_token_from_request():
+    # 1) Authorization: Bearer xxx
     auth = (request.headers.get("Authorization") or "").strip()
     if auth.lower().startswith("bearer "):
         auth = auth[7:].strip()
 
-    token = auth or (request.headers.get("X-Auth-Token") or "").strip()
+    token = auth
+
+    if not token:
+        token = (request.headers.get("X-Auth-Token") or "").strip()
+    if not token:
+        token = (request.headers.get("X-Token") or "").strip()
+
+    if not token:
+        token = (request.args.get("token") or "").strip()
+
+    if not token:
+        data = request.get_json(silent=True) or {}
+        token = (data.get("token") or "").strip()
+
     return token.strip().strip('"').strip("'")
 
 def get_uid_from_request():
@@ -79,43 +93,34 @@ def verify_access_token(token: str):
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if request.method == "OPTIONS":
-            return _cors(make_response("", 204))
+        tk = get_token_from_request()
+        if not tk:
+            return jsonify(ok=False, error="unauthorized", message="missing/invalid token"), 401
 
         try:
-            token = get_token_from_request()
-            if not token:
-                return _cors(jsonify(ok=False, error="unauthorized",
-                                     message="missing/invalid token")), 401
+            payload = jwt.decode(
+                tk,
+                app.config["JWT_SECRET_KEY"],
+                algorithms=[app.config.get("JWT_ALG", "HS256")]
+            )
+        except Exception:
+            return jsonify(ok=False, error="unauthorized", message="missing/invalid token"), 401
 
-            uid = verify_access_token(token)   
-            if not uid:
-                return _cors(jsonify(ok=False, error="unauthorized",
-                                     message="missing/invalid token")), 401
+        # 下面按你token里实际字段取用户（例子：uid 或 email）
+        uid = payload.get("uid") or payload.get("user_id") or payload.get("id")
+        email = (payload.get("email") or "").lower().strip()
 
-            try:
-                uid = int(uid)
-            except Exception:
-                return _cors(jsonify(ok=False, error="unauthorized",
-                                     message="invalid uid")), 401
-
+        u = None
+        if uid:
             u = User.query.get(uid)
-            if not u:
-                return _cors(jsonify(ok=False, error="unauthorized",
-                                     message="user not found")), 401
+        if not u and email:
+            u = User.query.filter_by(email=email).first()
 
-            if getattr(u, "status", "active") == "deleted":
-                return _cors(jsonify(ok=False, error="account_deleted",
-                                     message="account deleted")), 403
+        if not u:
+            return jsonify(ok=False, error="unauthorized", message="missing/invalid token"), 401
 
-            request.current_user = u
-            return fn(*args, **kwargs)
-
-        except Exception as e:
-            current_app.logger.exception("require_login failed: %s", e)
-            return _cors(jsonify(ok=False, error="server_error",
-                                 message="internal error")), 500
-
+        request.current_user = u
+        return fn(*args, **kwargs)
     return wrapper
 
 @app.route("/api/me", methods=["GET"])
