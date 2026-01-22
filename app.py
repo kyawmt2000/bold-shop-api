@@ -35,7 +35,9 @@ from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
 
-JWT_SECRET = os.getenv("JWT_SECRET", "change-me-please")
+JWT_SECRET = os.getenv("JWT_SECRET")
+if not JWT_SECRET:
+    raise RuntimeError("JWT_SECRET is not set in environment")
 JWT_ALG = "HS256"
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
 
@@ -131,6 +133,24 @@ def api_me():
         "email": u.email,
         "status": getattr(u, "status", "active")
     })
+
+def issue_session_token(user_id: int, email: str, provider: str = "apple"):
+    payload = {
+        "uid": int(user_id),
+        "email": (email or "").lower().strip(),
+        "provider": provider,
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS)).timestamp()),
+    }
+    return jwt.encode(payload, app.config["JWT_SECRET_KEY"], algorithm=app.config["JWT_ALG"])
+
+def make_token(user_id: int):
+    payload = {
+        "uid": int(user_id),
+        "iat": int(datetime.utcnow().timestamp()),
+        "exp": int((datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS)).timestamp())
+    }
+    return jwt.encode(payload, app.config["JWT_SECRET_KEY"], algorithm=app.config["JWT_ALG"])
 
 @app.route("/api/account/delete", methods=["POST", "OPTIONS"])
 @require_login
@@ -4810,19 +4830,6 @@ def admin_delete_product(pid):
     db.session.commit()
     return jsonify({"ok": True, "id": pid})
 
-SESSION_SECRET = os.getenv("SESSION_SECRET", "change_me_now")  # ✅ Render 里设置成随机长字符串
-SESSION_EXPIRE_DAYS = 30
-
-def issue_session_token(user_id: int, email: str, provider: str = "apple"):
-    payload = {
-        "uid": user_id,
-        "email": (email or "").lower().strip(),
-        "provider": provider,
-        "iat": int(datetime.utcnow().timestamp()),
-        "exp": int((datetime.utcnow() + timedelta(days=SESSION_EXPIRE_DAYS)).timestamp()),
-    }
-    return jwt.encode(payload, SESSION_SECRET, algorithm="HS256")
-
 def get_session_payload():
     # 1) Authorization: Bearer xxx
     auth = (request.headers.get("Authorization") or "").strip()
@@ -4843,8 +4850,6 @@ def get_session_payload():
         return None
 
 def get_google_audiences():
-    # 环境变量示例：
-    # GOOGLE_CLIENT_IDS="xxx.apps.googleusercontent.com,yyy.apps.googleusercontent.com"
     raw = (os.getenv("GOOGLE_CLIENT_IDS") or "").strip()
     if not raw:
         return []
@@ -4860,14 +4865,6 @@ def verify_google_id_token(id_token: str):
         raise Exception("google_bad_audience")
 
     return payload
-
-def make_token(user_id: int):
-    payload = {
-        "uid": int(user_id),
-        "iat": int(datetime.utcnow().timestamp()),
-        "exp": int((datetime.utcnow() + timedelta(days=JWT_EXPIRE_DAYS)).timestamp())
-    }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
 
 @app.route("/api/auth/google", methods=["POST"])
 def auth_google():
