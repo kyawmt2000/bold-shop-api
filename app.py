@@ -66,11 +66,15 @@ def get_uid_from_request():
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        # ✅ 预检放行（一定要在最前面）
         if request.method == "OPTIONS":
             return _cors(make_response("", 204))
 
-        uid = get_uid_from_request()
+        token = get_token_from_request()
+        if not token:
+            return _cors(jsonify(ok=False, error="unauthorized",
+                                 message="missing/invalid token")), 401
+
+        uid = verify_access_token(token)
         if not uid:
             return _cors(jsonify(ok=False, error="unauthorized",
                                  message="missing/invalid token")), 401
@@ -186,8 +190,14 @@ CORS(
         "https://www.boldmm.shop",
         "https://boldmm.shop"
     ]}},
-    supports_credentials=False,  # 你现在不用 cookie 就保持 False
-    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+    supports_credentials=False,
+    allow_headers=[
+        "Content-Type",
+        "Authorization",
+        "X-API-Key",
+        "X-Auth-Token",
+        "X-Token",
+    ],
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     max_age=86400,
 )
