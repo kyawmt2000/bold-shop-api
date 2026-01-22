@@ -39,6 +39,10 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-me-please")
 JWT_ALG = "HS256"
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
 
+except Exception as e:
+    current_app.logger.warning("JWT decode failed type=%s err=%s", type(e).__name__, e)
+    return jsonify(ok=False, error="unauthorized", message="invalid token"), 401
+
 app.config["JWT_SECRET_KEY"] = JWT_SECRET
 app.config["JWT_ALG"] = JWT_ALG
 
@@ -64,36 +68,35 @@ def get_token_from_request():
 
     return token.strip().strip('"').strip("'")
 
-#def get_uid_from_request():
-    #token = get_token_from_request()
-    #if not token:
+"""def get_uid_from_request():
+    token = get_token_from_request()
+    if not token:
         #return None
-    #try:
-       # payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
 
-        #uid = payload.get("uid") or payload.get("user_id") or payload.get("id") or payload.get("sub")
-        #if uid is None:
-     #       return None
-      #  return int(uid)
-   # except Exception:
-    #    return None
+        uid = payload.get("uid") or payload.get("user_id") or payload.get("id") or payload.get("sub")
+        if uid is None:
+            return None
+        return int(uid)
+    except Exception:
+        return None"""
 
-#def verify_access_token(token: str):
-   # try:
-    #    payload = jwt.decode(
-    #        token,
-       #     current_app.config["JWT_SECRET_KEY"],
-      #      algorithms=[current_app.config.get("JWT_ALG", "HS256")]
-      #  )
-      #  return payload.get("uid") or payload.get("user_id") or payload.get("sub")
-  #  except Exception as e:
-   #     current_app.logger.warning("verify_access_token failed: %s", e)
-    #    return None
+"""def verify_access_token(token: str):
+    try:
+        payload = jwt.decode(
+            token,
+            current_app.config["JWT_SECRET_KEY"],
+            algorithms=[current_app.config.get("JWT_ALG", "HS256")]
+        )
+        return payload.get("uid") or payload.get("user_id") or payload.get("sub")
+    except Exception as e:
+        current_app.logger.warning("verify_access_token failed: %s", e)
+        return None"""
 
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        # 1️⃣ 取 token（只认 Authorization: Bearer）
         auth = request.headers.get("Authorization", "").strip()
         if not auth.lower().startswith("bearer "):
             return jsonify(ok=False, error="unauthorized", message="missing token"), 401
