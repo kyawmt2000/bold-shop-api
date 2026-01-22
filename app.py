@@ -93,37 +93,33 @@ def get_token_from_request():
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        auth = request.headers.get("Authorization", "").strip()
-        if not auth.lower().startswith("bearer "):
+        tk = get_token_from_request()
+        if not tk:
             return jsonify(ok=False, error="unauthorized", message="missing token"), 401
-
-        token = auth[7:].strip()
 
         try:
             payload = jwt.decode(
-                token,
-                app.config["JWT_SECRET_KEY"],
-                algorithms=[app.config.get("JWT_ALG", "HS256")]
+                tk,
+                current_app.config["JWT_SECRET_KEY"],
+                algorithms=[current_app.config.get("JWT_ALG", "HS256")],
+                options={"require": ["exp"]}  # 可选：强制必须有 exp
             )
+        except jwt.ExpiredSignatureError:
+            return jsonify(ok=False, error="unauthorized", message="token expired"), 401
         except Exception as e:
-            current_app.logger.warning("JWT decode failed type=%s err=%s", type(e).__name__, e)
+            current_app.logger.warning("JWT decode failed: %s", e)  # ✅ 看日志
             return jsonify(ok=False, error="unauthorized", message="invalid token"), 401
 
-        uid = payload.get("uid")
-        email = (payload.get("email") or "").lower().strip()
+        uid = payload.get("uid") or payload.get("user_id") or payload.get("id")
+        if not uid:
+            return jsonify(ok=False, error="unauthorized", message="token missing uid"), 401
 
-        u = None
-        if uid:
-            u = User.query.get(int(uid))
-        if not u and email:
-            u = User.query.filter_by(email=email).first()
-
+        u = User.query.get(int(uid))
         if not u:
             return jsonify(ok=False, error="unauthorized", message="user not found"), 401
 
         request.current_user = u
         return fn(*args, **kwargs)
-
     return wrapper
 
 @app.route("/api/me", methods=["GET"])
@@ -4877,7 +4873,7 @@ def make_token(user_id: int):
 def auth_google():
     data = request.get_json(force=True) or {}
     id_token = data.get("id_token") or ""
-    mode = (data.get("mode") or "login").lower().strip()   # ✅ 新增：login / signup
+    mode = (data.get("mode") or "login").lower().strip()
 
     if not id_token:
         return jsonify(ok=False, message="missing id_token"), 400
