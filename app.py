@@ -39,10 +39,6 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-me-please")
 JWT_ALG = "HS256"
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
 
-except Exception as e:
-    current_app.logger.warning("JWT decode failed type=%s err=%s", type(e).__name__, e)
-    return jsonify(ok=False, error="unauthorized", message="invalid token"), 401
-
 app.config["JWT_SECRET_KEY"] = JWT_SECRET
 app.config["JWT_ALG"] = JWT_ALG
 
@@ -110,7 +106,7 @@ def require_login(fn):
                 algorithms=[app.config.get("JWT_ALG", "HS256")]
             )
         except Exception as e:
-            current_app.logger.warning("JWT decode failed: %s", e)
+            current_app.logger.warning("JWT decode failed type=%s err=%s", type(e).__name__, e)
             return jsonify(ok=False, error="unauthorized", message="invalid token"), 401
 
         uid = payload.get("uid")
