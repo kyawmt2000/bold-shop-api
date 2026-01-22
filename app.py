@@ -14,6 +14,8 @@ from sqlalchemy import text
 from datetime import timedelta
 from functools import wraps
 from flask import request, jsonify
+from sqlalchemy import func
+from flask import current_app, request, jsonify
 
 from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
@@ -37,9 +39,8 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-me-please")
 JWT_ALG = "HS256"
 JWT_EXPIRE_DAYS = int(os.getenv("JWT_EXPIRE_DAYS", "30"))
 
-JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
-JWT_ALG = os.getenv("JWT_ALG", "HS256").strip()
-JWT_SECRET = os.getenv("JWT_SECRET", "change_me")
+app.config["JWT_SECRET_KEY"] = JWT_SECRET
+app.config["JWT_ALG"] = JWT_ALG
 
 def get_token_from_request():
     auth = (request.headers.get("Authorization") or "").strip()
@@ -63,33 +64,58 @@ def get_uid_from_request():
     except Exception:
         return None
 
+def verify_access_token(token: str):
+    try:
+        payload = jwt.decode(
+            token,
+            current_app.config["JWT_SECRET_KEY"],
+            algorithms=[current_app.config.get("JWT_ALG", "HS256")]
+        )
+        return payload.get("uid") or payload.get("user_id") or payload.get("sub")
+    except Exception as e:
+        current_app.logger.warning("verify_access_token failed: %s", e)
+        return None
+
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         if request.method == "OPTIONS":
             return _cors(make_response("", 204))
 
-        token = get_token_from_request()
-        if not token:
-            return _cors(jsonify(ok=False, error="unauthorized",
-                                 message="missing/invalid token")), 401
+        try:
+            token = get_token_from_request()
+            if not token:
+                return _cors(jsonify(ok=False, error="unauthorized",
+                                     message="missing/invalid token")), 401
 
-        uid = verify_access_token(token)
-        if not uid:
-            return _cors(jsonify(ok=False, error="unauthorized",
-                                 message="missing/invalid token")), 401
+            uid = verify_access_token(token)   
+            if not uid:
+                return _cors(jsonify(ok=False, error="unauthorized",
+                                     message="missing/invalid token")), 401
 
-        u = User.query.get(uid)
-        if not u:
-            return _cors(jsonify(ok=False, error="unauthorized",
-                                 message="user not found")), 401
+            try:
+                uid = int(uid)
+            except Exception:
+                return _cors(jsonify(ok=False, error="unauthorized",
+                                     message="invalid uid")), 401
 
-        if getattr(u, "status", "active") == "deleted":
-            return _cors(jsonify(ok=False, error="account_deleted",
-                                 message="account deleted")), 403
+            u = User.query.get(uid)
+            if not u:
+                return _cors(jsonify(ok=False, error="unauthorized",
+                                     message="user not found")), 401
 
-        request.current_user = u
-        return fn(*args, **kwargs)
+            if getattr(u, "status", "active") == "deleted":
+                return _cors(jsonify(ok=False, error="account_deleted",
+                                     message="account deleted")), 403
+
+            request.current_user = u
+            return fn(*args, **kwargs)
+
+        except Exception as e:
+            current_app.logger.exception("require_login failed: %s", e)
+            return _cors(jsonify(ok=False, error="server_error",
+                                 message="internal error")), 500
+
     return wrapper
 
 @app.route("/api/me", methods=["GET"])
@@ -2735,10 +2761,6 @@ def _settings_to_dict(s: UserSetting) -> dict:
         "show_following": bool(s.show_following) if s.show_following is not None else True,
         "updated_at": updated_at,
     }
-
-from datetime import datetime
-from sqlalchemy import func
-from flask import current_app, request, jsonify
 
 # ===========================
 #  新版：获取用户设定
