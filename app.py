@@ -17,7 +17,6 @@ from flask import request, jsonify
 from sqlalchemy import func
 from flask import current_app, request, jsonify
 from sqlalchemy import true as sa_true
-】
 
 from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
