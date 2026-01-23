@@ -177,6 +177,7 @@ def api_delete_account():
         return _cors(make_response("", 204))
 
     u = request.current_user
+    app.logger.info("DELETE: current_user id=%s email=%s", getattr(u, "id", None), getattr(u, "email", None))
     data = request.get_json(silent=True) or {}
     confirm_email = (data.get("confirm_email") or "").strip().lower()
 
@@ -191,9 +192,7 @@ def api_delete_account():
         return _cors(jsonify({"ok": False, "error": "email_not_match"})), 400
 
     try:
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return _cors(jsonify({"ok": False, "error": "user_not_found"})), 404
+        user = request.current_user
 
         if getattr(user, "status", "active") == "deleted":
             return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
