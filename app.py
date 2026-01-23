@@ -4762,26 +4762,21 @@ def _cors(resp):
     return resp
     
 def safe_model_delete(model, *filters):
-    if not filters:
-        return 0
-    if any(f is None for f in filters):
-        app.logger.warning("safe delete skip %s: filter is None", getattr(model, "__name__", model))
-        return 0
-
     try:
-        with db.session.begin_nested():  # ✅ SAVEPOINT
-            q = db.session.query(model)
-            for f in filters:
-                q = q.filter(f)
-            n = q.delete(synchronize_session=False)
-            db.session.flush()
-            return n
+        q = model.query
+        for f in filters:
+            if f is None:
+                return True
+            q = q.filter(f)
+
+        n = q.delete(synchronize_session=False)
+        db.session.flush()   # ✅ 立刻把错误暴露出来，方便定位
+        return True
+
     except Exception as e:
-        app.logger.warning("safe delete failed %s: %s",
-                           getattr(model, "__name__", model),
-                           str(e),
-                           exc_info=True)
-        return 0
+        db.session.rollback()  # ✅ 关键：失败就回滚，不然后面全死
+        app.logger.warning("safe delete failed %s: %s", getattr(model, "__name__", model), e)
+        return False
 
 @app.get("/api/dbinfo")
 def api_dbinfo():
