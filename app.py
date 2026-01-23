@@ -134,6 +134,22 @@ def api_me():
         "status": getattr(u, "status", "active")
     })
 
+def require_admin(fn):
+    @wraps(fn)
+    @require_login
+    def wrapper(*args, **kwargs):
+        u = request.current_user
+        if getattr(u, "role", "user") != "admin":
+            return jsonify(ok=False, error="forbidden"), 403
+        return fn(*args, **kwargs)
+    return wrapper
+
+@app.route("/api/admin/me")
+@require_admin
+def admin_me():
+    u = request.current_user
+    return jsonify(ok=True, email=u.email, role=u.role)
+
 def issue_session_token(user_id: int, email: str, provider: str = "apple"):
     payload = {
         "uid": int(user_id),
@@ -690,6 +706,8 @@ class User(db.Model):
 
     status = db.Column(db.String(20), default="active", index=True)
     deleted_at = db.Column(db.DateTime)
+
+    role = db.Column(db.String(20), default="user") 
 
 class AuthIdentity(db.Model):
     id = db.Column(db.Integer, primary_key=True)
