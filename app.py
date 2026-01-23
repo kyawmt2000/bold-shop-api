@@ -131,16 +131,31 @@ def api_me():
     return jsonify(ok=True, user={
         "id": u.id,
         "email": u.email,
+        "role": getattr(u, "role", "user"),
         "status": getattr(u, "status", "active")
     })
 
 def require_admin(fn):
     @wraps(fn)
-    @require_login
     def wrapper(*args, **kwargs):
-        u = request.current_user
-        if getattr(u, "role", "user") != "admin":
+        tk = get_token_from_request()
+        if not tk:
+            return jsonify(ok=False, error="unauthorized"), 401
+
+        try:
+            payload = jwt.decode(tk, app.config["JWT_SECRET_KEY"], algorithms=[app.config["JWT_ALG"]])
+        except Exception:
+            return jsonify(ok=False, error="unauthorized"), 401
+
+        uid = payload.get("uid")
+        u = User.query.get(int(uid)) if uid else None
+        if not u:
+            return jsonify(ok=False, error="unauthorized"), 401
+
+        if (getattr(u, "role", "user") != "admin"):
             return jsonify(ok=False, error="forbidden"), 403
+
+        request.current_user = u
         return fn(*args, **kwargs)
     return wrapper
 
