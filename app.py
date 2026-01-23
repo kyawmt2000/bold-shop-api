@@ -138,24 +138,11 @@ def api_me():
 def require_admin(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        tk = get_token_from_request()
-        if not tk:
-            return jsonify(ok=False, error="unauthorized"), 401
-
-        try:
-            payload = jwt.decode(tk, app.config["JWT_SECRET_KEY"], algorithms=[app.config["JWT_ALG"]])
-        except Exception:
-            return jsonify(ok=False, error="unauthorized"), 401
-
-        uid = payload.get("uid")
-        u = User.query.get(int(uid)) if uid else None
+        u = getattr(request, "current_user", None)
         if not u:
             return jsonify(ok=False, error="unauthorized"), 401
-
-        if (getattr(u, "role", "user") != "admin"):
+        if getattr(u, "role", "user") != "admin":
             return jsonify(ok=False, error="forbidden"), 403
-
-        request.current_user = u
         return fn(*args, **kwargs)
     return wrapper
 
@@ -4809,6 +4796,8 @@ def api_dbinfo():
     })
 
 @app.post("/api/admin/outfits/<int:outfit_id>/pin")
+@require_login
+@require_admin
 def admin_pin_outfit(outfit_id):
     if not API_KEY:
         return jsonify({"ok": False, "error": "API_KEY_not_set"}), 500
@@ -4832,6 +4821,8 @@ def admin_pin_outfit(outfit_id):
 from datetime import datetime
 
 @app.post("/api/admin/products/<int:pid>/pin")
+@require_login
+@require_admin
 def admin_pin_product(pid):
     api_key = request.headers.get("X-API-Key", "")
     if api_key != API_KEY:
@@ -4850,17 +4841,18 @@ def admin_pin_product(pid):
     return jsonify({"ok": True, "id": pid, "is_pinned": p.is_pinned})
 
 @app.delete("/api/admin/products/<int:pid>")
+@require_login
+@require_admin
 def admin_delete_product(pid):
     api_key = request.headers.get("X-API-Key", "")
-    if api_key != ADMIN_API_KEY:
+    if api_key != API_KEY:
         return jsonify({"ok": False, "error": "unauthorized"}), 401
 
     p = Product.query.get(pid)
     if not p:
         return jsonify({"ok": False, "error": "not_found"}), 404
 
-    # 软删：不真正删除行，避免外键/历史数据问题
-    p.status = "deleted"
+    p.status = "deleted"   # 软删
     db.session.commit()
     return jsonify({"ok": True, "id": pid})
 
