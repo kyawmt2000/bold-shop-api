@@ -200,6 +200,8 @@ def api_delete_account():
         if getattr(user, "status", "active") == "deleted":
             return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
 
+        outfit_ids = db.session.query(Outfit.id).filter(Outfit.author_email == email)
+
         # ====== 删除关联数据（你原来的 safe_model_delete 全部保留） ======
         safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "viewer_email", None) == email)
         safe_model_delete(OutfitCommentLike, getattr(OutfitCommentLike, "user_email", None) == email)
