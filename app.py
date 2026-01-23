@@ -1756,6 +1756,7 @@ def _get_tag_products(outfit_id: int):
         return []
 
 @app.get("/api/admin/users")
+@require_admin
 def admin_users_list():
     try:
         sql = text("""
