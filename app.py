@@ -16,6 +16,8 @@ from functools import wraps
 from flask import request, jsonify
 from sqlalchemy import func
 from flask import current_app, request, jsonify
+from sqlalchemy import true as sa_true
+】
 
 from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
@@ -192,7 +194,9 @@ def api_delete_account():
         return _cors(jsonify({"ok": False, "error": "email_not_match"})), 400
 
     try:
-        user = request.current_user
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            return _cors(jsonify({"ok": False, "error": "user_not_found"})), 404
 
         if getattr(user, "status", "active") == "deleted":
             return _cors(jsonify({"ok": True, "deleted": True, "email": email}))
@@ -4759,17 +4763,26 @@ def _cors(resp):
     return resp
     
 def safe_model_delete(model, *filters):
+    if not filters:
+        return 0
+    if any(f is None for f in filters):
+        app.logger.warning("safe delete skip %s: filter is None", getattr(model, "__name__", model))
+        return 0
+
     try:
-        q = model.query
-        for f in filters:
-            if f is None:
-                return True  # 没这个条件就当跳过
-            q = q.filter(f)
-        q.delete(synchronize_session=False)
-        return True
+        with db.session.begin_nested():  # ✅ SAVEPOINT
+            q = db.session.query(model)
+            for f in filters:
+                q = q.filter(f)
+            n = q.delete(synchronize_session=False)
+            db.session.flush()
+            return n
     except Exception as e:
-        app.logger.warning("safe delete skip %s: %s", getattr(model, "__name__", model), e)
-        return False
+        app.logger.warning("safe delete failed %s: %s",
+                           getattr(model, "__name__", model),
+                           str(e),
+                           exc_info=True)
+        return 0
 
 @app.get("/api/dbinfo")
 def api_dbinfo():
