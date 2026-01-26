@@ -5037,42 +5037,47 @@ def api_users_resolve():
         return jsonify({"ok": False, "error": "resolve_failed", "detail": str(e)}), 500
 
 @app.get("/api/users/search")
-def users_search():
-    key = request.args.get("key","")
-    q   = (request.args.get("q") or "").strip()
-    if not q:
-        return jsonify({"ok": True, "items": []})
-
-    # 例如你有 User 模型：id(bigint), email, nickname, name, avatar_url
-    # 下面是示意：字段名按你项目实际改
-    from sqlalchemy import or_
-
-    items = []
+def api_users_search():
     try:
-        query = User.query
+        q = (request.args.get("q") or "").strip()
+        if not q:
+            return jsonify(ok=True, items=[])
 
-        # 1) 数字：按 id 精确查
-        if q.isdigit():
-            u = query.filter(User.id == int(q)).first()
-            if u:
-                items = [u]
-        else:
-            like = f"%{q}%"
-            items = query.filter(or_(
-                User.email.ilike(like),
-                User.nickname.ilike(like),
-                User.name.ilike(like),
-            )).limit(20).all()
+        like = f"%{q}%"
+        conds = []
 
-        return jsonify({
-            "ok": True,
-            "items": [{
+        # email 模糊
+        conds.append(User.email.ilike(like))
+
+        # 纯数字 -> id 精确
+        q_num = q.replace(" ", "")
+        if re.fullmatch(r"\d{1,20}", q_num):
+            try:
+                conds.append(User.id == int(q_num))
+            except:
+                pass
+
+        rows = (User.query
+                .filter(or_(*conds))
+                .order_by(User.id.desc())
+                .limit(20)
+                .all())
+
+        items = []
+        for u in rows:
+            email = (u.email or "").lower()
+            items.append({
                 "id": str(u.id),
-                "email": u.email,
-                "name": (u.nickname or u.name or (u.email.split("@")[0] if u.email else "User")),
-                "avatar": getattr(u, "avatar_url", "") or getattr(u, "avatar", "") or ""
-            } for u in items]
-        })
+                "email": email,
+                # 你前端要 name，这里先用邮箱前缀顶上
+                "name": email.split("@")[0] if "@" in email else email,
+                "avatar_url": ""
+            })
+
+        return jsonify(ok=True, items=items)
+
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        app.logger.exception("users/search failed")
+        # 不要再 500，直接回 ok:false 让前端看得到错误
+        return jsonify(ok=False, error=str(e), items=[]), 200
 
