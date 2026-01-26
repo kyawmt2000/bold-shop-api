@@ -4969,37 +4969,69 @@ def auth_google():
 
 @app.get("/api/users/resolve")
 def api_users_resolve():
-    q = (request.args.get("q") or "").strip()
-    if not q:
-        return jsonify(ok=False, error="missing_q"), 400
+    """
+    q 支持:
+      - 14位 user_id
+      - email (包含 @)
+      - username/nickname
+    return:
+      { ok:true, user:{ id, username, avatar } }
+    """
+    try:
+        q = (request.args.get("q") or "").strip()
+        if not q:
+            return jsonify({"ok": False, "error": "empty_q"}), 400
 
-    q_low = q.lower()
-    user = None
+        # 1) 14位ID
+        if re.fullmatch(r"\d{14}", q):
+            u = User.query.filter_by(user_id=q).first()
+            if not u:
+                return jsonify({"ok": False, "error": "not_found"}), 404
+            return jsonify({"ok": True, "user": {
+                "id": str(u.user_id),
+                "username": (u.nickname or u.username or "User"),
+                "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
+            }})
 
-    # 1) 14位ID
-    if re.fullmatch(r"\d{14}", q):
-        user = User.query.filter_by(user_id=q).first()
+        # 2) email
+        if "@" in q:
+            em = q.lower()
+            u = User.query.filter(func.lower(User.email) == em).first()
+            if not u:
+                return jsonify({"ok": False, "error": "not_found"}), 404
+            return jsonify({"ok": True, "user": {
+                "id": str(u.user_id),
+                "username": (u.nickname or u.username or "User"),
+                "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
+            }})
 
-    # 2) email
-    if user is None and "@" in q:
-        user = User.query.filter(db.func.lower(User.email) == q_low).first()
+        # 3) username / nickname（先精确匹配，再模糊匹配）
+        name = q.lower()
+        u = (User.query
+             .filter(func.lower(User.nickname) == name)
+             .first())
+        if not u:
+            u = (User.query
+                 .filter(func.lower(User.username) == name)
+                 .first())
+        if not u:
+            u = (User.query
+                 .filter(func.lower(User.nickname).like(name + "%"))
+                 .first())
+        if not u:
+            u = (User.query
+                 .filter(func.lower(User.username).like(name + "%"))
+                 .first())
 
-    if user is None:
-        user = (User.query
-                .filter(db.func.lower(User.nickname).like(f"%{q_low}%"))
-                .order_by(User.created_at.desc())
-                .first())
-        if user is None:
-            user = (User.query
-                    .filter(db.func.lower(User.username).like(f"%{q_low}%"))
-                    .order_by(User.created_at.desc())
-                    .first())
+        if not u:
+            return jsonify({"ok": False, "error": "not_found"}), 404
 
-    if not user:
-        return jsonify(ok=False, error="not_found"), 404
+        return jsonify({"ok": True, "user": {
+            "id": str(u.user_id),
+            "username": (u.nickname or u.username or "User"),
+            "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
+        }})
 
-    return jsonify(ok=True, user={
-        "id": str(user.user_id),
-        "username": user.nickname or user.username or "User",
-        "avatar": user.avatar_url or user.avatar or ""
-    })
+    except Exception as e:
+        print("USERS RESOLVE ERROR:", repr(e))
+        return jsonify({"ok": False, "error": "resolve_failed", "detail": str(e)}), 500
