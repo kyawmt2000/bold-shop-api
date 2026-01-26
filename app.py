@@ -5035,3 +5035,44 @@ def api_users_resolve():
     except Exception as e:
         print("USERS RESOLVE ERROR:", repr(e))
         return jsonify({"ok": False, "error": "resolve_failed", "detail": str(e)}), 500
+
+@app.get("/api/users/search")
+def users_search():
+    key = request.args.get("key","")
+    q   = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"ok": True, "items": []})
+
+    # 例如你有 User 模型：id(bigint), email, nickname, name, avatar_url
+    # 下面是示意：字段名按你项目实际改
+    from sqlalchemy import or_
+
+    items = []
+    try:
+        query = User.query
+
+        # 1) 数字：按 id 精确查
+        if q.isdigit():
+            u = query.filter(User.id == int(q)).first()
+            if u:
+                items = [u]
+        else:
+            like = f"%{q}%"
+            items = query.filter(or_(
+                User.email.ilike(like),
+                User.nickname.ilike(like),
+                User.name.ilike(like),
+            )).limit(20).all()
+
+        return jsonify({
+            "ok": True,
+            "items": [{
+                "id": str(u.id),
+                "email": u.email,
+                "name": (u.nickname or u.name or (u.email.split("@")[0] if u.email else "User")),
+                "avatar": getattr(u, "avatar_url", "") or getattr(u, "avatar", "") or ""
+            } for u in items]
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
