@@ -4967,3 +4967,39 @@ def auth_google():
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
 
+@app.get("/api/users/resolve")
+def users_resolve():
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify(ok=False, error="missing_q"), 400
+
+    q_low = q.lower()
+
+    user = None
+    if q.isdigit() and len(q) == 14:
+        user = User.query.filter_by(user_id=q).first()
+
+    # 2) 如果包含 @ -> 当 email
+    if user is None and "@" in q:
+        user = User.query.filter(db.func.lower(User.email) == q_low).first()
+
+    if user is None:
+        user = (User.query
+            .filter(db.func.lower(User.nickname).like(f"%{q_low}%"))
+            .order_by(User.created_at.desc())
+            .first()
+        ) or (User.query
+            .filter(db.func.lower(User.username).like(f"%{q_low}%"))
+            .order_by(User.created_at.desc())
+            .first()
+        )
+
+    if not user:
+        return jsonify(ok=False, error="not_found"), 404
+
+    return jsonify(ok=True, user={
+        "id": user.user_id,                       # 14位
+        "username": user.nickname or user.username or "User",
+        "email": user.email,
+        "avatar": user.avatar_url or user.avatar or ""
+    })
