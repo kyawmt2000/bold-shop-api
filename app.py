@@ -2865,10 +2865,10 @@ def api_get_settings():
     def default_payload(email: str):
         return {
             "email": email,
-            "user_id": "",              # ✅ 默认也带上
+            "user_id": "",            
             "nickname": "",
             "avatar": "",
-            "avatar_url": s.avatar_url,
+            "avatar_url": "",
             "cover_url": "",
             "bio": "",
             "birthday": "",
