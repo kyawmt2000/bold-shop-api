@@ -317,6 +317,7 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_pre_ping": True,   
     "pool_recycle": 300,  
+    "pool_timeout": 30,
 }
 
 db = SQLAlchemy(app)
@@ -1903,22 +1904,33 @@ def debug_fix_outfits_columns():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ==================== Merchant APIs ====================
 @app.route("/api/merchants/status", methods=["GET", "OPTIONS"])
 def merchant_status():
     if request.method == "OPTIONS":
         return _ok()
+
     email = (request.args.get("email") or "").strip().lower()
     if not email:
         return jsonify({"error": "missing email"}), 400
-    row = (
-        MerchantApplication.query
-        .filter(func.lower(MerchantApplication.email) == email)
-        .order_by(MerchantApplication.id.desc())
-        .first()
-    )
+
+    try:
+        row = (
+            MerchantApplication.query
+            .filter(func.lower(MerchantApplication.email) == email)
+            .order_by(MerchantApplication.id.desc())
+            .first()
+        )
+    except OperationalError as e:
+        # 关键：遇到 SSL bad record mac / server closed 这类断线，先回滚释放坏连接
+        try:
+            db.session.rollback()
+        except Exception:
+            pass
+        return jsonify({"error": "db_down", "status": "unknown"}), 503
+
     if not row:
         return jsonify({"status": "none"}), 200
+
     return jsonify({
         "status": row.status or "pending",
         "shop_name": row.shop_name or "",
