@@ -820,6 +820,18 @@ class UserFollow(db.Model):
         db.UniqueConstraint("follower_email", "target_email", name="uix_follow_pair"),
     )
 
+class UserBlock(db.Model):
+    __tablename__ = "user_blocks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    blocker_email = db.Column(db.String(200), index=True, nullable=False)  # 谁拉黑
+    blocked_email = db.Column(db.String(200), index=True, nullable=False)  # 拉黑谁
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint("blocker_email", "blocked_email", name="uix_block_pair"),
+    )
+
 class Notification(db.Model):
     """
     通知表：
@@ -956,19 +968,6 @@ class ChatMessage(db.Model):
     url = db.Column(db.Text)     # image/video url（后面你可以接 GCS）
     payload_json = db.Column(db.Text)  # product/order 等结构 json
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-
-# models.py 或 app.py 里（SQLAlchemy）
-class UserBlock(db.Model):
-    __tablename__ = "user_blocks"
-    id = db.Column(db.Integer, primary_key=True)
-    blocker_email = db.Column(db.String(255), index=True, nullable=False)
-    blocked_email = db.Column(db.String(255), index=True, nullable=False)
-    reason = db.Column(db.String(255), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    __table_args__ = (
-        db.UniqueConstraint('blocker_email', 'blocked_email', name='uq_block_pair'),
-    )
 
 # -------------------- 初始化：按方言兜底建表 --------------------
 with app.app_context():
@@ -1999,6 +1998,14 @@ def products_list():
     try:
         email = (request.args.get("merchant_email") or "").strip().lower()
         q = Product.query.filter_by(status="active")
+
+        viewer = get_viewer_email_optional()
+        if viewer:
+            viewer_blocked, blocked_viewer = get_blocked_sets(viewer)
+            hidden = list((viewer_blocked | blocked_viewer) - {""})
+            if hidden and hasattr(Product, "merchant_email"):
+                q = q.filter(~Product.merchant_email.in_(hidden))
+                
         if email:
             q = q.filter_by(merchant_email=email)
 
@@ -2651,6 +2658,13 @@ def api_outfits_feed_list():
         limit = 50
 
     q = Outfit.query.filter_by(status="active")
+
+    viewer = get_viewer_email_optional()
+    if viewer:
+        viewer_blocked, blocked_viewer = get_blocked_sets(viewer)
+        hidden = list((viewer_blocked | blocked_viewer) - {""})
+        if hidden:
+            q = q.filter(~Outfit.author_email.in_(hidden))
 
     try:
         rows = q.order_by(
@@ -5158,6 +5172,64 @@ def api_users_search():
         app.logger.exception("users/search failed")
         return jsonify(ok=False, error=str(e), items=[]), 200
 
+def _norm_email(v: str) -> str:
+    return (v or "").strip().lower()
+
+def get_viewer_email_optional() -> str:
+    """
+    给 feed 用：优先从 token/登录态拿，其次允许 querystring 传 viewer/me/email
+    """
+    # 1) 如果你项目里有 require_login() 会在 request 上放 current_user
+    try:
+        cu = getattr(request, "current_user", None)
+        if cu and getattr(cu, "email", None):
+            return _norm_email(cu.email)
+    except Exception:
+        pass
+
+    # 2) 兼容 query 参数（前端容易加）
+    for k in ("viewer", "me", "email"):
+        v = _norm_email(request.args.get(k) or "")
+        if v:
+            return v
+
+    return ""
+
+def get_blocked_sets(viewer_email: str):
+    """
+    return (viewer_blocked_set, blocked_viewer_set)
+    viewer_blocked_set: 我拉黑了谁
+    blocked_viewer_set: 谁拉黑了我
+    """
+    viewer_email = _norm_email(viewer_email)
+    if not viewer_email:
+        return set(), set()
+
+    a = UserBlock.query.filter_by(blocker_email=viewer_email).all()
+    b = UserBlock.query.filter_by(blocked_email=viewer_email).all()
+
+    viewer_blocked = { _norm_email(x.blocked_email) for x in a if getattr(x, "blocked_email", None) }
+    blocked_viewer = { _norm_email(x.blocker_email) for x in b if getattr(x, "blocker_email", None) }
+
+    return viewer_blocked, blocked_viewer
+
+def is_blocked_pair(viewer_email: str, target_email: str) -> bool:
+    viewer_email = _norm_email(viewer_email)
+    target_email = _norm_email(target_email)
+    if not viewer_email or not target_email:
+        return False
+    if viewer_email == target_email:
+        return False
+
+    # 双向任何一边 block 都算“互相不可见”
+    exists = UserBlock.query.filter(
+        db.or_(
+            db.and_(UserBlock.blocker_email == viewer_email, UserBlock.blocked_email == target_email),
+            db.and_(UserBlock.blocker_email == target_email, UserBlock.blocked_email == viewer_email),
+        )
+    ).first()
+    return bool(exists)
+
 @app.get("/api/blocks")
 def get_blocks():
     # 你已有 X-API-Key 校验 + authHeaders(token) 的话，照旧
@@ -5174,37 +5246,131 @@ def get_blocks():
         } for r in rows]
     })
 
-@app.post("/api/block")
-def block_user():
-    data = request.get_json(silent=True) or {}
-    blocker = (data.get("blocker_email") or "").strip().lower()
-    blocked = (data.get("blocked_email") or "").strip().lower()
-    reason  = (data.get("reason") or "").strip()
-
-    if not blocker or not blocked or blocker == blocked:
-        return jsonify({"error":"invalid params"}), 400
-
-    row = UserBlock(blocker_email=blocker, blocked_email=blocked, reason=reason[:255])
+def _viewer_email_optional():
+    """
+    尝试拿到“当前正在看页面的人”的 email（用于 block 过滤）
+    优先级：
+    1) require_login 注入的 request.current_user.email
+    2) Authorization Bearer token 里解出来的 email
+    3) query 参数 viewer / me / email
+    """
     try:
-        db.session.add(row)
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        # 已存在也算成功
-    # ✅ “通知开发者”——最简单：写一条日志/表（可选邮件）
-    app.logger.warning(f"[BLOCK] {blocker} blocked {blocked} reason={reason}")
+        u = getattr(request, "current_user", None)
+        if u and getattr(u, "email", None):
+            return (u.email or "").strip().lower()
+    except:
+        pass
 
-    return jsonify({"ok": True})
+    try:
+        tk = get_token_from_request()
+        if tk:
+            payload = jwt.decode(tk, JWT_SECRET, algorithms=[JWT_ALGO])
+            em = (payload.get("email") or "").strip().lower()
+            if em:
+                return em
+    except:
+        pass
+
+    em = (request.args.get("viewer") or request.args.get("me") or request.args.get("email") or "").strip().lower()
+    return em or ""
+
+@app.post("/api/block")
+@require_api_key
+def api_block_user():
+    data = request.get_json(silent=True) or {}
+
+    # ✅ blocker 优先从登录态拿（更安全）
+    blocker = _norm_email(get_viewer_email_optional() or data.get("blocker_email"))
+    blocked = _norm_email(data.get("blocked_email") or data.get("target") or "")
+
+    if not blocker:
+        return jsonify({"ok": False, "message": "login_required"}), 401
+    if not blocked:
+        return jsonify({"ok": False, "message": "missing_blocked_email"}), 400
+    if blocker == blocked:
+        return jsonify({"ok": False, "message": "cannot_block_self"}), 400
+
+    try:
+        row = UserBlock.query.filter_by(blocker_email=blocker, blocked_email=blocked).first()
+        if not row:
+            db.session.add(UserBlock(blocker_email=blocker, blocked_email=blocked))
+            db.session.commit()
+
+        try:
+            UserFollow.query.filter(
+                db.or_(
+                    db.and_(UserFollow.follower_email == blocker, UserFollow.target_email == blocked),
+                    db.and_(UserFollow.follower_email == blocked, UserFollow.target_email == blocker),
+                )
+            ).delete(synchronize_session=False)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("api_block_user error: %s", e)
+        return jsonify({"ok": False, "message": "server_error"}), 500
 
 @app.post("/api/unblock")
-def unblock_user():
+@require_api_key
+def api_unblock_user():
     data = request.get_json(silent=True) or {}
-    blocker = (data.get("blocker_email") or "").strip().lower()
-    blocked = (data.get("blocked_email") or "").strip().lower()
 
-    if not blocker or not blocked:
-        return jsonify({"error":"invalid params"}), 400
+    blocker = _norm_email(get_viewer_email_optional() or data.get("blocker_email"))
+    blocked = _norm_email(data.get("blocked_email") or data.get("target") or "")
 
-    UserBlock.query.filter_by(blocker_email=blocker, blocked_email=blocked).delete()
-    db.session.commit()
-    return jsonify({"ok": True})
+    if not blocker:
+        return jsonify({"ok": False, "message": "login_required"}), 401
+    if not blocked:
+        return jsonify({"ok": False, "message": "missing_blocked_email"}), 400
+
+    try:
+        UserBlock.query.filter_by(blocker_email=blocker, blocked_email=blocked).delete()
+        db.session.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("api_unblock_user error: %s", e)
+        return jsonify({"ok": False, "message": "server_error"}), 500
+
+@app.get("/api/block/state")
+@require_api_key
+def api_block_state():
+    viewer = _norm_email(get_viewer_email_optional() or request.args.get("viewer") or "")
+    target = _norm_email(request.args.get("target") or request.args.get("email") or "")
+
+    if not viewer:
+        # 未登录：就当没拉黑
+        return jsonify({"ok": True, "viewer": "", "target": target, "i_blocked": False, "blocked_me": False, "blocked_any": False})
+
+    if not target:
+        return jsonify({"ok": False, "message": "missing_target"}), 400
+
+    try:
+        i_blocked = bool(UserBlock.query.filter_by(blocker_email=viewer, blocked_email=target).first())
+        blocked_me = bool(UserBlock.query.filter_by(blocker_email=target, blocked_email=viewer).first())
+        return jsonify({
+            "ok": True,
+            "viewer": viewer,
+            "target": target,
+            "i_blocked": i_blocked,      # 我拉黑了TA
+            "blocked_me": blocked_me,    # TA拉黑了我
+            "blocked_any": (i_blocked or blocked_me)
+        })
+    except Exception as e:
+        app.logger.exception("api_block_state error: %s", e)
+        return jsonify({"ok": False, "message": "server_error"}), 500
+
+@app.get("/api/block/list")
+@require_login
+def block_list():
+    me = (request.current_user.email or "").strip().lower()
+    q = (UserBlock.query
+         .filter(UserBlock.blocker_email == me)
+         .order_by(UserBlock.created_at.desc()))
+    items = [{"email": b.blocked_email, "created_at": b.created_at.isoformat() if b.created_at else ""} for b in q.all()]
+    return jsonify({"ok": True, "items": items})
+
+
