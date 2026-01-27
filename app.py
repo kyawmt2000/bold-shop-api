@@ -148,8 +148,7 @@ def api_me():
             "status": getattr(u, "status", "active")
         }
     }
-
-    return jsonify(data), 200   # ✅ 必须在 def 里面
+    return jsonify(data), 200
 
 def require_admin(fn):
     @wraps(fn)
@@ -2933,7 +2932,6 @@ def api_get_settings():
             "updated_at": None,
         }
 
-    # ✅ 永远先初始化，避免 uid 未定义
     uid = ""
 
     # 1) 取 email
@@ -2959,18 +2957,18 @@ def api_get_settings():
             current_app.logger.exception("GET /api/settings create row error: %s", e)
             return jsonify(default_payload(email)), 200
 
-try:
-    before = (getattr(s, "user_id", "") or "").strip()
-    uid = _ensure_user_id(s)
-    after = (getattr(s, "user_id", "") or "").strip()
+    # 3.5) 确保 user_id 生成并持久化（关键：生成后 commit）
+    try:
+        before = (getattr(s, "user_id", "") or "").strip()
+        uid = _ensure_user_id(s)
+        after = (getattr(s, "user_id", "") or "").strip()
 
-    if after and after != before:
-        db.session.commit()
-
-except Exception as e:
-    db.session.rollback()
-    current_app.logger.exception("GET /api/settings ensure user_id error: %s", e)
-    uid = ""
+        if after and after != before:
+            db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("GET /api/settings ensure user_id error: %s", e)
+        uid = ""
 
     # 3.6) 自动写入 city（仅当数据库 city 为空时）
     try:
@@ -2996,8 +2994,8 @@ except Exception as e:
 
         data["email"] = email
 
-        # ✅ 永久返回 user_id
-        data["user_id"] = uid or getattr(s, "user_id", "") or data.get("user_id", "") or ""
+        # 永久返回 user_id（优先用本次计算 uid，其次用库里字段）
+        data["user_id"] = uid or (getattr(s, "user_id", "") or "").strip() or data.get("user_id", "") or ""
 
         # avatar：优先 avatar_url / avatar
         avatar_val = (
