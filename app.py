@@ -130,9 +130,17 @@ def require_login(fn):
 @require_login
 def api_me():
     u = request.current_user
+
+    uid14 = ""
+    em = (u.email or "").lower().strip()
+    if em:
+        s = UserSetting.query.filter(func.lower(UserSetting.email) == em).first()
+        if s:
+            uid14 = (s.user_id or "").strip()
+
     return jsonify(ok=True, user={
         "id": u.id,
-        "user_id": getattr(u, "user_id", ""),
+        "user_id": uid14,
         "email": u.email,
         "role": getattr(u, "role", "user"),
         "status": getattr(u, "status", "active")
@@ -518,7 +526,7 @@ def verify_apple_id_token(id_token: str):
 def auth_apple():
     data = request.get_json(force=True) or {}
     id_token = data.get("id_token") or ""
-    mode = (data.get("mode") or "login").lower().strip()   # ✅ 新增：login / signup
+    mode = (data.get("mode") or "login").lower().strip()   # login / signup
 
     if not id_token:
         return jsonify(ok=False, message="missing id_token"), 400
@@ -530,6 +538,28 @@ def auth_apple():
 
         if not sub:
             return jsonify(ok=False, message="missing sub"), 400
+
+        # ---------- helper: ensure settings + 14-digit user_id ----------
+        def ensure_settings_uid(user_email: str):
+            em = (user_email or "").lower().strip()
+            if not em:
+                return None, ""
+
+            s = UserSetting.query.filter(func.lower(UserSetting.email) == em).first()
+            if not s:
+                s = UserSetting(email=em)
+                db.session.add(s)
+                db.session.flush()
+
+            before = (s.user_id or "").strip()
+            uid = _ensure_user_id(s)
+            after = (s.user_id or "").strip()
+
+            # ✅ 关键：如果这次生成了新ID，要 commit 保存
+            if after and after != before:
+                db.session.commit()
+
+            return s, uid
 
         ident = AuthIdentity.query.filter_by(provider="apple", provider_sub=sub).first()
         if ident:
@@ -546,9 +576,13 @@ def auth_apple():
             u.last_seen_at = datetime.utcnow()
             db.session.commit()
 
-            token = issue_session_token(u.id, u.email, provider="apple")
-            return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
+            # ✅ 返回 14位 user_id（来自 user_settings）
+            _, uid14 = ensure_settings_uid(u.email)
 
+            token = issue_session_token(u.id, u.email, provider="apple")
+            return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email, "user_id": uid14})
+
+        # 没有 identity：按 email 找 user
         u = None
         if email:
             u = User.query.filter_by(email=email).first()
@@ -570,8 +604,11 @@ def auth_apple():
         db.session.add(ident)
         db.session.commit()
 
+        # ✅ 新用户也确保有 14位 user_id
+        _, uid14 = ensure_settings_uid(u.email)
+
         token = issue_session_token(u.id, u.email, provider="apple")
-        return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
+        return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email, "user_id": uid14})
 
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
@@ -1814,7 +1851,7 @@ def admin_users_list():
 @require_admin
 def admin_fix_user_ids():
     fixed = 0
-    settings = UserSettings.query.all()
+    settings = UserSetting.query.all()
 
     for s in settings:
         uid = (s.user_id or "").strip()
@@ -2917,13 +2954,18 @@ def api_get_settings():
             current_app.logger.exception("GET /api/settings create row error: %s", e)
             return jsonify(default_payload(email)), 200
 
-    # 3.5) 确保 user_id 生成并持久化（只生成一次）
-    try:
-        uid = _ensure_user_id(s)
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.exception("GET /api/settings ensure user_id error: %s", e)
-        uid = ""
+try:
+    before = (getattr(s, "user_id", "") or "").strip()
+    uid = _ensure_user_id(s)
+    after = (getattr(s, "user_id", "") or "").strip()
+
+    if after and after != before:
+        db.session.commit()
+
+except Exception as e:
+    db.session.rollback()
+    current_app.logger.exception("GET /api/settings ensure user_id error: %s", e)
+    uid = ""
 
     # 3.6) 自动写入 city（仅当数据库 city 为空时）
     try:
@@ -4120,26 +4162,14 @@ def upload_comment_image():
         return jsonify({"ok": False, "message": str(e)}), 500
 
 @app.post("/api/settings/reset_user_id")
+@require_login
+@require_admin
 def api_reset_user_id():
-    # 简单鉴权：必须带 X-API-Key
-    if (request.headers.get("X-API-Key") or "") != API_KEY:
-        return jsonify({"ok": False, "message": "unauthorized"}), 401
-
-    js = request.get_json(silent=True) or {}
-    email = (js.get("email") or "").strip().lower()
-    if not email:
-        return jsonify({"ok": False, "message": "missing_email"}), 400
-
-    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-    if not s:
-        return jsonify({"ok": False, "message": "not_found"}), 404
-
-    # ✅ 清空旧ID，然后让 _ensure_user_id 重新生成新规则
-    if hasattr(s, "user_id"):
-        s.user_id = None
-        db.session.commit()
-
+    ...
+    s.user_id = None
+    db.session.commit()
     uid = _ensure_user_id(s)
+    db.session.commit()   # ✅ 再补一个commit
     return jsonify({"ok": True, "user_id": uid}), 200
 
 @app.delete("/api/outfits/<int:oid>/comments/<int:comment_id>")
@@ -4154,11 +4184,9 @@ def api_delete_outfit_comment(oid, comment_id):
         if not c:
             return jsonify({"ok": False, "message": "comment_not_found"}), 404
 
-        # ✅ 只能删自己的评论
         if (c.author_email or "").strip().lower() != email:
             return jsonify({"ok": False, "message": "forbidden"}), 403
 
-        # ✅ 先删该评论&其回复的点赞
         reply_ids = [
             r.id for r in OutfitComment.query
             .filter_by(outfit_id=oid, parent_id=comment_id).all()
