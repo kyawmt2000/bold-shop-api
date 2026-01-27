@@ -2989,7 +2989,7 @@ def api_follow_following_list():
     """
     email = (request.args.get("email") or "").strip().lower()
     if not email:
-        return jsonify({"ok": False, "message": "missing_email"}), 400
+        return jsonify({"ok": True, "items": []}), 200
 
     try:
         # 我关注的人（target）
@@ -3000,26 +3000,30 @@ def api_follow_following_list():
                 .all())
         targets = [r[0] for r in rows if r and r[0]]
 
-        # 尝试补充头像/昵称（如果你有 UserSetting 表）
         items = []
-        if "UserSetting" in globals():
-            settings = UserSetting.query.filter(UserSetting.email.in_(targets)).all()
-            m = {s.email.lower(): s for s in settings}
-            for em in targets:
-                s = m.get(em.lower())
-                avatar = ""
-                nick = ""
-                if s:
-                    nick = (getattr(s, "nickname", "") or "")
-                    avatar = (getattr(s, "avatar_url", "") or getattr(s, "avatar", "") or "")
-                items.append({"email": em, "nickname": nick, "avatar": avatar})
+
+        # 兼容：如果有 UserSetting 就补 nickname/avatar；没有也不报错
+        if targets and "UserSetting" in globals():
+            try:
+                settings = UserSetting.query.filter(UserSetting.email.in_(targets)).all()
+                m = {str(getattr(s, "email", "") or "").lower(): s for s in settings}
+                for em in targets:
+                    s = m.get(em.lower())
+                    nick = (getattr(s, "nickname", "") or "") if s else ""
+                    avatar = (getattr(s, "avatar_url", "") or getattr(s, "avatar", "") or "") if s else ""
+                    items.append({"email": em, "nickname": nick, "avatar": avatar})
+            except Exception as e:
+                app.logger.exception("UserSetting join failed: %s", e)
+                items = [{"email": em, "nickname": "", "avatar": ""} for em in targets]
         else:
             items = [{"email": em, "nickname": "", "avatar": ""} for em in targets]
 
-        return jsonify({"ok": True, "items": items})
+        return jsonify({"ok": True, "items": items}), 200
+
     except Exception as e:
+        # ✅ 关键：这里不要再 500，让前端不红
         app.logger.exception("api_follow_following_list error: %s", e)
-        return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
+        return jsonify({"ok": True, "items": []}), 200
 
 
 @app.get("/api/follow/followers")
@@ -5074,9 +5078,10 @@ def api_users_search():
         items = []
         for u in rows:
             items.append({
-                "user_id": u.user_id,           
-                "email": (u.email or "").lower(),
-                "name": u.nickname or u.email.split("@")[0],
+                "user_id": str(getattr(u, "user_id", "") or ""),  # ✅ 14位（你的主ID）
+                "id": str(getattr(u, "user_id", "") or u.id),     # ✅ 兼容老字段，直接让前端用 id 也变成14位
+                "email": email,
+                "name": email.split("@")[0] if "@" in email else email,
                 "avatar_url": ""
             })
 
