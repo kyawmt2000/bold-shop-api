@@ -718,10 +718,10 @@ class User(db.Model):
 class AuthIdentity(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
-    provider = db.Column(db.String(20), nullable=False)     # "apple" / "google"
-    provider_sub = db.Column(db.String(255), nullable=False) # Apple/Google 的用户唯一ID(sub)
+    provider = db.Column(db.String(20), nullable=False)    
+    provider_sub = db.Column(db.String(255), nullable=False)
 
-    email = db.Column(db.String(120), index=True)           # 可能为空/可能是 relay
+    email = db.Column(db.String(120), index=True)           
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
 
     user = db.relationship("User", backref=db.backref("identities", lazy=True))
@@ -730,8 +730,6 @@ class AuthIdentity(db.Model):
         db.UniqueConstraint("provider", "provider_sub", name="uq_provider_sub"),
     )
 
-
-# === User Setting（新增 bio 字段） ===
 class UserSetting(db.Model):
     """
     Per-user settings model.  This table stores profile information such as
@@ -742,21 +740,19 @@ class UserSetting(db.Model):
     """
     __tablename__ = "user_settings"
 
-    # Primary key and identity
     id = db.Column(db.Integer, primary_key=True)
-    # Each email maps to one settings record
     email = db.Column(db.String(120), unique=True, nullable=False)
 
     user_id = db.Column(db.String(14), unique=True, index=True, nullable=True)
 
-    # Profile fields
-    nickname = db.Column(db.String(80))               # 用户昵称
-    avatar_url = db.Column(db.String(500))            # 头像 URL
+    nickname = db.Column(db.String(80))             
+    avatar_url = db.Column(db.String(500))      
     cover_url  = db.Column(db.String(500))
-    bio = db.Column(db.String(120))                   # 个性签名
-    birthday = db.Column(db.String(16))               # 生日 YYYY-MM-DD
-    city = db.Column(db.String(120))                  # 城市
-    gender = db.Column(db.String(16))                 # 性别
+    bio = db.Column(db.String(120))                 
+    birthday = db.Column(db.String(16))       
+    city = db.Column(db.String(120))                 
+    gender = db.Column(db.String(16))                
+    public_id = db.Column(db.String(16), index=True, unique=True)
 
     # Privacy / account settings
     phone = db.Column(db.String(64))
@@ -764,10 +760,9 @@ class UserSetting(db.Model):
     show_following = db.Column(db.Boolean, default=True)
     show_followers = db.Column(db.Boolean, default=True)
     dm_who = db.Column(db.String(16), default="all")
-    blacklist_json = db.Column(db.Text)               # 黑名单 JSON 字符串
+    blacklist_json = db.Column(db.Text)              
     lang = db.Column(db.String(8), default="zh")
 
-    # Record last update timestamp for concurrency control
     updated_at = db.Column(db.TIMESTAMP)
 
 class UserFollow(db.Model):
@@ -5036,6 +5031,19 @@ def api_users_resolve():
         print("USERS RESOLVE ERROR:", repr(e))
         return jsonify({"ok": False, "error": "resolve_failed", "detail": str(e)}), 500
 
+def fnv1a_hash(s: str) -> int:
+    h = 0x811c9dc5
+    for ch in s:
+        h ^= ord(ch)
+        h = (h * 0x01000193) & 0xffffffff
+    return h
+
+def gen_public_id(email: str) -> str:
+    if not email:
+        return ""
+    num = str(fnv1a_hash(email.strip().lower())).zfill(10)
+    return f"B{num}"
+
 @app.get("/api/users/search")
 def api_users_search():
     try:
@@ -5043,41 +5051,74 @@ def api_users_search():
         if not q:
             return jsonify(ok=True, items=[])
 
-        like = f"%{q}%"
-        conds = []
-
-        # email 模糊
-        conds.append(User.email.ilike(like))
-
-        # 纯数字 -> id 精确
         q_num = q.replace(" ", "")
+        like = f"%{q}%"
+
+        # 1) 先从 UserSetting 里按 nickname / id 找（更贴近“用户名/用户id”）
+        us_conds = [UserSetting.nickname.ilike(like)]
+
         if re.fullmatch(r"\d{1,20}", q_num):
             try:
-                conds.append(User.id == int(q_num))
+                us_conds.append(UserSetting.id == int(q_num))
             except:
                 pass
 
-        rows = (User.query
-                .filter(or_(*conds))
-                .order_by(User.id.desc())
-                .limit(20)
-                .all())
+        us_rows = (UserSetting.query
+                   .filter(or_(*us_conds))
+                   .order_by(UserSetting.id.desc())
+                   .limit(20)
+                   .all())
 
-        items = []
-        for u in rows:
-            email = (u.email or "").lower()
-            items.append({
-                "id": str(u.id),
+        items_map = {}  # email -> item
+
+        for us in us_rows:
+            email = (us.email or "").lower().strip()
+            if not email:
+                continue
+            items_map[email] = {
+                "id": str(getattr(us, "id", "") or ""),
                 "email": email,
-                # 你前端要 name，这里先用邮箱前缀顶上
-                "name": email.split("@")[0] if "@" in email else email,
-                "avatar_url": ""
-            })
+                "name": (us.nickname or "").strip() or (email.split("@")[0] if "@" in email else email),
+                "avatar_url": (us.avatar_url or "").strip()
+            }
 
+        # 2) 再从 User 表里按 email / id 找（兜底）
+        u_conds = [User.email.ilike(like)]
+        if re.fullmatch(r"\d{1,20}", q_num):
+            try:
+                u_conds.append(User.id == int(q_num))
+            except:
+                pass
+
+        u_rows = (User.query
+                  .filter(or_(*u_conds))
+                  .order_by(User.id.desc())
+                  .limit(20)
+                  .all())
+
+        for u in u_rows:
+            email = (u.email or "").lower().strip()
+            if not email:
+                continue
+            if email in items_map:
+                continue
+
+            # 尝试补 nickname/avatar（如果存在）
+            us = UserSetting.query.filter_by(email=email).first()
+            nickname = (us.nickname or "").strip() if us else ""
+            avatar = (us.avatar_url or "").strip() if us else ""
+
+            items_map[email] = {
+                "id": str((getattr(us, "id", "") if us else u.id) or ""),
+                "email": email,
+                "name": nickname or (email.split("@")[0] if "@" in email else email),
+                "avatar_url": avatar
+            }
+
+        items = list(items_map.values())[:20]
         return jsonify(ok=True, items=items)
 
     except Exception as e:
         app.logger.exception("users/search failed")
-        # 不要再 500，直接回 ok:false 让前端看得到错误
-        return jsonify(ok=False, error=str(e), items=[]), 200
+        return jsonify(ok=False, error=str(e), items=[])
 
