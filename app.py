@@ -957,6 +957,19 @@ class ChatMessage(db.Model):
     payload_json = db.Column(db.Text)  # product/order 等结构 json
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
+# models.py 或 app.py 里（SQLAlchemy）
+class UserBlock(db.Model):
+    __tablename__ = "user_blocks"
+    id = db.Column(db.Integer, primary_key=True)
+    blocker_email = db.Column(db.String(255), index=True, nullable=False)
+    blocked_email = db.Column(db.String(255), index=True, nullable=False)
+    reason = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        db.UniqueConstraint('blocker_email', 'blocked_email', name='uq_block_pair'),
+    )
+
 # -------------------- 初始化：按方言兜底建表 --------------------
 with app.app_context():
     db.create_all()
@@ -5144,3 +5157,54 @@ def api_users_search():
     except Exception as e:
         app.logger.exception("users/search failed")
         return jsonify(ok=False, error=str(e), items=[]), 200
+
+@app.get("/api/blocks")
+def get_blocks():
+    # 你已有 X-API-Key 校验 + authHeaders(token) 的话，照旧
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"error":"missing email"}), 400
+
+    rows = UserBlock.query.filter_by(blocker_email=email).all()
+    return jsonify({
+        "blocks": [{
+            "blocked_email": r.blocked_email,
+            "reason": r.reason,
+            "created_at": r.created_at.isoformat()
+        } for r in rows]
+    })
+
+@app.post("/api/block")
+def block_user():
+    data = request.get_json(silent=True) or {}
+    blocker = (data.get("blocker_email") or "").strip().lower()
+    blocked = (data.get("blocked_email") or "").strip().lower()
+    reason  = (data.get("reason") or "").strip()
+
+    if not blocker or not blocked or blocker == blocked:
+        return jsonify({"error":"invalid params"}), 400
+
+    row = UserBlock(blocker_email=blocker, blocked_email=blocked, reason=reason[:255])
+    try:
+        db.session.add(row)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        # 已存在也算成功
+    # ✅ “通知开发者”——最简单：写一条日志/表（可选邮件）
+    app.logger.warning(f"[BLOCK] {blocker} blocked {blocked} reason={reason}")
+
+    return jsonify({"ok": True})
+
+@app.post("/api/unblock")
+def unblock_user():
+    data = request.get_json(silent=True) or {}
+    blocker = (data.get("blocker_email") or "").strip().lower()
+    blocked = (data.get("blocked_email") or "").strip().lower()
+
+    if not blocker or not blocked:
+        return jsonify({"error":"invalid params"}), 400
+
+    UserBlock.query.filter_by(blocker_email=blocker, blocked_email=blocked).delete()
+    db.session.commit()
+    return jsonify({"ok": True})
