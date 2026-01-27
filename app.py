@@ -5052,31 +5052,31 @@ def api_users_search():
         if not q:
             return jsonify(ok=True, items=[])
 
-        like = f"%{q}%"
         conds = []
 
-        conds.append(User.email.ilike(like))
+        # 邮箱
+        conds.append(User.email.ilike(f"%{q}%"))
 
         q_num = q.replace(" ", "")
-        if re.fullmatch(r"\d{1,20}", q_num):
-            try:
-                conds.append(User.id == int(q_num))
-            except:
-                pass
 
-        rows = (User.query
-                .filter(or_(*conds))
-                .order_by(User.id.desc())
-                .limit(20)
-                .all())
+        # ✅ 14 位用户 ID（核心）
+        if re.fullmatch(r"\d{14}", q_num):
+            conds.append(User.user_id == q_num)
+
+        rows = (
+            User.query
+            .filter(or_(*conds))
+            .order_by(User.id.desc())
+            .limit(20)
+            .all()
+        )
 
         items = []
         for u in rows:
-            email = (u.email or "").lower()
             items.append({
-                "id": str(u.id),
-                "email": email,
-                "name": email.split("@")[0] if "@" in email else email,
+                "user_id": u.user_id,           
+                "email": (u.email or "").lower(),
+                "name": u.nickname or u.email.split("@")[0],
                 "avatar_url": ""
             })
 
@@ -5085,4 +5085,3 @@ def api_users_search():
     except Exception as e:
         app.logger.exception("users/search failed")
         return jsonify(ok=False, error=str(e), items=[]), 200
-
