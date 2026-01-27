@@ -5041,9 +5041,15 @@ def api_users_resolve():
 
         # 1) 14位ID
         if re.fullmatch(r"\d{14}", q):
-            u = User.query.filter_by(user_id=q).first()
+            try:
+                uid = int(q)
+                u = User.query.filter(User.user_id == uid).first()
+            except Exception:
+                u = User.query.filter(User.user_id == q).first()
+
             if not u:
                 return jsonify({"ok": False, "error": "not_found"}), 404
+
             return jsonify({"ok": True, "user": {
                 "id": str(u.user_id),
                 "username": (u.nickname or u.username or "User"),
