@@ -5073,6 +5073,7 @@ def _fnv1a_32(s: str) -> int:
         h = (h * 0x01000193) & 0xFFFFFFFF
     return h
 
+
 @app.get("/api/users/search")
 def api_users_search():
     try:
@@ -5080,33 +5081,62 @@ def api_users_search():
         if not q:
             return jsonify(ok=True, items=[])
 
+        q_norm = q.strip()
+        q_num  = re.sub(r"\s+", "", q_norm)
+
+        # 基础 query：从 user_settings 出发（因为 user_id / nickname 在这里）
+        qry = (
+            db.session.query(
+                UserSetting.email.label("email"),
+                UserSetting.user_id.label("user_id"),
+                UserSetting.nickname.label("nickname"),
+                UserSetting.avatar_url.label("avatar_url"),
+                User.status.label("status"),
+            )
+            .outerjoin(User, func.lower(User.email) == func.lower(UserSetting.email))
+        )
+
+        # 过滤 deleted（如果你想删除后不再被搜到）
+        qry = qry.filter(func.coalesce(User.status, "active") != "deleted")
+
         conds = []
 
-        # 邮箱
-        conds.append(User.email.ilike(f"%{q}%"))
+        # 1) 邮箱匹配（不管有没有 @ 都给它匹配一次）
+        conds.append(UserSetting.email.ilike(f"%{q_norm}%"))
 
-        q_num = q.replace(" ", "")
+        # 2) 用户名 nickname 匹配
+        conds.append(UserSetting.nickname.ilike(f"%{q_norm}%"))
 
-        # ✅ 14 位用户 ID（核心）
+        # 3) 14位 user_id 精确匹配
         if re.fullmatch(r"\d{14}", q_num):
-            conds.append(User.user_id == q_num)
+            conds.append(UserSetting.user_id == q_num)
+
+        # (可选) 如果你还想支持 “email前缀” 搜索（kyawmt2000 搜到 kyawmt2000@gmail.com）
+        # 但会慢一点：只建议数据量小的时候用
+        conds.append(func.split_part(UserSetting.email, "@", 1).ilike(f"%{q_norm}%"))
 
         rows = (
-            User.query
-            .filter(or_(*conds))
-            .order_by(User.id.desc())
-            .limit(20)
-            .all()
+            qry.filter(or_(*conds))
+               .order_by(UserSetting.updated_at.desc().nullslast())
+               .limit(20)
+               .all()
         )
 
         items = []
-        for u in rows:
+        for r in rows:
+            email = (r.email or "").strip().lower()
+            uid   = (r.user_id or "").strip()
+            name  = (r.nickname or "") or (email.split("@")[0] if "@" in email else email)
+
+            # 只返回合法14位
+            if not re.fullmatch(r"\d{14}", uid):
+                uid = ""
+
             items.append({
-                "user_id": str(getattr(u, "user_id", "") or ""),  # ✅ 14位（你的主ID）
-                "id": str(getattr(u, "user_id", "") or u.id),     # ✅ 兼容老字段，直接让前端用 id 也变成14位
+                "user_id": uid,
                 "email": email,
-                "name": email.split("@")[0] if "@" in email else email,
-                "avatar_url": ""
+                "name": name,
+                "avatar_url": (r.avatar_url or "").strip(),
             })
 
         return jsonify(ok=True, items=items)
