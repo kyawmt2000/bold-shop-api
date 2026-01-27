@@ -5033,63 +5033,39 @@ def api_users_resolve():
         if not q:
             return jsonify({"ok": False, "error": "empty_q"}), 400
 
-        # 1️⃣ 14位 ID
+        # 1) 14位ID：目前你的User表没法从14位反查（14位在 settings 里）
         if re.fullmatch(r"\d{14}", q):
-            try:
-                uid = int(q)
-                u = User.query.filter(UID_FIELD == int(q)).first()
-            except Exception:
-                u = None
+            return jsonify({"ok": False, "error": "id14_not_supported"}), 400
 
-            if not u:
-                return jsonify({"ok": False, "error": "not_found"}), 404
-
-            return jsonify({
-                "ok": True,
-                "user": {
-                    "id": str(uid),
-                    "username": (u.nickname or u.username or "User"),
-                    "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
-                }
-            })
-
-        # 2️⃣ email
+        # 2) email
         if "@" in q:
             em = q.lower()
             u = User.query.filter(func.lower(User.email) == em).first()
             if not u:
                 return jsonify({"ok": False, "error": "not_found"}), 404
-            return jsonify({
-                "ok": True,
-                "user": {
-                    "id": str(getattr(u, "uid", u.id)),
-                    "username": (u.nickname or u.username or "User"),
-                    "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
-                }
-            })
+            return jsonify({"ok": True, "user": {
+                "id": str(u.id),
+                "email": (u.email or "").lower(),
+                "username": (u.nickname or u.username or "User"),
+                "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
+            }})
 
-        # 3️⃣ username / nickname
+        # 3) username / nickname（先精确再前缀）
         name = q.lower()
-        u = (
-            User.query
-            .filter(func.lower(User.nickname) == name)
-            .first()
-            or User.query.filter(func.lower(User.username) == name).first()
-            or User.query.filter(func.lower(User.nickname).like(name + "%")).first()
-            or User.query.filter(func.lower(User.username).like(name + "%")).first()
-        )
+        u = (User.query.filter(func.lower(User.nickname) == name).first()
+             or User.query.filter(func.lower(User.username) == name).first()
+             or User.query.filter(func.lower(User.nickname).like(name + "%")).first()
+             or User.query.filter(func.lower(User.username).like(name + "%")).first())
 
         if not u:
             return jsonify({"ok": False, "error": "not_found"}), 404
 
-        return jsonify({
-            "ok": True,
-            "user": {
-                "id": str(getattr(u, "uid", u.id)),
-                "username": (u.nickname or u.username or "User"),
-                "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
-            }
-        })
+        return jsonify({"ok": True, "user": {
+            "id": str(u.id),
+            "email": (u.email or "").lower(),
+            "username": (u.nickname or u.username or "User"),
+            "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
+        }})
 
     except Exception as e:
         print("USERS RESOLVE ERROR:", repr(e))
