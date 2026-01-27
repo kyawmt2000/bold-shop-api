@@ -18,6 +18,7 @@ from sqlalchemy import func
 from flask import current_app, request, jsonify
 from sqlalchemy import true as sa_true
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import OperationalError
 
 from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
@@ -314,8 +315,8 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 # 4️⃣ 🔥 关键：防止坏的 SSL 连接被复用（解决你现在的 500）
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    "pool_pre_ping": True,   # 每次取连接先 ping，断了就重连
-    "pool_recycle": 300,     # 5 分钟回收连接，避免 SSL 老化
+    "pool_pre_ping": True,   
+    "pool_recycle": 300,  
 }
 
 db = SQLAlchemy(app)
