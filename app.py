@@ -5038,71 +5038,37 @@ def api_users_search():
         if not q:
             return jsonify(ok=True, items=[])
 
-        q_num = q.replace(" ", "")
         like = f"%{q}%"
+        conds = []
 
-        us_conds = [UserSetting.nickname.ilike(like)]
+        conds.append(User.email.ilike(like))
 
+        q_num = q.replace(" ", "")
         if re.fullmatch(r"\d{1,20}", q_num):
             try:
-                us_conds.append(UserSetting.id == int(q_num))
+                conds.append(User.id == int(q_num))
             except:
                 pass
 
-        us_rows = (UserSetting.query
-                   .filter(or_(*us_conds))
-                   .order_by(UserSetting.id.desc())
-                   .limit(20)
-                   .all())
+        rows = (User.query
+                .filter(or_(*conds))
+                .order_by(User.id.desc())
+                .limit(20)
+                .all())
 
-        items_map = {}  
-
-        for us in us_rows:
-            email = (us.email or "").lower().strip()
-            if not email:
-                continue
-            items_map[email] = {
-                "id": str(getattr(us, "id", "") or ""),
+        items = []
+        for u in rows:
+            email = (u.email or "").lower()
+            items.append({
+                "id": str(u.id),
                 "email": email,
-                "name": (us.nickname or "").strip() or (email.split("@")[0] if "@" in email else email),
-                "avatar_url": (us.avatar_url or "").strip()
-            }
+                "name": email.split("@")[0] if "@" in email else email,
+                "avatar_url": ""
+            })
 
-        u_conds = [User.email.ilike(like)]
-        if re.fullmatch(r"\d{1,20}", q_num):
-            try:
-                u_conds.append(User.id == int(q_num))
-            except:
-                pass
-
-        u_rows = (User.query
-                  .filter(or_(*u_conds))
-                  .order_by(User.id.desc())
-                  .limit(20)
-                  .all())
-
-        for u in u_rows:
-            email = (u.email or "").lower().strip()
-            if not email:
-                continue
-            if email in items_map:
-                continue
-
-            us = UserSetting.query.filter_by(email=email).first()
-            nickname = (us.nickname or "").strip() if us else ""
-            avatar = (us.avatar_url or "").strip() if us else ""
-
-            items_map[email] = {
-                "id": str((getattr(us, "id", "") if us else u.id) or ""),
-                "email": email,
-                "name": nickname or (email.split("@")[0] if "@" in email else email),
-                "avatar_url": avatar
-            }
-
-        items = list(items_map.values())[:20]
         return jsonify(ok=True, items=items)
 
     except Exception as e:
         app.logger.exception("users/search failed")
-        return jsonify(ok=False, error=str(e), items=[])
+        return jsonify(ok=False, error=str(e), items=[]), 200
 
