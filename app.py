@@ -1797,6 +1797,7 @@ def admin_users_list():
             )
             SELECT
               e.email,
+              u.status                AS status,
               u.created_at            AS created_at,
               u.last_seen_at          AS last_seen_at,
               s.user_id               AS user_id,
@@ -1811,6 +1812,7 @@ def admin_users_list():
               ON lower(u.email) = e.email
             LEFT JOIN user_settings s
               ON lower(s.email) = e.email
+            WHERE COALESCE(u.status, 'active') <> 'deleted'
             ORDER BY COALESCE(u.created_at, s.updated_at) DESC
             LIMIT 5000
         """)
@@ -1818,63 +1820,27 @@ def admin_users_list():
         rows = db.session.execute(sql).mappings().all()
 
         out = []
-        changed = False
-
         for r in rows:
-            email = (r.get("email") or "").strip().lower()
-
             uid = (r.get("user_id") or "").strip()
             if not re.fullmatch(r"\d{14}", uid):
                 uid = ""
 
-            # ✅ 关键：如果没有合法14位ID，就补齐并写回 user_settings
-            if email and not uid:
-                try:
-                    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
-                    if not s:
-                        s = UserSetting(email=email)
-                        db.session.add(s)
-                        db.session.flush()
-
-                    before = (s.user_id or "").strip()
-                    uid = _ensure_user_id(s)
-                    after = (s.user_id or "").strip()
-
-                    if after and after != before:
-                        changed = True
-                except Exception:
-                    db.session.rollback()
-                    uid = ""  # 兜底：修复失败就保持空
-
             out.append({
-                "email": email,
+                "email": r.get("email") or "",
                 "user_id": uid,
                 "nickname": r.get("nickname") or "",
                 "avatar_url": r.get("avatar_url") or "",
                 "gender": r.get("gender") or "",
                 "birthday": r.get("birthday") or "",
                 "city": r.get("city") or "",
-                "created_at": (
-                    r["created_at"].isoformat()
-                    if r.get("created_at") else ""
-                ),
-                "last_seen_at": (
-                    r["last_seen_at"].isoformat()
-                    if r.get("last_seen_at") else ""
-                ),
-                "settings_updated_at": (
-                    r["settings_updated_at"].isoformat()
-                    if r.get("settings_updated_at") else ""
-                ),
+                "created_at": r["created_at"].isoformat() if r.get("created_at") else "",
+                "last_seen_at": r["last_seen_at"].isoformat() if r.get("last_seen_at") else "",
+                "settings_updated_at": r["settings_updated_at"].isoformat() if r.get("settings_updated_at") else "",
             })
-
-        if changed:
-            db.session.commit()
 
         return jsonify(out)
 
     except Exception as e:
-        db.session.rollback()
         return jsonify({"message": "server_error", "detail": str(e)}), 500
 
 @app.post("/api/admin/fix_user_ids")
