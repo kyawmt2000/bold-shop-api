@@ -138,13 +138,18 @@ def api_me():
         if s:
             uid14 = (s.user_id or "").strip()
 
-    return jsonify(ok=True, user={
-        "id": u.id,
-        "user_id": uid14,
-        "email": u.email,
-        "role": getattr(u, "role", "user"),
-        "status": getattr(u, "status", "active")
-    })
+    data = {
+        "ok": True,
+        "user": {
+            "id": u.id,
+            "user_id": uid14,
+            "email": u.email,
+            "role": getattr(u, "role", "user"),
+            "status": getattr(u, "status", "active")
+        }
+    }
+
+    return jsonify(data), 200   # ✅ 必须在 def 里面
 
 def require_admin(fn):
     @wraps(fn)
