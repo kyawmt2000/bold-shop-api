@@ -5024,76 +5024,73 @@ def auth_google():
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
 
+# 🔧 改成你真实的字段名，比如 User.uid / User.id
+UID_FIELD = User.uid   # ← 这里改一次就行
+
 @app.get("/api/users/resolve")
 def api_users_resolve():
-    """
-    q 支持:
-      - 14位 user_id
-      - email (包含 @)
-      - username/nickname
-    return:
-      { ok:true, user:{ id, username, avatar } }
-    """
     try:
         q = (request.args.get("q") or "").strip()
         if not q:
             return jsonify({"ok": False, "error": "empty_q"}), 400
 
-        # 1) 14位ID
+        # 1️⃣ 14位 ID
         if re.fullmatch(r"\d{14}", q):
             try:
                 uid = int(q)
-                u = User.query.filter(User.user_id == uid).first()
+                u = User.query.filter(UID_FIELD == uid).first()
             except Exception:
-                u = User.query.filter(User.user_id == q).first()
+                u = None
 
             if not u:
                 return jsonify({"ok": False, "error": "not_found"}), 404
 
-            return jsonify({"ok": True, "user": {
-                "id": str(u.user_id),
-                "username": (u.nickname or u.username or "User"),
-                "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
-            }})
+            return jsonify({
+                "ok": True,
+                "user": {
+                    "id": str(uid),
+                    "username": (u.nickname or u.username or "User"),
+                    "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
+                }
+            })
 
-        # 2) email
+        # 2️⃣ email
         if "@" in q:
             em = q.lower()
             u = User.query.filter(func.lower(User.email) == em).first()
             if not u:
                 return jsonify({"ok": False, "error": "not_found"}), 404
-            return jsonify({"ok": True, "user": {
-                "id": str(u.user_id),
-                "username": (u.nickname or u.username or "User"),
-                "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
-            }})
+            return jsonify({
+                "ok": True,
+                "user": {
+                    "id": str(getattr(u, "uid", u.id)),
+                    "username": (u.nickname or u.username or "User"),
+                    "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
+                }
+            })
 
-        # 3) username / nickname（先精确匹配，再模糊匹配）
+        # 3️⃣ username / nickname
         name = q.lower()
-        u = (User.query
-             .filter(func.lower(User.nickname) == name)
-             .first())
-        if not u:
-            u = (User.query
-                 .filter(func.lower(User.username) == name)
-                 .first())
-        if not u:
-            u = (User.query
-                 .filter(func.lower(User.nickname).like(name + "%"))
-                 .first())
-        if not u:
-            u = (User.query
-                 .filter(func.lower(User.username).like(name + "%"))
-                 .first())
+        u = (
+            User.query
+            .filter(func.lower(User.nickname) == name)
+            .first()
+            or User.query.filter(func.lower(User.username) == name).first()
+            or User.query.filter(func.lower(User.nickname).like(name + "%")).first()
+            or User.query.filter(func.lower(User.username).like(name + "%")).first()
+        )
 
         if not u:
             return jsonify({"ok": False, "error": "not_found"}), 404
 
-        return jsonify({"ok": True, "user": {
-            "id": str(u.user_id),
-            "username": (u.nickname or u.username or "User"),
-            "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
-        }})
+        return jsonify({
+            "ok": True,
+            "user": {
+                "id": str(getattr(u, "uid", u.id)),
+                "username": (u.nickname or u.username or "User"),
+                "avatar": (u.avatar or getattr(u, "avatar_url", "") or "")
+            }
+        })
 
     except Exception as e:
         print("USERS RESOLVE ERROR:", repr(e))
