@@ -1818,13 +1818,36 @@ def admin_users_list():
         rows = db.session.execute(sql).mappings().all()
 
         out = []
+        changed = False
+
         for r in rows:
+            email = (r.get("email") or "").strip().lower()
+
             uid = (r.get("user_id") or "").strip()
             if not re.fullmatch(r"\d{14}", uid):
                 uid = ""
 
+            # ✅ 关键：如果没有合法14位ID，就补齐并写回 user_settings
+            if email and not uid:
+                try:
+                    s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+                    if not s:
+                        s = UserSetting(email=email)
+                        db.session.add(s)
+                        db.session.flush()
+
+                    before = (s.user_id or "").strip()
+                    uid = _ensure_user_id(s)
+                    after = (s.user_id or "").strip()
+
+                    if after and after != before:
+                        changed = True
+                except Exception:
+                    db.session.rollback()
+                    uid = ""  # 兜底：修复失败就保持空
+
             out.append({
-                "email": r.get("email") or "",
+                "email": email,
                 "user_id": uid,
                 "nickname": r.get("nickname") or "",
                 "avatar_url": r.get("avatar_url") or "",
@@ -1845,9 +1868,13 @@ def admin_users_list():
                 ),
             })
 
+        if changed:
+            db.session.commit()
+
         return jsonify(out)
 
     except Exception as e:
+        db.session.rollback()
         return jsonify({"message": "server_error", "detail": str(e)}), 500
 
 @app.post("/api/admin/fix_user_ids")
