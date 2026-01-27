@@ -1776,35 +1776,35 @@ def admin_users_list():
 
         rows = db.session.execute(sql).mappings().all()
 
-        return jsonify([{
-            "email": r["email"] or "",
-            uid = r.get("user_id", "").strip()
-
+        out = []
+        for r in rows:
+            uid = (r.get("user_id") or "").strip()
             if not re.fullmatch(r"\d{14}", uid):
                 uid = ""
 
-            return {
+            out.append({
+                "email": r.get("email") or "",
                 "user_id": uid,
-                ...
-            },
-            "nickname": r.get("nickname") or "",
-            "avatar_url": r.get("avatar_url") or "",
-            "gender": r.get("gender") or "",
-            "birthday": r.get("birthday") or "",
-            "city": r.get("city") or "",
-            "created_at": (
-                r["created_at"].isoformat()
-                if r.get("created_at") else ""
-            ),
-            "last_seen_at": (
-                r["last_seen_at"].isoformat()
-                if r.get("last_seen_at") else ""
-            ),
-            "settings_updated_at": (
-                r["settings_updated_at"].isoformat()
-                if r.get("settings_updated_at") else ""
-            ),
-        } for r in rows])
+                "nickname": r.get("nickname") or "",
+                "avatar_url": r.get("avatar_url") or "",
+                "gender": r.get("gender") or "",
+                "birthday": r.get("birthday") or "",
+                "city": r.get("city") or "",
+                "created_at": (
+                    r["created_at"].isoformat()
+                    if r.get("created_at") else ""
+                ),
+                "last_seen_at": (
+                    r["last_seen_at"].isoformat()
+                    if r.get("last_seen_at") else ""
+                ),
+                "settings_updated_at": (
+                    r["settings_updated_at"].isoformat()
+                    if r.get("settings_updated_at") else ""
+                ),
+            })
+
+        return jsonify(out)
 
     except Exception as e:
         return jsonify({"message": "server_error", "detail": str(e)}), 500
