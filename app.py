@@ -1776,7 +1776,7 @@ def admin_users_list():
 
         return jsonify([{
             "email": r["email"] or "",
-            "user_id": r.get("user_id") or "",
+            "user_id": (r.get("user_id") or generate_user_id_for_email(r["email"]) or ""),
             "nickname": r.get("nickname") or "",
             "avatar_url": r.get("avatar_url") or "",
             "gender": r.get("gender") or "",
@@ -5030,6 +5030,20 @@ def api_users_resolve():
     except Exception as e:
         print("USERS RESOLVE ERROR:", repr(e))
         return jsonify({"ok": False, "error": "resolve_failed", "detail": str(e)}), 500
+
+def _fnv1a_32(s: str) -> int:
+    h = 0x811c9dc5
+    for ch in s:
+        h ^= ord(ch)
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+def generate_user_id_for_email(email: str) -> str:
+    if not email:
+        return ""
+    e = email.strip().lower()
+    h = _fnv1a_32(e)
+    return "B" + str(h).zfill(10)  # B0123456789
 
 @app.get("/api/users/search")
 def api_users_search():
