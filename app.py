@@ -17,6 +17,7 @@ from flask import request, jsonify
 from sqlalchemy import func
 from flask import current_app, request, jsonify
 from sqlalchemy import true as sa_true
+from sqlalchemy.exc import IntegrityError
 
 from urllib.parse import urlparse, unquote
 from flask import Flask, request, jsonify, send_file, make_response
@@ -131,6 +132,7 @@ def api_me():
     u = request.current_user
     return jsonify(ok=True, user={
         "id": u.id,
+        "user_id": getattr(u, "user_id", ""),
         "email": u.email,
         "role": getattr(u, "role", "user"),
         "status": getattr(u, "status", "active")
@@ -2818,54 +2820,38 @@ def _gen_user_id_ddmmyy():
     return f"{left}{ddmmyy}{right}"
 
 def _ensure_user_id(s):
-    """
-    给 UserSetting 补上 user_id（只在为空时生成一次）
-    并保证尽可能唯一（有碰撞就重试）
-    """
-    if getattr(s, "user_id", None):
-        return s.user_id
+    uid0 = (getattr(s, "user_id", "") or "").strip()
+    if re.fullmatch(r"\d{14}", uid0):
+        return uid0
 
-    # 如果模型还没加字段，直接跳过（防止你还没迁移就报错）
     if not hasattr(s, "user_id"):
         return ""
 
-    for _ in range(30):
+    for _ in range(50):
         uid = _gen_user_id_ddmmyy()
-        exists = UserSetting.query.filter_by(user_id=uid).first()
-        if not exists:
-            s.user_id = uid
-            try:
-                db.session.commit()
-            except Exception as e:
-                db.session.rollback()
-                app.logger.exception("ensure_user_id commit fail: %s", e)
-                return ""
+        s.user_id = uid
+        try:
+            db.session.flush()   
             return uid
+        except IntegrityError:
+            db.session.rollback()
+            continue
 
-    # 极低概率到这里：还是给一个，但不强求唯一（避免卡死）
-    uid = _gen_user_id_ddmmyy()
-    s.user_id = uid
-    try:
-        db.session.commit()
-    except Exception:
-        db.session.rollback()
-        return ""
-    return uid
-
+    return ""
 
 @app.get("/api/settings")
 def api_get_settings():
     """
     根据 email 返回用户设置：
-    - 找不到记录：✅ 现在会自动创建一条（保证 user_id 永久固定）
+    - 找不到记录：自动创建一条（保证 user_id 永久固定）
     - avatar 使用 avatar_url 字段（如果有）
-    - 新增 phone 字段（如果模型有该字段则读取）
-    - ✅ 新增 user_id：4随机 + DDMMYY + 4随机，创建后永不改变
+    - phone：如果模型有字段则返回
+    - user_id：4随机 + DDMMYY + 4随机，创建后永不改变
     """
     def default_payload(email: str):
         return {
             "email": email,
-            "user_id": "",            
+            "user_id": "",
             "nickname": "",
             "avatar": "",
             "avatar_url": "",
@@ -2882,26 +2868,22 @@ def api_get_settings():
             "updated_at": None,
         }
 
-    # 1) 取 email
-    email = (
-        request.args.get("email")
-        or request.headers.get("X-User-Email")
-        or ""
-    ).strip().lower()
+    # ✅ 永远先初始化，避免 uid 未定义
+    uid = ""
 
+    # 1) 取 email
+    email = (request.args.get("email") or request.headers.get("X-User-Email") or "").strip().lower()
     if not email:
         return jsonify({"message": "missing_email"}), 400
 
     # 2) 查数据库（出错时也不要 500）
     try:
-        s = UserSetting.query.filter(
-            func.lower(UserSetting.email) == email
-        ).first()
+        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
     except Exception as e:
         current_app.logger.exception("GET /api/settings DB error: %s", e)
         return jsonify(default_payload(email)), 200
 
-    # 3) 没有记录 → ✅ 创建记录（这样 user_id 才能“开账号后固定”）
+    # 3) 没有记录 → 创建记录
     if not s:
         try:
             s = UserSetting(email=email)
@@ -2912,14 +2894,15 @@ def api_get_settings():
             current_app.logger.exception("GET /api/settings create row error: %s", e)
             return jsonify(default_payload(email)), 200
 
-    # ✅ 3.5) 确保 user_id 生成并持久化（只生成一次）
+    # 3.5) 确保 user_id 生成并持久化（只生成一次）
     try:
         uid = _ensure_user_id(s)
     except Exception as e:
+        db.session.rollback()
         current_app.logger.exception("GET /api/settings ensure user_id error: %s", e)
         uid = ""
 
-        # ✅ 3.6) 自动写入 city（仅当数据库 city 为空时）
+    # 3.6) 自动写入 city（仅当数据库 city 为空时）
     try:
         cur_city = (getattr(s, "city", "") or "").strip()
         if not cur_city:
@@ -2927,13 +2910,14 @@ def api_get_settings():
             geo_city = ip_to_city(ip)
             if geo_city:
                 s.city = geo_city
-                s.updated_at = datetime.utcnow()
+                if hasattr(s, "updated_at"):
+                    s.updated_at = datetime.utcnow()
                 db.session.commit()
     except Exception as e:
         db.session.rollback()
         current_app.logger.exception("GET /api/settings auto city failed: %s", e)
 
-    # 4) 组装返回（尽量兼容之前结构）
+    # 4) 组装返回
     try:
         try:
             data = _settings_to_dict(s)
@@ -2942,10 +2926,10 @@ def api_get_settings():
 
         data["email"] = email
 
-        # ✅ user_id 永久返回
+        # ✅ 永久返回 user_id
         data["user_id"] = uid or getattr(s, "user_id", "") or data.get("user_id", "") or ""
 
-        # avatar：优先用 avatar_url / avatar
+        # avatar：优先 avatar_url / avatar
         avatar_val = (
             getattr(s, "avatar_url", None)
             or getattr(s, "avatar", None)
@@ -2971,7 +2955,7 @@ def api_get_settings():
         else:
             data.setdefault("phone", "")
 
-        data["updated_at"] = getattr(s, "updated_at", None)
+        data["updated_at"] = getattr(s, "updated_at", None) if hasattr(s, "updated_at") else None
 
         return jsonify(data), 200
 
