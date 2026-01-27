@@ -1808,8 +1808,23 @@ def admin_users_list():
 
     except Exception as e:
         return jsonify({"message": "server_error", "detail": str(e)}), 500
+
+@app.post("/api/admin/fix_user_ids")
+@require_login
+@require_admin
+def admin_fix_user_ids():
+    fixed = 0
+    settings = UserSettings.query.all()
+
+    for s in settings:
+        uid = (s.user_id or "").strip()
+        if not re.fullmatch(r"\d{14}", uid):
+            _ensure_user_id(s)
+            fixed += 1
+
+    db.session.commit()
+    return jsonify({"ok": True, "fixed": fixed})
         
-# -------------------- 一次性修复 outfits 表字段 --------------------
 @app.get("/api/debug/fix_outfits_columns")
 def debug_fix_outfits_columns():
     """
