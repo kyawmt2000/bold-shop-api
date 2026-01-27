@@ -5031,19 +5031,6 @@ def api_users_resolve():
         print("USERS RESOLVE ERROR:", repr(e))
         return jsonify({"ok": False, "error": "resolve_failed", "detail": str(e)}), 500
 
-def fnv1a_hash(s: str) -> int:
-    h = 0x811c9dc5
-    for ch in s:
-        h ^= ord(ch)
-        h = (h * 0x01000193) & 0xffffffff
-    return h
-
-def gen_public_id(email: str) -> str:
-    if not email:
-        return ""
-    num = str(fnv1a_hash(email.strip().lower())).zfill(10)
-    return f"B{num}"
-
 @app.get("/api/users/search")
 def api_users_search():
     try:
@@ -5054,7 +5041,6 @@ def api_users_search():
         q_num = q.replace(" ", "")
         like = f"%{q}%"
 
-        # 1) 先从 UserSetting 里按 nickname / id 找（更贴近“用户名/用户id”）
         us_conds = [UserSetting.nickname.ilike(like)]
 
         if re.fullmatch(r"\d{1,20}", q_num):
@@ -5069,7 +5055,7 @@ def api_users_search():
                    .limit(20)
                    .all())
 
-        items_map = {}  # email -> item
+        items_map = {}  
 
         for us in us_rows:
             email = (us.email or "").lower().strip()
@@ -5082,7 +5068,6 @@ def api_users_search():
                 "avatar_url": (us.avatar_url or "").strip()
             }
 
-        # 2) 再从 User 表里按 email / id 找（兜底）
         u_conds = [User.email.ilike(like)]
         if re.fullmatch(r"\d{1,20}", q_num):
             try:
@@ -5103,7 +5088,6 @@ def api_users_search():
             if email in items_map:
                 continue
 
-            # 尝试补 nickname/avatar（如果存在）
             us = UserSetting.query.filter_by(email=email).first()
             nickname = (us.nickname or "").strip() if us else ""
             avatar = (us.avatar_url or "").strip() if us else ""
