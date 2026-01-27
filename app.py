@@ -5024,8 +5024,7 @@ def auth_google():
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
 
-# 🔧 改成你真实的字段名，比如 User.uid / User.id
-UID_FIELD = User.uid   # ← 这里改一次就行
+UID_FIELD = User.id  
 
 @app.get("/api/users/resolve")
 def api_users_resolve():
@@ -5038,7 +5037,7 @@ def api_users_resolve():
         if re.fullmatch(r"\d{14}", q):
             try:
                 uid = int(q)
-                u = User.query.filter(UID_FIELD == uid).first()
+                u = User.query.filter(UID_FIELD == int(q)).first()
             except Exception:
                 u = None
 
