@@ -4541,18 +4541,22 @@ def api_chat_thread_messages():
     if not t:
         return jsonify({"ok": True, "thread_id": None, "items": []})
 
+    # ✅ 关键：先倒序拿最新 limit 条，再反转成正序显示
     msgs = (ChatMessage.query
             .filter(ChatMessage.thread_id == t.id)
-            .order_by(ChatMessage.id.asc())
+            .order_by(ChatMessage.id.desc())
             .limit(limit)
             .all())
+    msgs = list(reversed(msgs))
 
     items = []
     for m in msgs:
         payload = {}
         if m.payload_json:
-            try: payload = json.loads(m.payload_json)
-            except: payload = {}
+            try:
+                payload = json.loads(m.payload_json)
+            except:
+                payload = {}
 
         to_id = (b if str(m.sender_id) == str(a) else a)
 
@@ -4560,7 +4564,7 @@ def api_chat_thread_messages():
             "id": m.id,
             "from": str(m.sender_id),
             "to": str(to_id),
-            "type": m.type,
+            "type": m.type or "text",
             "text": m.text or "",
             "url": m.url or "",
             "payload": payload,
