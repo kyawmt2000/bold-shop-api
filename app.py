@@ -274,8 +274,8 @@ from flask_cors import CORS
 CORS(
     app,
     resources={r"/api/*": {"origins": [
-        "https://www.boldmm.shop",
-        "https://boldmm.shop"
+        "https://www.sohosea.com",
+        "https://sohosea.com"
     ]}},
     supports_credentials=False,
     allow_headers=[
@@ -461,7 +461,7 @@ def _peer_profile(uid14: str):
                 "avatar": (
                     getattr(s, "avatar_url", None)
                     or getattr(s, "avatar", None)
-                    or "https://boldmm.shop/default-avatar.png"
+                    or "https://sohosea.com/default-avatar.png"
                 ),
             }
     except Exception as e:
@@ -470,7 +470,7 @@ def _peer_profile(uid14: str):
     return {
         "id": uid14,
         "username": f"User {str(uid14)[-4:]}",
-        "avatar": "https://boldmm.shop/default-avatar.png"
+        "avatar": "https://sohosea.com/default-avatar.png"
     }
 
 def log_dbinfo_once():
@@ -493,8 +493,6 @@ APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
 APPLE_ISS = "https://appleid.apple.com"
 
 def get_apple_audiences():
-    # 环境变量示例：
-    # APPLE_CLIENT_IDS="com.boldmm.bold,com.boldmm.web"
     raw = (os.getenv("APPLE_CLIENT_IDS") or "").strip()
     if not raw:
         return []
@@ -513,7 +511,7 @@ def verify_apple_id_token(id_token: str):
         raise Exception("apple_jwk_not_found")
 
     APPLE_AUDIENCES = [
-        "com.boldmm.shop.web",  # ✅ 你日志里真实 aud
+        "com.sohosea.com.web",  # ✅ 你日志里真实 aud
         os.getenv("APPLE_CLIENT_ID", "").strip(),  # 你环境变量（有就加）
     ]
     APPLE_AUDIENCES = [a for a in APPLE_AUDIENCES if a]
@@ -4321,7 +4319,7 @@ def api_outfit_comment_like_users(oid, cid):
 
             avatar = (getattr(s, "avatar_url", "") or "").strip()
             if not avatar:
-                avatar = "https://boldmm.shop/default-avatar.png"
+                avatar = "https://sohosea.com/default-avatar.png"
 
             items.append({
                 "name": name,
@@ -4823,8 +4821,8 @@ app.logger.info("DB configured: %s", bool(os.environ.get("DATABASE_URL")))
 # 或者只打印 host，不打印密码（更麻烦就先用上面那行）
 
 ALLOWED_ORIGINS = {
-    "https://boldmm.shop",
-    "https://www.boldmm.shop",
+    "https://sohosea.com",
+    "https://www.sohosea.com",
 }
 
 def _cors(resp):
