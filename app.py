@@ -4528,42 +4528,46 @@ def api_chat_messages():
     return jsonify({"ok": True, "items": out})
 
 @app.get("/api/chats/thread")
-def api_chat_thread():
-    me = str(request.args.get("me") or "").strip()
-    peer = str(request.args.get("peer") or "").strip()
+def api_chat_thread_messages():
+    me = (request.args.get("me") or "").strip()
+    peer = (request.args.get("peer") or "").strip()
     limit = int(request.args.get("limit") or 200)
-    limit = max(1, min(limit, 500))
 
-    if not re.fullmatch(r"\d{14}", me) or not re.fullmatch(r"\d{14}", peer):
-        return jsonify({"ok": False, "error": "bad_me_or_peer"}), 400
+    if not re.fullmatch(r"\d{14}", me):   return jsonify({"ok": False, "error": "bad_me"}), 400
+    if not re.fullmatch(r"\d{14}", peer): return jsonify({"ok": False, "error": "bad_peer"}), 400
 
     a, b = _pair_ids(me, peer)
     t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
     if not t:
-        return jsonify({"ok": True, "thread_id": None, "peer": _peer_profile(peer), "items": []})
+        return jsonify({"ok": True, "thread_id": None, "items": []})
 
-    msgs = ChatMessage.query.filter_by(thread_id=t.id).order_by(ChatMessage.id.asc()).limit(limit).all()
+    msgs = (ChatMessage.query
+            .filter(ChatMessage.thread_id == t.id)
+            .order_by(ChatMessage.id.asc())
+            .limit(limit)
+            .all())
 
     items = []
     for m in msgs:
         payload = {}
-        try:
-            payload = json.loads(m.payload_json) if m.payload_json else {}
-        except:
-            payload = {}
-        to_id = peer if m.sender_id == me else me
+        if m.payload_json:
+            try: payload = json.loads(m.payload_json)
+            except: payload = {}
+
+        to_id = (b if str(m.sender_id) == str(a) else a)
+
         items.append({
             "id": m.id,
-            "from": m.sender_id,
-            "to": to_id,
-            "type": m.type or "text",
+            "from": str(m.sender_id),
+            "to": str(to_id),
+            "type": m.type,
             "text": m.text or "",
             "url": m.url or "",
             "payload": payload,
-            "ts": m.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            "ts": m.created_at.strftime("%Y-%m-%d %H:%M:%S") if m.created_at else ""
         })
 
-    return jsonify({"ok": True, "thread_id": t.id, "peer": _peer_profile(peer), "items": items})
+    return jsonify({"ok": True, "thread_id": t.id, "items": items})
 
 @app.get("/api/admin/fix_chats_tables")
 def fix_chats_tables():
