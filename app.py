@@ -516,6 +516,8 @@ def verify_apple_id_token(id_token: str):
     ]
     APPLE_AUDIENCES = [a for a in APPLE_AUDIENCES if a]
 
+    APPLE_CLIENT_IDS = ["com.sohoasia.web", "com.sohosea.app"] 
+
     payload = jwt.decode(
         id_token,
         key=key,
