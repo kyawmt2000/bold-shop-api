@@ -623,12 +623,19 @@ def auth_apple():
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
 
-def get_user_id14_from_request():
-    auth = request.headers.get("Authorization", "")
-    if not auth.lower().startswith("bearer "):
-        return None
+def get_uid_from_token():
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+    else:
+        token = ""
 
-    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        # 兼容你前端还会带的 X-Auth-Token
+        token = (request.headers.get("X-Auth-Token") or "").strip()
+
+    if not token:
+        return None, None
 
     try:
         payload = jwt.decode(
@@ -637,34 +644,28 @@ def get_user_id14_from_request():
             algorithms=[app.config["JWT_ALG"]],
         )
     except Exception:
-        return None
+        return None, None
 
-    # 1️⃣ token 里只有 uid（数据库 id）
     uid = payload.get("uid")
-    if not uid:
-        return None
+    email = (payload.get("email") or "").lower().strip()
+    return uid, email
 
-    # 2️⃣ 用 uid 查 settings 表，拿 14 位 user_id
-    s = UserSetting.query.filter_by(user_id_int=uid).first() \
-        if hasattr(UserSetting, "user_id_int") else None
 
-    if not s:
-        # 如果你 settings 表是用 email 关联
-        email = (payload.get("email") or "").lower().strip()
-        if not email:
-            return None
-        s = UserSetting.query.filter(
-            func.lower(UserSetting.email) == email
-        ).first()
+def get_user_id14_from_request():
+    uid, email = get_uid_from_token()
 
-    if not s:
-        return None
+    # 1) 优先用 email 找 settings（你现在系统最稳定）
+    if email:
+        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+        if s and re.fullmatch(r"\d{14}", str(s.user_id or "").strip()):
+            return str(s.user_id).strip()
 
-    uid14 = str(s.user_id or "").strip()
-    if not re.fullmatch(r"\d{14}", uid14):
-        return None
+    # 2) 如果你未来把 settings 绑定 uid，也可以在这里补（可选）
+    # if uid:
+    #     s = UserSetting.query.filter_by(uid=int(uid)).first()
+    #     ...
 
-    return uid14
+    return None
 
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
@@ -4490,10 +4491,9 @@ def api_admin_payments_list():
 @app.get("/api/chats/threads")
 def api_chat_threads():
     try:
-        me = str(request.args.get("me") or "").strip()
-
-        if not re.fullmatch(r"\d{14}", me):
-            return jsonify({"ok": False, "error": "bad_me"}), 400
+        me = get_user_id14_from_request()
+        if not me:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
 
         rows = (ChatThread.query
                 .filter((ChatThread.a_id == me) | (ChatThread.b_id == me))
@@ -4531,7 +4531,7 @@ def api_chat_threads():
 
             items.append({
                 "thread_id": t.id,
-                "peer": _peer_profile(peer),   # ✅ 用你的 _peer_profile
+                "peer": _peer_profile(peer),
                 "updated_at": _fmt_dt(t.updated_at),
                 "last": last_obj
             })
@@ -4576,19 +4576,21 @@ def api_chat_messages():
 
 @app.get("/api/chats/thread")
 def api_chat_thread_messages():
-    me = (request.args.get("me") or "").strip()
+    me = get_user_id14_from_request()
+    if not me:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
     peer = (request.args.get("peer") or "").strip()
     limit = int(request.args.get("limit") or 200)
 
-    if not re.fullmatch(r"\d{14}", me):   return jsonify({"ok": False, "error": "bad_me"}), 400
-    if not re.fullmatch(r"\d{14}", peer): return jsonify({"ok": False, "error": "bad_peer"}), 400
+    if not re.fullmatch(r"\d{14}", peer):
+        return jsonify({"ok": False, "error": "bad_peer"}), 400
 
     a, b = _pair_ids(me, peer)
     t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
     if not t:
         return jsonify({"ok": True, "thread_id": None, "items": []})
 
-    # ✅ 关键：先倒序拿最新 limit 条，再反转成正序显示
     msgs = (ChatMessage.query
             .filter(ChatMessage.thread_id == t.id)
             .order_by(ChatMessage.id.desc())
@@ -4619,7 +4621,7 @@ def api_chat_thread_messages():
         })
 
     return jsonify({"ok": True, "thread_id": t.id, "items": items})
-
+    
 @app.get("/api/admin/fix_chats_tables")
 def fix_chats_tables():
     try:
@@ -4743,16 +4745,13 @@ def api_chat_send():
     try:
         data = request.get_json(force=True, silent=True) or {}
 
-        # ✅ me：从 token → uid → 14位 user_id
         me = get_user_id14_from_request()
         if not me:
             return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-        # ✅ peer：前端传 14 位
         peer = str(data.get("peer") or "").strip()
         if not re.fullmatch(r"\d{14}", peer):
             return jsonify({"ok": False, "error": "bad_peer"}), 400
-
         if me == peer:
             return jsonify({"ok": False, "error": "same_user"}), 400
 
@@ -4785,21 +4784,7 @@ def api_chat_send():
         t.updated_at = datetime.utcnow()
         db.session.commit()
 
-        return jsonify({
-            "ok": True,
-            "thread_id": t.id,
-            "message": {
-                "id": m.id,
-                "from": me,
-                "to": peer,
-                "type": msg_type,
-                "text": text,
-                "url": url,
-                "payload": payload,
-                "ts": m.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            }
-        })
-
+        return jsonify({"ok": True, "thread_id": t.id})
     except Exception as e:
         return jsonify({"ok": False, "error": "send_failed", "detail": str(e)}), 500
 
