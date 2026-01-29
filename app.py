@@ -623,6 +623,49 @@ def auth_apple():
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
 
+def get_user_id14_from_request():
+    auth = request.headers.get("Authorization", "")
+    if not auth.lower().startswith("bearer "):
+        return None
+
+    token = auth.split(" ", 1)[1].strip()
+
+    try:
+        payload = jwt.decode(
+            token,
+            app.config["JWT_SECRET_KEY"],
+            algorithms=[app.config["JWT_ALG"]],
+        )
+    except Exception:
+        return None
+
+    # 1️⃣ token 里只有 uid（数据库 id）
+    uid = payload.get("uid")
+    if not uid:
+        return None
+
+    # 2️⃣ 用 uid 查 settings 表，拿 14 位 user_id
+    s = UserSetting.query.filter_by(user_id_int=uid).first() \
+        if hasattr(UserSetting, "user_id_int") else None
+
+    if not s:
+        # 如果你 settings 表是用 email 关联
+        email = (payload.get("email") or "").lower().strip()
+        if not email:
+            return None
+        s = UserSetting.query.filter(
+            func.lower(UserSetting.email) == email
+        ).first()
+
+    if not s:
+        return None
+
+    uid14 = str(s.user_id or "").strip()
+    if not re.fullmatch(r"\d{14}", uid14):
+        return None
+
+    return uid14
+
 # -------------------- Models --------------------
 class MerchantApplication(db.Model):
     __tablename__ = "merchant_applications"
@@ -4700,11 +4743,16 @@ def api_chat_send():
     try:
         data = request.get_json(force=True, silent=True) or {}
 
-        me   = str(data.get("me") or "").strip()
-        peer = str(data.get("peer") or "").strip()
+        # ✅ me：从 token → uid → 14位 user_id
+        me = get_user_id14_from_request()
+        if not me:
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
 
-        if not re.fullmatch(r"\d{14}", me) or not re.fullmatch(r"\d{14}", peer):
-            return jsonify({"ok": False, "error": "invalid_user_id"}), 400
+        # ✅ peer：前端传 14 位
+        peer = str(data.get("peer") or "").strip()
+        if not re.fullmatch(r"\d{14}", peer):
+            return jsonify({"ok": False, "error": "bad_peer"}), 400
+
         if me == peer:
             return jsonify({"ok": False, "error": "same_user"}), 400
 
@@ -4716,7 +4764,6 @@ def api_chat_send():
         if msg_type not in ("text","image","video","product","order"):
             msg_type = "text"
 
-        # 1) get/create thread
         a, b = _pair_ids(me, peer)
         t = ChatThread.query.filter_by(a_id=a, b_id=b).first()
         if not t:
@@ -4724,7 +4771,6 @@ def api_chat_send():
             db.session.add(t)
             db.session.flush()
 
-        # 2) insert message (把字段写进列里，payload_json只存payload本身)
         m = ChatMessage(
             thread_id=t.id,
             sender_id=me,
@@ -4736,7 +4782,6 @@ def api_chat_send():
         )
         db.session.add(m)
 
-        # 3) update thread time
         t.updated_at = datetime.utcnow()
         db.session.commit()
 
@@ -4754,6 +4799,7 @@ def api_chat_send():
                 "ts": m.created_at.strftime("%Y-%m-%d %H:%M:%S")
             }
         })
+
     except Exception as e:
         return jsonify({"ok": False, "error": "send_failed", "detail": str(e)}), 500
 
