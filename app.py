@@ -510,13 +510,17 @@ def verify_apple_id_token(id_token: str):
     if not key:
         raise Exception("apple_jwk_not_found")
 
-    APPLE_AUDIENCES = [
-        "com.sohosea.com.web",  # ✅ 你日志里真实 aud
-        os.getenv("APPLE_CLIENT_ID", "").strip(),  # 你环境变量（有就加）
-    ]
-    APPLE_AUDIENCES = [a for a in APPLE_AUDIENCES if a]
+    audiences = get_apple_audiences()
+    if not audiences:
+        # 兜底：兼容你旧环境变量
+        audiences = []
+        v1 = (os.getenv("APPLE_CLIENT_ID") or "").strip()
+        if v1:
+            audiences.append(v1)
 
-    APPLE_CLIENT_IDS = ["com.sohoasia.web", "com.sohosea.app"] 
+    # 再兜底：强制把当前前端的 aud 加进去（最关键）
+    if "com.sohoasia.web" not in audiences:
+        audiences.append("com.sohoasia.web")
 
     payload = jwt.decode(
         id_token,
