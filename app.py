@@ -510,15 +510,15 @@ def verify_apple_id_token(id_token: str):
     if not key:
         raise Exception("apple_jwk_not_found")
 
+    # ✅ 永远在函数里定义 audiences，避免 NameError
     audiences = get_apple_audiences()
-    if not audiences:
-        # 兜底：兼容你旧环境变量
-        audiences = []
-        v1 = (os.getenv("APPLE_CLIENT_ID") or "").strip()
-        if v1:
-            audiences.append(v1)
 
-    # 再兜底：强制把当前前端的 aud 加进去（最关键）
+    # 兼容旧环境变量
+    v1 = (os.getenv("APPLE_CLIENT_ID") or "").strip()
+    if v1 and v1 not in audiences:
+        audiences.append(v1)
+
+    # ✅ 必须包含你前端打印出来的 aud
     if "com.sohoasia.web" not in audiences:
         audiences.append("com.sohoasia.web")
 
@@ -526,7 +526,7 @@ def verify_apple_id_token(id_token: str):
         id_token,
         key=key,
         algorithms=["RS256"],
-        audience=APPLE_AUDIENCES,   # ✅ 这里改成 list
+        audience=audiences,          # ✅ list
         issuer=APPLE_ISS,
         options={"verify_exp": True},
     )
