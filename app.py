@@ -888,6 +888,7 @@ class Notification(db.Model):
     - 谁（actor）对谁（user_email）的 outfit 做了什么（like / comment）
     """
     __tablename__ = "notifications"
+    __table_args__ = {"extend_existing": True}
 
     id = db.Column(db.Integer, primary_key=True)
 
@@ -5719,35 +5720,6 @@ def api_admin_update_report_status(rid):
         db.session.rollback()
         return jsonify(ok=False, error=str(e)), 500
 
-class Notification(db.Model):
-    """
-    通知表：
-    - 谁（actor）对谁（user_email）的 outfit 做了什么（like / comment）
-    """
-    __tablename__ = "notifications"
-
-    id = db.Column(db.Integer, primary_key=True)
-
-    # 收到通知的人（帖子作者）
-    user_email   = db.Column(db.String(200), index=True, nullable=False)
-
-    # 操作人（点赞 / 评论的人）
-    actor_email  = db.Column(db.String(200), index=True)
-    actor_name   = db.Column(db.String(200))
-    actor_avatar = db.Column(db.String(500))
-
-    # 关联的帖子
-    outfit_id    = db.Column(db.Integer, db.ForeignKey("outfits.id"), index=True)
-
-    # 操作类型：like / comment
-    action       = db.Column(db.String(32))
-
-    # 额外信息，比如评论内容
-    payload_json = db.Column(db.Text)
-
-    is_read      = db.Column(db.Boolean, default=False, index=True)
-    created_at   = db.Column(db.DateTime, default=datetime.utcnow, index=True)
-
 @app.get("/api/notifications")
 def api_notifications():
     """
@@ -5795,49 +5767,36 @@ def api_notifications():
     return jsonify({"items": items})
 
 @app.post("/api/admin/notifications")
-def api_admin_create_notification():
-    """
-    管理员发送通知（写入 notifications 表）
-    POST /api/admin/notifications
-    body: { user_email, text, action?, report_id? }
-    """
-    me = None
+def api_admin_notifications_create():
     try:
-        uid = get_uid_from_request()
-        if uid:
-            me = User.query.get(uid)  
+        me_res = api_me()  
     except Exception:
-        me = None
+        me_res = None
 
+    uid = get_uid_from_request()
+    if not uid:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    me = User.query.get(uid)  # 按你项目 User 主键调整
     if not me or getattr(me, "role", "") != "admin":
         return jsonify({"ok": False, "error": "admin_only"}), 403
 
     data = request.get_json(silent=True) or {}
     user_email = (data.get("user_email") or "").strip().lower()
     text = (data.get("text") or "").strip()
-    action = (data.get("action") or "admin_review").strip()  
-    report_id = data.get("report_id")
 
     if not user_email or not text:
         return jsonify({"ok": False, "error": "missing user_email/text"}), 400
-
-    payload = {
-        "text": text,
-        "report_id": report_id
-    }
 
     n = Notification(
         user_email=user_email,
         actor_email=getattr(me, "email", None),
         actor_name=getattr(me, "nickname", None) or getattr(me, "username", None) or "Admin",
         actor_avatar=getattr(me, "avatar", None) or getattr(me, "avatar_url", None),
-        outfit_id=None,               
-        action=action,         
-        payload_json=json.dumps(payload, ensure_ascii=False),
-        is_read=False,
-        created_at=datetime.utcnow()
+        outfit_id=None,
+        action="admin_review",
+        payload_json=json.dumps({"text": text}, ensure_ascii=False),
+        is_read=False
     )
     db.session.add(n)
     db.session.commit()
-
     return jsonify({"ok": True, "id": n.id})
