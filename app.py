@@ -5720,37 +5720,6 @@ def api_notifications():
 
     return jsonify({"items": items})
 
-@app.post("/api/admin/notifications")
-def api_admin_notifications():
-    # 1) 校验 admin（你已有 guardAdmin 逻辑，这里也要校验）
-    me = api_me()  # ❌ 如果你的 api_me() 返回 Response，这里不能直接用
-    # ✅ 正确做法：重新解析 token / 或者写一个 require_admin() 返回 user 对象
-
-    data = request.get_json(silent=True) or {}
-
-    # 2) 兼容字段名
-    email = (data.get("user_email") or data.get("target_email") or data.get("email") or "").strip().lower()
-    text  = (data.get("text") or data.get("status") or "").strip()
-
-    if not email:
-        return jsonify(ok=False, error="missing email"), 400
-    if not text:
-        return jsonify(ok=False, error="missing text"), 400
-
-    # 3) 写入通知（即使用户不存在也不要炸）
-    try:
-        n = Notification(
-            user_email=email,
-            action="admin_review",
-            payload={"text": text},
-        )
-        db.session.add(n)
-        db.session.commit()
-        return jsonify(ok=True, id=n.id), 200
-    except Exception as e:
-        db.session.rollback()
-        return jsonify(ok=False, error=str(e)), 500
-
 @app.post("/api/admin/notify-review")
 def api_admin_notify_review():
     # ✅ 这里请加 require_admin() 校验（略）
