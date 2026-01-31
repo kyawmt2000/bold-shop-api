@@ -5776,3 +5776,8 @@ def api_admin_notify_review():
     db.session.add(n)
     db.session.commit()
     return jsonify({"ok": True, "id": n.id})
+
+@app.put("/api/admin/reports/<int:rid>")
+def api_admin_reports_update(rid):
+    data = request.get_json(silent=True) or {}
+    status = (data.get("status") or "").strip()
