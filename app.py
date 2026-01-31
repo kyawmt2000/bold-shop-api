@@ -5718,3 +5718,126 @@ def api_admin_update_report_status(rid):
     except Exception as e:
         db.session.rollback()
         return jsonify(ok=False, error=str(e)), 500
+
+class Notification(db.Model):
+    """
+    通知表：
+    - 谁（actor）对谁（user_email）的 outfit 做了什么（like / comment）
+    """
+    __tablename__ = "notifications"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # 收到通知的人（帖子作者）
+    user_email   = db.Column(db.String(200), index=True, nullable=False)
+
+    # 操作人（点赞 / 评论的人）
+    actor_email  = db.Column(db.String(200), index=True)
+    actor_name   = db.Column(db.String(200))
+    actor_avatar = db.Column(db.String(500))
+
+    # 关联的帖子
+    outfit_id    = db.Column(db.Integer, db.ForeignKey("outfits.id"), index=True)
+
+    # 操作类型：like / comment
+    action       = db.Column(db.String(32))
+
+    # 额外信息，比如评论内容
+    payload_json = db.Column(db.Text)
+
+    is_read      = db.Column(db.Boolean, default=False, index=True)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+@app.get("/api/notifications")
+def api_notifications():
+    """
+    查询当前用户的通知：
+    GET /api/notifications?email=xxx&limit=50&unread=1
+    """
+    email = (request.args.get("email") or "").strip().lower()
+    if not email:
+        return jsonify({"items": []})
+
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 100))
+
+    unread_only = (request.args.get("unread") or "").strip() in ("1", "true", "yes")
+
+    q = Notification.query.filter_by(user_email=email)
+    if unread_only:
+        q = q.filter_by(is_read=False)
+
+    rows = q.order_by(Notification.created_at.desc()).limit(limit).all()
+
+    items = []
+    for n in rows:
+        try:
+            payload = json.loads(n.payload_json or "{}")
+        except Exception:
+            payload = {}
+
+        items.append({
+            "id": n.id,
+            "user_email": n.user_email,
+            "actor_email": n.actor_email,
+            "actor_name": n.actor_name,
+            "actor_avatar": n.actor_avatar,
+            "outfit_id": n.outfit_id,
+            "action": n.action,          
+            "payload": payload,    
+            "is_read": bool(n.is_read),
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        })
+
+    return jsonify({"items": items})
+
+@app.post("/api/admin/notifications")
+def api_admin_create_notification():
+    """
+    管理员发送通知（写入 notifications 表）
+    POST /api/admin/notifications
+    body: { user_email, text, action?, report_id? }
+    """
+    me = None
+    try:
+        uid = get_uid_from_request()
+        if uid:
+            me = User.query.get(uid)  
+    except Exception:
+        me = None
+
+    if not me or getattr(me, "role", "") != "admin":
+        return jsonify({"ok": False, "error": "admin_only"}), 403
+
+    data = request.get_json(silent=True) or {}
+    user_email = (data.get("user_email") or "").strip().lower()
+    text = (data.get("text") or "").strip()
+    action = (data.get("action") or "admin_review").strip()  
+    report_id = data.get("report_id")
+
+    if not user_email or not text:
+        return jsonify({"ok": False, "error": "missing user_email/text"}), 400
+
+    payload = {
+        "text": text,
+        "report_id": report_id
+    }
+
+    n = Notification(
+        user_email=user_email,
+        actor_email=getattr(me, "email", None),
+        actor_name=getattr(me, "nickname", None) or getattr(me, "username", None) or "Admin",
+        actor_avatar=getattr(me, "avatar", None) or getattr(me, "avatar_url", None),
+        outfit_id=None,               
+        action=action,         
+        payload_json=json.dumps(payload, ensure_ascii=False),
+        is_read=False,
+        created_at=datetime.utcnow()
+    )
+    db.session.add(n)
+    db.session.commit()
+
+    return jsonify({"ok": True, "id": n.id})
