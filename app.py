@@ -5753,31 +5753,46 @@ def api_admin_notifications():
 
 @app.post("/api/admin/notify-review")
 def api_admin_notify_review():
+    # ✅ 这里请加 require_admin() 校验（略）
 
     data = request.get_json(silent=True) or {}
-    target_email = (data.get("target_email") or "").strip().lower()
+    report_id    = data.get("report_id")
     status_text  = (data.get("status") or "").strip()
 
     if status_text not in ("Under Review", "Review Completed"):
         return jsonify({"ok": False, "error": "invalid status"}), 400
-    if not target_email:
-        return jsonify({"ok": False, "error": "missing target_email"}), 400
+    if not report_id:
+        return jsonify({"ok": False, "error": "missing report_id"}), 400
+
+    # ✅ 查 report
+    rpt = Report.query.get(report_id)   # 你的表如果叫 Report
+    if not rpt:
+        return jsonify({"ok": False, "error": "report not found"}), 404
+
+    reporter_email = (rpt.reporter_email or "").strip().lower()  # ✅ A
+    target_email   = (rpt.target_email or "").strip().lower()    # B
+
+    if not reporter_email:
+        return jsonify({"ok": False, "error": "reporter_email empty"}), 400
+
+    payload = {
+        "text": status_text,
+        "report_id": rpt.id,
+        "target_email": target_email,
+        "subject": rpt.subject or "",
+        "description": rpt.description or ""
+    }
 
     n = Notification(
-        user_email=target_email,
+        user_email=reporter_email,      # ✅ 通知进入 A
         actor_email="admin",
         actor_name="Admin",
         actor_avatar=None,
         outfit_id=None,
         action="review_status",
-        payload_json=json.dumps({"text": status_text}, ensure_ascii=False),
+        payload_json=json.dumps(payload, ensure_ascii=False),
         is_read=False
     )
     db.session.add(n)
     db.session.commit()
     return jsonify({"ok": True, "id": n.id})
-
-@app.put("/api/admin/reports/<int:rid>")
-def api_admin_reports_update(rid):
-    data = request.get_json(silent=True) or {}
-    status = (data.get("status") or "").strip()
