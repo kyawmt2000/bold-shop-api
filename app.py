@@ -3333,9 +3333,27 @@ def api_follow():
         rel = q.first()
 
         if action in ("follow", "on"):
-            if not rel:
-                rel = UserFollow(follower_email=follower, target_email=target)
-                db.session.add(rel)
+    if not rel:
+        rel = UserFollow(follower_email=follower, target_email=target)
+        db.session.add(rel)
+
+        try:
+            payload = {
+                "from_email": follower,
+                "target_email": target,
+                "text": "followed_you",
+                "link": f"profile.html?email={follower}"
+            }
+
+            n = Notification(
+                user_email=target,
+                action="followed_you",
+                payload_json=json.dumps(payload, ensure_ascii=False)
+            )
+            db.session.add(n)
+        except Exception as _:
+            # 通知失败不影响关注成功
+            pass
         elif action in ("unfollow", "off"):
             if rel:
                 db.session.delete(rel)
