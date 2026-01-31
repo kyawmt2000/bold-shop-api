@@ -3325,38 +3325,28 @@ def api_follow():
     if not follower or not target:
         return jsonify({"ok": False, "error": "missing_email"}), 400
     if follower == target:
-        # 自己不能关注自己
         return jsonify({"ok": False, "error": "self_not_allowed"}), 400
 
     try:
-        q = UserFollow.query.filter_by(follower_email=follower, target_email=target)
-        rel = q.first()
+        rel = UserFollow.query.filter_by(
+            follower_email=follower,
+            target_email=target
+        ).first()
 
+        created_follow = False  # ✅ 用来判断是否需要发通知
+
+        # --------- follow / unfollow / toggle ----------
         if action in ("follow", "on"):
-    if not rel:
-        rel = UserFollow(follower_email=follower, target_email=target)
-        db.session.add(rel)
+            if not rel:
+                rel = UserFollow(follower_email=follower, target_email=target)
+                db.session.add(rel)
+                created_follow = True
 
-        try:
-            payload = {
-                "from_email": follower,
-                "target_email": target,
-                "text": "followed_you",
-                "link": f"profile.html?email={follower}"
-            }
-
-            n = Notification(
-                user_email=target,
-                action="followed_you",
-                payload_json=json.dumps(payload, ensure_ascii=False)
-            )
-            db.session.add(n)
-        except Exception as _:
-            # 通知失败不影响关注成功
-            pass
         elif action in ("unfollow", "off"):
             if rel:
                 db.session.delete(rel)
+                rel = None
+
         else:  # toggle
             if rel:
                 db.session.delete(rel)
@@ -3364,6 +3354,26 @@ def api_follow():
             else:
                 rel = UserFollow(follower_email=follower, target_email=target)
                 db.session.add(rel)
+                created_follow = True
+
+        # --------- create notification only when followed ----------
+        if created_follow:
+            try:
+                payload = {
+                    "from_email": follower,
+                    "target_email": target,
+                    "text": "followed_you",
+                    "link": f"profile.html?email={follower}"
+                }
+                n = Notification(
+                    user_email=target,
+                    action="followed_you",
+                    payload_json=json.dumps(payload, ensure_ascii=False)
+                )
+                db.session.add(n)
+            except Exception:
+                # 通知失败不影响关注成功
+                pass
 
         db.session.commit()
 
@@ -3375,6 +3385,7 @@ def api_follow():
             "is_following": bool(rel),
             "followers": followers_cnt,
         })
+
     except Exception as e:
         db.session.rollback()
         app.logger.exception("follow error: %s", e)
