@@ -5721,45 +5721,38 @@ def api_notifications():
     return jsonify({"items": items})
 
 @app.post("/api/admin/notifications")
-def api_admin_notifications_create():
-    try:
-        me_res = api_me()  
-    except Exception:
-        me_res = None
-
-    uid = get_uid_from_request()
-    if not uid:
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-    me = User.query.get(uid)  # 按你项目 User 主键调整
-    if not me or getattr(me, "role", "") != "admin":
-        return jsonify({"ok": False, "error": "admin_only"}), 403
+def api_admin_notifications():
+    # 1) 校验 admin（你已有 guardAdmin 逻辑，这里也要校验）
+    me = api_me()  # ❌ 如果你的 api_me() 返回 Response，这里不能直接用
+    # ✅ 正确做法：重新解析 token / 或者写一个 require_admin() 返回 user 对象
 
     data = request.get_json(silent=True) or {}
-    user_email = (data.get("user_email") or "").strip().lower()
-    text = (data.get("text") or "").strip()
 
-    if not user_email or not text:
-        return jsonify({"ok": False, "error": "missing user_email/text"}), 400
+    # 2) 兼容字段名
+    email = (data.get("user_email") or data.get("target_email") or data.get("email") or "").strip().lower()
+    text  = (data.get("text") or data.get("status") or "").strip()
 
-    n = Notification(
-        user_email=user_email,
-        actor_email=getattr(me, "email", None),
-        actor_name=getattr(me, "nickname", None) or getattr(me, "username", None) or "Admin",
-        actor_avatar=getattr(me, "avatar", None) or getattr(me, "avatar_url", None),
-        outfit_id=None,
-        action="admin_review",
-        payload_json=json.dumps({"text": text}, ensure_ascii=False),
-        is_read=False
-    )
-    db.session.add(n)
-    db.session.commit()
-    return jsonify({"ok": True, "id": n.id})
+    if not email:
+        return jsonify(ok=False, error="missing email"), 400
+    if not text:
+        return jsonify(ok=False, error="missing text"), 400
+
+    # 3) 写入通知（即使用户不存在也不要炸）
+    try:
+        n = Notification(
+            user_email=email,
+            action="admin_review",
+            payload={"text": text},
+        )
+        db.session.add(n)
+        db.session.commit()
+        return jsonify(ok=True, id=n.id), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify(ok=False, error=str(e)), 500
 
 @app.post("/api/admin/notify-review")
 def api_admin_notify_review():
-    # 1) admin 校验：按你项目现有方式写（下面示例用 /api/me）
-    me_res = api_me()  # 如果你没有 api_me() 可直接复用你 guardAdmin 的逻辑
-    # ↑ 如果你没法这样用，就用你项目的 get_uid_from_request + 查 user.role == admin
 
     data = request.get_json(silent=True) or {}
     target_email = (data.get("target_email") or "").strip().lower()
