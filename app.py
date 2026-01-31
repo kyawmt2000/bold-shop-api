@@ -5720,29 +5720,30 @@ def api_notifications():
 
     return jsonify({"items": items})
 
-@app.post("/api/admin/notify-review")
+@app.route("/api/admin/notify-review", methods=["POST"])
+@require_login
+@require_admin
 def api_admin_notify_review():
-    # ✅ 这里请加 require_admin() 校验（略）
-
     data = request.get_json(silent=True) or {}
-    report_id    = data.get("report_id")
-    status_text  = (data.get("status") or "").strip()
+
+    report_id   = data.get("report_id")
+    status_text = (data.get("status") or "").strip()
 
     if status_text not in ("Under Review", "Review Completed"):
-        return jsonify({"ok": False, "error": "invalid status"}), 400
+        return jsonify(ok=False, error="invalid status"), 400
     if not report_id:
-        return jsonify({"ok": False, "error": "missing report_id"}), 400
+        return jsonify(ok=False, error="missing report_id"), 400
 
-    # ✅ 查 report
-    rpt = Report.query.get(report_id)   # 你的表如果叫 Report
+    # 查 report
+    rpt = Report.query.get(int(report_id))
     if not rpt:
-        return jsonify({"ok": False, "error": "report not found"}), 404
+        return jsonify(ok=False, error="report not found"), 404
 
-    reporter_email = (rpt.reporter_email or "").strip().lower()  # ✅ A
-    target_email   = (rpt.target_email or "").strip().lower()    # B
+    reporter_email = (rpt.reporter_email or "").strip().lower() 
+    target_email   = (rpt.target_email or "").strip().lower()    
 
     if not reporter_email:
-        return jsonify({"ok": False, "error": "reporter_email empty"}), 400
+        return jsonify(ok=False, error="reporter_email empty"), 400
 
     payload = {
         "text": status_text,
@@ -5753,7 +5754,7 @@ def api_admin_notify_review():
     }
 
     n = Notification(
-        user_email=reporter_email,      # ✅ 通知进入 A
+        user_email=reporter_email,     
         actor_email="admin",
         actor_name="Admin",
         actor_avatar=None,
@@ -5762,6 +5763,7 @@ def api_admin_notify_review():
         payload_json=json.dumps(payload, ensure_ascii=False),
         is_read=False
     )
+
     db.session.add(n)
     db.session.commit()
-    return jsonify({"ok": True, "id": n.id})
+    return jsonify(ok=True, id=n.id)
