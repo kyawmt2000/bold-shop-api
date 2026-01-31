@@ -2819,52 +2819,6 @@ def outfit_feed():
     ).limit(limit).all()
     items = [_outfit_to_dict(o) for o in rows]
     return jsonify({"items": items, "has_more": False})
-  
-@app.get("/api/notifications")
-def api_notifications():
-    """
-    查询当前用户的通知：
-    GET /api/notifications?email=xxx&limit=50&unread=1
-    """
-    email = (request.args.get("email") or "").strip().lower()
-    if not email:
-        return jsonify({"items": []})
-
-    try:
-        limit = int(request.args.get("limit") or 50)
-    except Exception:
-        limit = 50
-    limit = max(1, min(limit, 100))
-
-    unread_only = (request.args.get("unread") or "").strip() in ("1", "true", "yes")
-
-    q = Notification.query.filter_by(user_email=email)
-    if unread_only:
-        q = q.filter_by(is_read=False)
-
-    rows = q.order_by(Notification.created_at.desc()).limit(limit).all()
-
-    items = []
-    for n in rows:
-        try:
-            payload = json.loads(n.payload_json or "{}")
-        except Exception:
-            payload = {}
-
-        items.append({
-            "id": n.id,
-            "user_email": n.user_email,
-            "actor_email": n.actor_email,
-            "actor_name": n.actor_name,
-            "actor_avatar": n.actor_avatar,
-            "outfit_id": n.outfit_id,
-            "action": n.action,          # like / comment
-            "payload": payload,          # {text, delta...}
-            "is_read": bool(n.is_read),
-            "created_at": n.created_at.isoformat() if n.created_at else None,
-        })
-
-    return jsonify({"items": items})
 
 @app.post("/api/notifications/mark_read")
 def api_notifications_mark_read():
@@ -5799,4 +5753,39 @@ def api_admin_notifications_create():
     )
     db.session.add(n)
     db.session.commit()
+    return jsonify({"ok": True, "id": n.id})
+
+@app.post("/api/admin/notify-review")
+def api_admin_notify_review():
+    # admin 校验（你项目里怎么校验 admin 就怎么写）
+    uid = get_uid_from_request()
+    if not uid:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    me = User.query.get(uid)  # 按你项目主键调整
+    if not me or getattr(me, "role", "") != "admin":
+        return jsonify({"ok": False, "error": "admin_only"}), 403
+
+    data = request.get_json(silent=True) or {}
+    target_email = (data.get("target_email") or "").strip().lower()
+    status_text  = (data.get("status") or "").strip()
+
+    if status_text not in ("Under Review", "Review Completed"):
+        return jsonify({"ok": False, "error": "invalid status"}), 400
+    if not target_email:
+        return jsonify({"ok": False, "error": "missing target_email"}), 400
+
+    n = Notification(
+        user_email=target_email,
+        actor_email=getattr(me, "email", None),
+        actor_name=getattr(me, "nickname", None) or getattr(me, "username", None) or "Admin",
+        actor_avatar=getattr(me, "avatar", None) or getattr(me, "avatar_url", None),
+        outfit_id=None,
+        action="review_status",
+        payload_json=json.dumps({"text": status_text}, ensure_ascii=False),
+        is_read=False
+    )
+    db.session.add(n)
+    db.session.commit()
+
     return jsonify({"ok": True, "id": n.id})
