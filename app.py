@@ -1019,6 +1019,39 @@ class ChatMessage(db.Model):
     payload_json = db.Column(db.Text)  # product/order 等结构 json
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
+# ===== Report Model (NEW) =====
+
+class Report(db.Model):
+    __tablename__ = "reports"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # who reported
+    reporter_email = db.Column(db.String(255), nullable=False, index=True)
+
+    # who/what being reported
+    target_email = db.Column(db.String(255), nullable=False, index=True)
+    target_type  = db.Column(db.String(32), nullable=False, default="profile")  # profile/post/product/chat/other
+    target_id    = db.Column(db.String(64), nullable=True)  # optional: post_id/product_id/chat_id...
+
+    # content
+    categories   = db.Column(db.Text, nullable=False, default="[]")  # JSON list, max 2
+    locations    = db.Column(db.Text, nullable=False, default="[]")  # JSON list (Profile Picture/Cover/Posts/...)
+    subject      = db.Column(db.String(200), nullable=False)
+    description  = db.Column(db.Text, nullable=True)
+
+    screenshots  = db.Column(db.Text, nullable=False, default="[]")  # JSON list
+    related_links= db.Column(db.Text, nullable=False, default="[]")  # JSON list
+
+    # admin handling
+    status       = db.Column(db.String(20), nullable=False, default="open")  # open/reviewing/resolved/rejected
+    admin_note   = db.Column(db.Text, nullable=True)
+    handled_by   = db.Column(db.String(255), nullable=True)
+    handled_at   = db.Column(db.DateTime, nullable=True)
+
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at   = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
 # -------------------- 初始化：按方言兜底建表 --------------------
 with app.app_context():
     db.create_all()
@@ -5467,4 +5500,221 @@ def api_block_list():
     except Exception as e:
         return jsonify({"ok": True, "items": [], "detail": str(e)})
 
+# ===== Report APIs (NEW) =====
 
+REPORT_ALLOWED_CATEGORIES = {
+    "Spam",
+    "Copyright infringement",
+    "Scam or fraud",
+    "Harassment or hate speech",
+    "Sexual content or involving minors",
+    "Graphic violence / gore",
+    "Illegal goods or drugs",
+    "Other",
+}
+
+REPORT_ALLOWED_LOCATIONS = {
+    "Profile Picture",
+    "Cover",
+    "Posts",
+    "Products",
+    "Chats",
+    "Other",
+}
+
+def _as_list(v):
+    """Accept list or string; return list[str]."""
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return [str(x).strip() for x in v if str(x).strip()]
+    s = str(v).strip()
+    return [s] if s else []
+
+def _json_dump_list(lst):
+    try:
+        return json.dumps(lst, ensure_ascii=False)
+    except Exception:
+        return "[]"
+
+def _json_load_list(s):
+    try:
+        x = json.loads(s or "[]")
+        return x if isinstance(x, list) else []
+    except Exception:
+        return []
+
+@app.route("/api/report", methods=["POST"])
+@require_api_key
+@require_login
+def api_create_report():
+    """
+    Frontend payload example:
+    {
+      "target_email": "xxx@gmail.com",
+      "target_type": "profile",
+      "target_id": null,
+      "categories": ["Spam","Scam or fraud"],   # max 2
+      "locations": ["Posts","Profile Picture"],
+      "subject": "My subject",
+      "description": "detail...",
+      "screenshots": ["https://.../1.png", "https://.../2.png"],
+      "related_links": ["https://..."]
+    }
+    """
+    user = getattr(request, "current_user", None)
+    if not user or not getattr(user, "email", None):
+        return jsonify(ok=False, error="Unauthorized"), 401
+
+    data = request.get_json(silent=True) or {}
+
+    reporter_email = str(user.email or "").strip().lower()
+
+    target_email = str(data.get("target_email") or data.get("email") or "").strip().lower()
+    if not target_email:
+        return jsonify(ok=False, error="Missing target_email"), 400
+
+    target_type = str(data.get("target_type") or "profile").strip().lower()
+    target_id   = data.get("target_id")
+    if target_id is not None:
+        target_id = str(target_id).strip()[:64] or None
+
+    categories = _as_list(data.get("categories") or data.get("reasons"))
+    categories = [c for c in categories if c in REPORT_ALLOWED_CATEGORIES]
+    categories = categories[:2]  # max 2
+
+    if not categories:
+        return jsonify(ok=False, error="Please choose at least 1 category"), 400
+
+    locations = _as_list(data.get("locations") or data.get("where"))
+    locations = [w for w in locations if w in REPORT_ALLOWED_LOCATIONS]
+    # locations can be empty, but usually you want at least 1
+    locations = list(dict.fromkeys(locations))  # unique keep order
+
+    subject = str(data.get("subject") or "").strip()
+    if not subject:
+        return jsonify(ok=False, error="Missing subject"), 400
+    subject = subject[:200]
+
+    description = str(data.get("description") or "").strip()
+    if len(description) > 5000:
+        description = description[:5000]
+
+    screenshots = _as_list(data.get("screenshots"))
+    screenshots = screenshots[:10]  # avoid too large
+
+    related_links = _as_list(data.get("related_links") or data.get("links"))
+    related_links = related_links[:10]
+
+    try:
+        r = Report(
+            reporter_email=reporter_email,
+            target_email=target_email,
+            target_type=target_type,
+            target_id=target_id,
+            categories=_json_dump_list(categories),
+            locations=_json_dump_list(locations),
+            subject=subject,
+            description=description,
+            screenshots=_json_dump_list(screenshots),
+            related_links=_json_dump_list(related_links),
+            status="open"
+        )
+        db.session.add(r)
+        db.session.commit()
+
+        # 返回给前端：提交成功 + 你要显示的文案
+        return jsonify(
+            ok=True,
+            report_id=r.id,
+            message="✅ Thank you for using our service and providing feedback. We will handle this issue within 24 hours. We also sincerely apologize for any inconvenience this may have caused."
+        )
+    except Exception as e:
+        db.session.rollback()
+        return jsonify(ok=False, error=str(e)), 500
+
+
+@app.route("/api/admin/reports", methods=["GET"])
+@require_login
+@require_admin
+def api_admin_list_reports():
+    """
+    Admin list:
+      GET /api/admin/reports?status=open&limit=200&offset=0
+    """
+    status = (request.args.get("status") or "").strip().lower()
+    limit  = int(request.args.get("limit") or 200)
+    offset = int(request.args.get("offset") or 0)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+
+    q = Report.query
+    if status:
+        q = q.filter(Report.status == status)
+
+    q = q.order_by(Report.created_at.desc()).offset(offset).limit(limit)
+    rows = q.all()
+
+    items = []
+    for x in rows:
+        items.append({
+            "id": x.id,
+            "reporter_email": x.reporter_email,
+            "target_email": x.target_email,
+            "target_type": x.target_type,
+            "target_id": x.target_id,
+            "categories": _json_load_list(x.categories),
+            "locations": _json_load_list(x.locations),
+            "subject": x.subject,
+            "description": x.description,
+            "screenshots": _json_load_list(x.screenshots),
+            "related_links": _json_load_list(x.related_links),
+            "status": x.status,
+            "admin_note": x.admin_note,
+            "handled_by": x.handled_by,
+            "handled_at": x.handled_at.isoformat() if x.handled_at else None,
+            "created_at": x.created_at.isoformat() if x.created_at else None,
+            "updated_at": x.updated_at.isoformat() if x.updated_at else None,
+        })
+
+    return jsonify(ok=True, items=items)
+
+
+@app.route("/api/admin/reports/<int:rid>/status", methods=["POST"])
+@require_login
+@require_admin
+def api_admin_update_report_status(rid):
+    """
+    POST /api/admin/reports/<id>/status
+    body: { "status": "reviewing|resolved|rejected|open", "admin_note": "..." }
+    """
+    user = getattr(request, "current_user", None)
+    data = request.get_json(silent=True) or {}
+
+    status = str(data.get("status") or "").strip().lower()
+    if status not in {"open", "reviewing", "resolved", "rejected"}:
+        return jsonify(ok=False, error="Invalid status"), 400
+
+    admin_note = str(data.get("admin_note") or "").strip()
+    if len(admin_note) > 5000:
+        admin_note = admin_note[:5000]
+
+    r = Report.query.get(rid)
+    if not r:
+        return jsonify(ok=False, error="Report not found"), 404
+
+    try:
+        r.status = status
+        r.admin_note = admin_note or r.admin_note
+        r.handled_by = (user.email if user else None)
+
+        if status in {"resolved", "rejected"}:
+            r.handled_at = datetime.utcnow()
+        else:
+            r.handled_at = None
+
+        db.session.commit()
+        return jsonify(ok=True)
+    except Exception as e:
+        db.session.rollback()
+        return jsonify(ok=False, error=str(e)), 500
