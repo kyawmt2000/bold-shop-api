@@ -5468,10 +5468,13 @@ def api_block_state():
         return jsonify({"ok": True, "blocked_by_me": False, "blocked_me": False, "detail": str(e)})
 
 @app.get("/api/block/list")
+@require_login
 def api_block_list():
+    me = (getattr(request, "current_user", None).email or "").strip().lower()
     email = (request.args.get("email") or "").strip().lower()
-    if not email:
-        return jsonify({"ok": True, "items": []})
+
+    if not email or email != me:
+        email = me
 
     try:
         rows = (UserBlock.query
@@ -5479,7 +5482,8 @@ def api_block_list():
                 .order_by(UserBlock.id.desc())
                 .limit(500)
                 .all())
-        items = [{"blocked_email": r.blocked_email, "created_at": r.created_at.isoformat()} for r in rows]
+        items = [{"blocked_email": r.blocked_email,
+                  "created_at": r.created_at.isoformat()} for r in rows]
         return jsonify({"ok": True, "items": items})
     except Exception as e:
         return jsonify({"ok": True, "items": [], "detail": str(e)})
