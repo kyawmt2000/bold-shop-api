@@ -852,6 +852,9 @@ class UserSetting(db.Model):
     public_profile = db.Column(db.Boolean, default=True)
     show_following = db.Column(db.Boolean, default=True)
     show_followers = db.Column(db.Boolean, default=True)
+    show_posts    = db.Column(db.Boolean, default=True)
+    show_products = db.Column(db.Boolean, default=True)
+    
     dm_who = db.Column(db.String(16), default="all")
     blacklist_json = db.Column(db.Text)              
     lang = db.Column(db.String(8), default="zh")
@@ -3010,7 +3013,7 @@ def api_get_settings():
 
     def default_payload(email: str):
         # ✅ 给前端一个完整结构，避免 UI 因缺字段默认回 All
-        pv = {"following": "public", "followers": "public", "message": "public"}
+        pv = {"following": "public", "followers": "public", "message": "public","posts": "public","products": "public",}
         return {
             "ok": True,
             "email": email,
@@ -3140,10 +3143,14 @@ def api_get_settings():
             "following": _priv_str_from_bool(getattr(s, "show_following", True)),
             "followers": _priv_str_from_bool(getattr(s, "show_followers", True)),
             "message":   _priv_str_from_dmwho(getattr(s, "dm_who", "all")),
+            "posts":     _priv_str_from_bool(getattr(s, "show_posts", True)),
+            "products":  _priv_str_from_bool(getattr(s, "show_products", True)),
         }
         data["privacy_following"] = pv["following"]
         data["privacy_followers"] = pv["followers"]
         data["privacy_message"]   = pv["message"]
+        data["privacy_posts"]     = pv["posts"]
+        data["privacy_products"]  = pv["products"]
         data["privacy_json"]      = json.dumps(pv, ensure_ascii=False)
 
         return jsonify(data), 200
@@ -3244,6 +3251,8 @@ def api_post_settings():
         pf = data.get("privacy_following")
         pr = data.get("privacy_followers")
         pm = data.get("privacy_message")
+        pp = data.get("privacy_posts")
+        pd = data.get("privacy_products")
 
         if pf is None and pv_obj:
             pf = pv_obj.get("following")
@@ -3251,6 +3260,11 @@ def api_post_settings():
             pr = pv_obj.get("followers")
         if pm is None and pv_obj:
             pm = pv_obj.get("message")
+            
+        if pp is None and pv_obj:
+            pp = pv_obj.get("posts")
+        if pd is None and pv_obj:
+            pd = pv_obj.get("products")
 
         if pf is not None:
             s.show_following = _bool_from_priv_str(pf, default=getattr(s, "show_following", True))
@@ -3258,6 +3272,12 @@ def api_post_settings():
             s.show_followers = _bool_from_priv_str(pr, default=getattr(s, "show_followers", True))
         if pm is not None:
             s.dm_who = _dmwho_from_priv_str(pm, default=getattr(s, "dm_who", "all"))
+
+        if pp is not None and hasattr(s, "show_posts"):
+            s.show_posts = _bool_from_priv_str(pp, default=getattr(s, "show_posts", True))
+
+        if pd is not None and hasattr(s, "show_products"):
+            s.show_products = _bool_from_priv_str(pd, default=getattr(s, "show_products", True))
 
         # 8) user_id 兜底：如果没有就生成（保证固定）
         try:
@@ -3314,10 +3334,14 @@ def api_post_settings():
             "following": _priv_str_from_bool(getattr(s, "show_following", True)),
             "followers": _priv_str_from_bool(getattr(s, "show_followers", True)),
             "message":   _priv_str_from_dmwho(getattr(s, "dm_who", "all")),
+            "posts":     _priv_str_from_bool(getattr(s, "show_posts", True)),
+            "products":  _priv_str_from_bool(getattr(s, "show_products", True)),
         }
         resp["privacy_following"] = pv["following"]
         resp["privacy_followers"] = pv["followers"]
         resp["privacy_message"]   = pv["message"]
+        resp["privacy_posts"]    = pv["posts"]
+        resp["privacy_products"] = pv["products"]
         resp["privacy_json"]      = json.dumps(pv, ensure_ascii=False)
 
         return jsonify(resp), 200
