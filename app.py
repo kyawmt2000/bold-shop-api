@@ -856,6 +856,10 @@ class UserSetting(db.Model):
     show_products = db.Column(db.Boolean, default=True)
     
     dm_who = db.Column(db.String(16), default="all")
+
+    privacy_posts = db.Column(db.String(16), default="public")
+    privacy_products = db.Column(db.String(16), default="public")
+
     blacklist_json = db.Column(db.Text)              
     lang = db.Column(db.String(8), default="zh")
 
@@ -3000,20 +3004,35 @@ def _priv_str_from_dmwho(dm_who: str) -> str:
     dm = (dm_who or "").strip().lower()
     return "following" if dm == "following" else "public"
 
+def _norm_priv(v: str, default="public") -> str:
+    v = (v or "").strip().lower()
+    if v in ("public", "following"):
+        return v
+    # 兼容老值
+    if v in ("all", "everyone", "anyone"):
+        return "public"
+    if v in ("friends", "follow", "followers_only"):
+        return "following"
+    return default
+
 @app.get("/api/settings")
 def api_get_settings():
     """
     根据 email 返回用户设置：
     - 找不到记录：自动创建一条（保证 user_id 永久固定）
-    - avatar 使用 avatar_url 字段（如果有）
-    - phone：如果模型有字段则返回
-    - user_id：创建后永不改变
-    - ✅ 兼容前端隐私字段 privacy_* / privacy_json（解决刷新变 All）
+    - avatar 使用 avatar_url 字段
+    - ✅ 兼容 privacy_* / privacy_json
+    - ✅ 新增 posts/products 可见性：privacy_posts/privacy_products
     """
 
     def default_payload(email: str):
-        # ✅ 给前端一个完整结构，避免 UI 因缺字段默认回 All
-        pv = {"following": "public", "followers": "public", "message": "public","posts": "public","products": "public",}
+        pv = {
+            "following": "public",
+            "followers": "public",
+            "message": "public",
+            "posts": "public",
+            "products": "public",
+        }
         return {
             "ok": True,
             "email": email,
@@ -3033,29 +3052,26 @@ def api_get_settings():
             "show_followers": True,
             "show_following": True,
             "dm_who": "all",
-            # privacy compatible fields
             "privacy_following": pv["following"],
             "privacy_followers": pv["followers"],
             "privacy_message": pv["message"],
+            "privacy_posts": pv["posts"],
+            "privacy_products": pv["products"],
             "privacy_json": json.dumps(pv, ensure_ascii=False),
             "updated_at": None,
         }
 
     uid = ""
-
-    # 1) 取 email
     email = (request.args.get("email") or request.headers.get("X-User-Email") or "").strip().lower()
     if not email:
         return jsonify({"message": "missing_email"}), 400
 
-    # 2) 查数据库（出错也不要 500）
     try:
         s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
     except Exception as e:
         current_app.logger.exception("GET /api/settings DB error: %s", e)
         return jsonify(default_payload(email)), 200
 
-    # 3) 没有记录 → 创建记录
     if not s:
         try:
             s = UserSetting(email=email)
@@ -3066,7 +3082,7 @@ def api_get_settings():
             current_app.logger.exception("GET /api/settings create row error: %s", e)
             return jsonify(default_payload(email)), 200
 
-    # 3.5) 确保 user_id 生成并持久化（生成后 commit）
+    # ensure user_id fixed
     try:
         before = (getattr(s, "user_id", "") or "").strip()
         uid = _ensure_user_id(s)
@@ -3078,22 +3094,6 @@ def api_get_settings():
         current_app.logger.exception("GET /api/settings ensure user_id error: %s", e)
         uid = ""
 
-    # 3.6) 自动写入 city（仅当数据库 city 为空时）
-    try:
-        cur_city = (getattr(s, "city", "") or "").strip()
-        if not cur_city:
-            ip = get_client_ip(request)
-            geo_city = ip_to_city(ip)
-            if geo_city:
-                s.city = geo_city
-                if hasattr(s, "updated_at"):
-                    s.updated_at = datetime.utcnow()
-                db.session.commit()
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.exception("GET /api/settings auto city failed: %s", e)
-
-    # 4) 组装返回
     try:
         try:
             data = _settings_to_dict(s)
@@ -3104,10 +3104,8 @@ def api_get_settings():
         data["email"] = email
         data["id"] = getattr(s, "id", None)
 
-        # user_id 永久返回
         data["user_id"] = uid or (getattr(s, "user_id", "") or "").strip() or data.get("user_id", "") or ""
 
-        # avatar：优先 avatar_url / avatar
         avatar_val = (
             getattr(s, "avatar_url", None)
             or getattr(s, "avatar", None)
@@ -3116,7 +3114,7 @@ def api_get_settings():
         )
         data["avatar"] = avatar_val
         data["avatar_url"] = getattr(s, "avatar_url", "") or data.get("avatar_url", "") or ""
-        data["cover_url"] = getattr(s, "cover_url", "") or data.get("cover_url", "") or ""
+        data["cover_url"]  = getattr(s, "cover_url", "")  or data.get("cover_url", "") or ""
 
         # 基本字段兜底
         data.setdefault("nickname", getattr(s, "nickname", "") or "")
@@ -3130,7 +3128,6 @@ def api_get_settings():
         data.setdefault("show_following", bool(getattr(s, "show_following", True)))
         data.setdefault("dm_who", (getattr(s, "dm_who", "all") or "all"))
 
-        # phone
         if hasattr(s, "phone"):
             data["phone"] = getattr(s, "phone", "") or ""
         else:
@@ -3138,14 +3135,18 @@ def api_get_settings():
 
         data["updated_at"] = getattr(s, "updated_at", None) if hasattr(s, "updated_at") else None
 
-        # ✅ privacy: 兼容前端字段（核心修复）
+        # ✅ privacy 输出（following/followers/message 继续映射旧字段）
+        posts_priv = _norm_priv(getattr(s, "privacy_posts", None), default="public")
+        prod_priv  = _norm_priv(getattr(s, "privacy_products", None), default="public")
+
         pv = {
             "following": _priv_str_from_bool(getattr(s, "show_following", True)),
             "followers": _priv_str_from_bool(getattr(s, "show_followers", True)),
             "message":   _priv_str_from_dmwho(getattr(s, "dm_who", "all")),
-            "posts":     _priv_str_from_bool(getattr(s, "show_posts", True)),
-            "products":  _priv_str_from_bool(getattr(s, "show_products", True)),
+            "posts":     posts_priv,
+            "products":  prod_priv,
         }
+
         data["privacy_following"] = pv["following"]
         data["privacy_followers"] = pv["followers"]
         data["privacy_message"]   = pv["message"]
@@ -3164,21 +3165,17 @@ def api_get_settings():
 @app.post("/api/settings")
 def api_post_settings():
     """
-    保存 / 更新用户设定（配合 setting.html 使用）
-
-    ✅ 同时支持：
-    - 基本资料：nickname/bio/gender/birthday/city/lang/phone/avatar/avatar_url/cover_url
-    - 隐私：privacy_following/privacy_followers/privacy_message/privacy_json
-    - 兼容表字段：show_following/show_followers/dm_who/public_profile
+    保存 / 更新用户设定：
+    - 基本资料
+    - 隐私：privacy_following/privacy_followers/privacy_message/privacy_posts/privacy_products/privacy_json
+    - following/followers/message 仍落到旧字段 show_* / dm_who
+    - posts/products 落到新字段 privacy_posts/privacy_products
     """
-
-    # 0) 取 JSON
     try:
         data = request.get_json(force=True) or {}
     except Exception:
         return jsonify({"message": "invalid_json"}), 400
 
-    # 1) email
     email = (
         data.get("email")
         or request.args.get("email")
@@ -3189,32 +3186,26 @@ def api_post_settings():
     if not email:
         return jsonify({"message": "missing_email"}), 400
 
-    # ✅ 确保 users 表一定有这个账号（没有就创建）
     try:
-        _touch_user(email)
-    except Exception as e:
-        # 这里不阻塞 settings 保存
-        current_app.logger.warning("_touch_user failed: %s", e)
+        try:
+            _touch_user(email)
+        except Exception as e:
+            current_app.logger.warning("_touch_user failed: %s", e)
 
-    try:
-        # 2) 找 / 建记录（不区分大小写）
         s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
         if not s:
             s = UserSetting(email=email)
             db.session.add(s)
-            db.session.flush()  # 给 s.id
+            db.session.flush()
 
-        # 3) 基本信息（去掉前后空格）
+        # 基本字段
         for field in ["nickname", "bio", "birthday", "city", "gender", "lang", "cover_url"]:
             if field in data:
-                value = (data.get(field) or "").strip()
-                setattr(s, field, value)
+                setattr(s, field, (data.get(field) or "").strip())
 
-        # 4) phone
         if "phone" in data and hasattr(s, "phone"):
             s.phone = (data.get("phone") or "").strip()
 
-        # 5) avatar URL（由前端 /api/profile/avatar 上传后返回的 url）
         avatar_val = (data.get("avatar") or data.get("avatar_url") or "").strip()
         if avatar_val:
             if hasattr(s, "avatar_url"):
@@ -3222,21 +3213,18 @@ def api_post_settings():
             elif hasattr(s, "avatar"):
                 s.avatar = avatar_val
 
-        # 6) public_profile / show_followers / show_following（如果前端传就更新）
+        # bool 字段
         def to_bool(v):
-            if isinstance(v, bool):
-                return v
-            if isinstance(v, str):
-                return v.strip().lower() in ("1", "true", "yes", "on")
-            if isinstance(v, (int, float)):
-                return bool(v)
+            if isinstance(v, bool): return v
+            if isinstance(v, str): return v.strip().lower() in ("1", "true", "yes", "on")
+            if isinstance(v, (int, float)): return bool(v)
             return False
 
         for field in ["public_profile", "show_followers", "show_following"]:
             if field in data:
                 setattr(s, field, to_bool(data.get(field)))
 
-        # ✅ 7) privacy: 接收 privacy_* / privacy_json，并落库到现有字段
+        # ===== privacy 输入 =====
         pv_obj = None
         raw_pj = (data.get("privacy_json") or "").strip()
         if raw_pj:
@@ -3247,25 +3235,19 @@ def api_post_settings():
             except Exception:
                 pv_obj = None
 
-        # 优先级：显式字段 > privacy_json > 不改原值
         pf = data.get("privacy_following")
         pr = data.get("privacy_followers")
         pm = data.get("privacy_message")
         pp = data.get("privacy_posts")
         pd = data.get("privacy_products")
 
-        if pf is None and pv_obj:
-            pf = pv_obj.get("following")
-        if pr is None and pv_obj:
-            pr = pv_obj.get("followers")
-        if pm is None and pv_obj:
-            pm = pv_obj.get("message")
-            
-        if pp is None and pv_obj:
-            pp = pv_obj.get("posts")
-        if pd is None and pv_obj:
-            pd = pv_obj.get("products")
+        if pf is None and pv_obj: pf = pv_obj.get("following")
+        if pr is None and pv_obj: pr = pv_obj.get("followers")
+        if pm is None and pv_obj: pm = pv_obj.get("message")
+        if pp is None and pv_obj: pp = pv_obj.get("posts")
+        if pd is None and pv_obj: pd = pv_obj.get("products")
 
+        # following/followers/message -> 旧字段
         if pf is not None:
             s.show_following = _bool_from_priv_str(pf, default=getattr(s, "show_following", True))
         if pr is not None:
@@ -3273,78 +3255,48 @@ def api_post_settings():
         if pm is not None:
             s.dm_who = _dmwho_from_priv_str(pm, default=getattr(s, "dm_who", "all"))
 
-        if pp is not None and hasattr(s, "show_posts"):
-            s.show_posts = _bool_from_priv_str(pp, default=getattr(s, "show_posts", True))
+        # posts/products -> 新字段
+        if pp is not None and hasattr(s, "privacy_posts"):
+            s.privacy_posts = _norm_priv(pp, default=getattr(s, "privacy_posts", "public"))
+        if pd is not None and hasattr(s, "privacy_products"):
+            s.privacy_products = _norm_priv(pd, default=getattr(s, "privacy_products", "public"))
 
-        if pd is not None and hasattr(s, "show_products"):
-            s.show_products = _bool_from_priv_str(pd, default=getattr(s, "show_products", True))
-
-        # 8) user_id 兜底：如果没有就生成（保证固定）
+        # ensure user_id
         try:
             _ensure_user_id(s)
         except Exception as e:
             current_app.logger.warning("_ensure_user_id failed in POST: %s", e)
 
-        # 9) 更新时间
         if hasattr(s, "updated_at"):
             s.updated_at = datetime.utcnow()
 
         db.session.commit()
 
-        # 10) 返回最新设置（结构跟 GET 一样）
-        try:
-            resp = _settings_to_dict(s)
-        except Exception:
-            resp = {}
-
-        resp["ok"] = True
-        resp["id"] = getattr(s, "id", None)
-        resp["email"] = email
-        resp["user_id"] = (getattr(s, "user_id", "") or "").strip() or resp.get("user_id", "") or ""
-
-        avatar_val2 = (
-            getattr(s, "avatar_url", None)
-            or getattr(s, "avatar", None)
-            or resp.get("avatar")
-            or ""
-        )
-        resp["avatar"] = avatar_val2
-        resp["avatar_url"] = getattr(s, "avatar_url", "") or resp.get("avatar_url", "") or ""
-        resp["cover_url"] = getattr(s, "cover_url", "") or resp.get("cover_url", "") or ""
-
-        resp["nickname"] = getattr(s, "nickname", "") or ""
-        resp["bio"] = getattr(s, "bio", "") or ""
-        resp["birthday"] = getattr(s, "birthday", "") or ""
-        resp["city"] = getattr(s, "city", "") or ""
-        resp["gender"] = getattr(s, "gender", "") or ""
-        resp["lang"] = getattr(s, "lang", "en") or "en"
-        resp["public_profile"] = bool(getattr(s, "public_profile", True))
-        resp["show_followers"] = bool(getattr(s, "show_followers", True))
-        resp["show_following"] = bool(getattr(s, "show_following", True))
-        resp["dm_who"] = (getattr(s, "dm_who", "all") or "all")
-
-        if hasattr(s, "phone"):
-            resp["phone"] = getattr(s, "phone", "") or ""
-        else:
-            resp.setdefault("phone", "")
-
-        resp["updated_at"] = getattr(s, "updated_at", None) if hasattr(s, "updated_at") else None
+        # ✅ 最稳：POST 结束后直接返回 GET 的结构（避免前端缺字段又默认 All）
+        # 这里简单写一个“复用 pv 输出”
+        posts_priv = _norm_priv(getattr(s, "privacy_posts", None), default="public")
+        prod_priv  = _norm_priv(getattr(s, "privacy_products", None), default="public")
 
         pv = {
             "following": _priv_str_from_bool(getattr(s, "show_following", True)),
             "followers": _priv_str_from_bool(getattr(s, "show_followers", True)),
             "message":   _priv_str_from_dmwho(getattr(s, "dm_who", "all")),
-            "posts":     _priv_str_from_bool(getattr(s, "show_posts", True)),
-            "products":  _priv_str_from_bool(getattr(s, "show_products", True)),
+            "posts":     posts_priv,
+            "products":  prod_priv,
         }
-        resp["privacy_following"] = pv["following"]
-        resp["privacy_followers"] = pv["followers"]
-        resp["privacy_message"]   = pv["message"]
-        resp["privacy_posts"]    = pv["posts"]
-        resp["privacy_products"] = pv["products"]
-        resp["privacy_json"]      = json.dumps(pv, ensure_ascii=False)
 
-        return jsonify(resp), 200
+        return jsonify({
+            "ok": True,
+            "email": email,
+            "id": getattr(s, "id", None),
+            "user_id": (getattr(s, "user_id", "") or "").strip(),
+            "privacy_following": pv["following"],
+            "privacy_followers": pv["followers"],
+            "privacy_message": pv["message"],
+            "privacy_posts": pv["posts"],
+            "privacy_products": pv["products"],
+            "privacy_json": json.dumps(pv, ensure_ascii=False),
+        }), 200
 
     except Exception as e:
         db.session.rollback()
