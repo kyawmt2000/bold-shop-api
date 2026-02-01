@@ -2972,6 +2972,31 @@ def _ensure_user_id(s):
 
     return ""
 
+def _priv_str_from_bool(show: bool) -> str:
+    # True  = All (public)
+    # False = My Following (following)
+    return "public" if bool(show) else "following"
+
+def _bool_from_priv_str(v: str, default=True) -> bool:
+    v = (v or "").strip().lower()
+    if v == "public":
+        return True
+    if v == "following":
+        return False
+    return bool(default)
+
+def _dmwho_from_priv_str(v: str, default="all") -> str:
+    v = (v or "").strip().lower()
+    if v == "following":
+        return "following"
+    if v == "public":
+        return "all"
+    return default
+
+def _priv_str_from_dmwho(dm_who: str) -> str:
+    dm = (dm_who or "").strip().lower()
+    return "following" if dm == "following" else "public"
+
 @app.get("/api/settings")
 def api_get_settings():
     """
@@ -2979,11 +3004,17 @@ def api_get_settings():
     - 找不到记录：自动创建一条（保证 user_id 永久固定）
     - avatar 使用 avatar_url 字段（如果有）
     - phone：如果模型有字段则返回
-    - user_id：4随机 + DDMMYY + 4随机，创建后永不改变
+    - user_id：创建后永不改变
+    - ✅ 兼容前端隐私字段 privacy_* / privacy_json（解决刷新变 All）
     """
+
     def default_payload(email: str):
+        # ✅ 给前端一个完整结构，避免 UI 因缺字段默认回 All
+        pv = {"following": "public", "followers": "public", "message": "public"}
         return {
+            "ok": True,
             "email": email,
+            "id": None,
             "user_id": "",
             "nickname": "",
             "avatar": "",
@@ -2998,6 +3029,12 @@ def api_get_settings():
             "public_profile": True,
             "show_followers": True,
             "show_following": True,
+            "dm_who": "all",
+            # privacy compatible fields
+            "privacy_following": pv["following"],
+            "privacy_followers": pv["followers"],
+            "privacy_message": pv["message"],
+            "privacy_json": json.dumps(pv, ensure_ascii=False),
             "updated_at": None,
         }
 
@@ -3008,7 +3045,7 @@ def api_get_settings():
     if not email:
         return jsonify({"message": "missing_email"}), 400
 
-    # 2) 查数据库（出错时也不要 500）
+    # 2) 查数据库（出错也不要 500）
     try:
         s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
     except Exception as e:
@@ -3026,12 +3063,11 @@ def api_get_settings():
             current_app.logger.exception("GET /api/settings create row error: %s", e)
             return jsonify(default_payload(email)), 200
 
-    # 3.5) 确保 user_id 生成并持久化（关键：生成后 commit）
+    # 3.5) 确保 user_id 生成并持久化（生成后 commit）
     try:
         before = (getattr(s, "user_id", "") or "").strip()
         uid = _ensure_user_id(s)
         after = (getattr(s, "user_id", "") or "").strip()
-
         if after and after != before:
             db.session.commit()
     except Exception as e:
@@ -3061,9 +3097,11 @@ def api_get_settings():
         except Exception:
             data = {}
 
+        data["ok"] = True
         data["email"] = email
+        data["id"] = getattr(s, "id", None)
 
-        # 永久返回 user_id（优先用本次计算 uid，其次用库里字段）
+        # user_id 永久返回
         data["user_id"] = uid or (getattr(s, "user_id", "") or "").strip() or data.get("user_id", "") or ""
 
         # avatar：优先 avatar_url / avatar
@@ -3074,6 +3112,8 @@ def api_get_settings():
             or ""
         )
         data["avatar"] = avatar_val
+        data["avatar_url"] = getattr(s, "avatar_url", "") or data.get("avatar_url", "") or ""
+        data["cover_url"] = getattr(s, "cover_url", "") or data.get("cover_url", "") or ""
 
         # 基本字段兜底
         data.setdefault("nickname", getattr(s, "nickname", "") or "")
@@ -3085,8 +3125,9 @@ def api_get_settings():
         data.setdefault("public_profile", bool(getattr(s, "public_profile", True)))
         data.setdefault("show_followers", bool(getattr(s, "show_followers", True)))
         data.setdefault("show_following", bool(getattr(s, "show_following", True)))
+        data.setdefault("dm_who", (getattr(s, "dm_who", "all") or "all"))
 
-        # phone（如果模型有这个字段）
+        # phone
         if hasattr(s, "phone"):
             data["phone"] = getattr(s, "phone", "") or ""
         else:
@@ -3094,13 +3135,197 @@ def api_get_settings():
 
         data["updated_at"] = getattr(s, "updated_at", None) if hasattr(s, "updated_at") else None
 
+        # ✅ privacy: 兼容前端字段（核心修复）
+        pv = {
+            "following": _priv_str_from_bool(getattr(s, "show_following", True)),
+            "followers": _priv_str_from_bool(getattr(s, "show_followers", True)),
+            "message":   _priv_str_from_dmwho(getattr(s, "dm_who", "all")),
+        }
+        data["privacy_following"] = pv["following"]
+        data["privacy_followers"] = pv["followers"]
+        data["privacy_message"]   = pv["message"]
+        data["privacy_json"]      = json.dumps(pv, ensure_ascii=False)
+
         return jsonify(data), 200
 
     except Exception as e:
         current_app.logger.exception("GET /api/settings serialize error: %s", e)
         payload = default_payload(email)
         payload["user_id"] = uid or ""
-        return jsonify({"ok": True, **payload}), 200
+        return jsonify(payload), 200
+
+@app.post("/api/settings")
+def api_post_settings():
+    """
+    保存 / 更新用户设定（配合 setting.html 使用）
+
+    ✅ 同时支持：
+    - 基本资料：nickname/bio/gender/birthday/city/lang/phone/avatar/avatar_url/cover_url
+    - 隐私：privacy_following/privacy_followers/privacy_message/privacy_json
+    - 兼容表字段：show_following/show_followers/dm_who/public_profile
+    """
+
+    # 0) 取 JSON
+    try:
+        data = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"message": "invalid_json"}), 400
+
+    # 1) email
+    email = (
+        data.get("email")
+        or request.args.get("email")
+        or request.headers.get("X-User-Email")
+        or ""
+    ).strip().lower()
+
+    if not email:
+        return jsonify({"message": "missing_email"}), 400
+
+    # ✅ 确保 users 表一定有这个账号（没有就创建）
+    try:
+        _touch_user(email)
+    except Exception as e:
+        # 这里不阻塞 settings 保存
+        current_app.logger.warning("_touch_user failed: %s", e)
+
+    try:
+        # 2) 找 / 建记录（不区分大小写）
+        s = UserSetting.query.filter(func.lower(UserSetting.email) == email).first()
+        if not s:
+            s = UserSetting(email=email)
+            db.session.add(s)
+            db.session.flush()  # 给 s.id
+
+        # 3) 基本信息（去掉前后空格）
+        for field in ["nickname", "bio", "birthday", "city", "gender", "lang", "cover_url"]:
+            if field in data:
+                value = (data.get(field) or "").strip()
+                setattr(s, field, value)
+
+        # 4) phone
+        if "phone" in data and hasattr(s, "phone"):
+            s.phone = (data.get("phone") or "").strip()
+
+        # 5) avatar URL（由前端 /api/profile/avatar 上传后返回的 url）
+        avatar_val = (data.get("avatar") or data.get("avatar_url") or "").strip()
+        if avatar_val:
+            if hasattr(s, "avatar_url"):
+                s.avatar_url = avatar_val
+            elif hasattr(s, "avatar"):
+                s.avatar = avatar_val
+
+        # 6) public_profile / show_followers / show_following（如果前端传就更新）
+        def to_bool(v):
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, str):
+                return v.strip().lower() in ("1", "true", "yes", "on")
+            if isinstance(v, (int, float)):
+                return bool(v)
+            return False
+
+        for field in ["public_profile", "show_followers", "show_following"]:
+            if field in data:
+                setattr(s, field, to_bool(data.get(field)))
+
+        # ✅ 7) privacy: 接收 privacy_* / privacy_json，并落库到现有字段
+        pv_obj = None
+        raw_pj = (data.get("privacy_json") or "").strip()
+        if raw_pj:
+            try:
+                j = json.loads(raw_pj)
+                if isinstance(j, dict):
+                    pv_obj = j
+            except Exception:
+                pv_obj = None
+
+        # 优先级：显式字段 > privacy_json > 不改原值
+        pf = data.get("privacy_following")
+        pr = data.get("privacy_followers")
+        pm = data.get("privacy_message")
+
+        if pf is None and pv_obj:
+            pf = pv_obj.get("following")
+        if pr is None and pv_obj:
+            pr = pv_obj.get("followers")
+        if pm is None and pv_obj:
+            pm = pv_obj.get("message")
+
+        if pf is not None:
+            s.show_following = _bool_from_priv_str(pf, default=getattr(s, "show_following", True))
+        if pr is not None:
+            s.show_followers = _bool_from_priv_str(pr, default=getattr(s, "show_followers", True))
+        if pm is not None:
+            s.dm_who = _dmwho_from_priv_str(pm, default=getattr(s, "dm_who", "all"))
+
+        # 8) user_id 兜底：如果没有就生成（保证固定）
+        try:
+            _ensure_user_id(s)
+        except Exception as e:
+            current_app.logger.warning("_ensure_user_id failed in POST: %s", e)
+
+        # 9) 更新时间
+        if hasattr(s, "updated_at"):
+            s.updated_at = datetime.utcnow()
+
+        db.session.commit()
+
+        # 10) 返回最新设置（结构跟 GET 一样）
+        try:
+            resp = _settings_to_dict(s)
+        except Exception:
+            resp = {}
+
+        resp["ok"] = True
+        resp["id"] = getattr(s, "id", None)
+        resp["email"] = email
+        resp["user_id"] = (getattr(s, "user_id", "") or "").strip() or resp.get("user_id", "") or ""
+
+        avatar_val2 = (
+            getattr(s, "avatar_url", None)
+            or getattr(s, "avatar", None)
+            or resp.get("avatar")
+            or ""
+        )
+        resp["avatar"] = avatar_val2
+        resp["avatar_url"] = getattr(s, "avatar_url", "") or resp.get("avatar_url", "") or ""
+        resp["cover_url"] = getattr(s, "cover_url", "") or resp.get("cover_url", "") or ""
+
+        resp["nickname"] = getattr(s, "nickname", "") or ""
+        resp["bio"] = getattr(s, "bio", "") or ""
+        resp["birthday"] = getattr(s, "birthday", "") or ""
+        resp["city"] = getattr(s, "city", "") or ""
+        resp["gender"] = getattr(s, "gender", "") or ""
+        resp["lang"] = getattr(s, "lang", "en") or "en"
+        resp["public_profile"] = bool(getattr(s, "public_profile", True))
+        resp["show_followers"] = bool(getattr(s, "show_followers", True))
+        resp["show_following"] = bool(getattr(s, "show_following", True))
+        resp["dm_who"] = (getattr(s, "dm_who", "all") or "all")
+
+        if hasattr(s, "phone"):
+            resp["phone"] = getattr(s, "phone", "") or ""
+        else:
+            resp.setdefault("phone", "")
+
+        resp["updated_at"] = getattr(s, "updated_at", None) if hasattr(s, "updated_at") else None
+
+        pv = {
+            "following": _priv_str_from_bool(getattr(s, "show_following", True)),
+            "followers": _priv_str_from_bool(getattr(s, "show_followers", True)),
+            "message":   _priv_str_from_dmwho(getattr(s, "dm_who", "all")),
+        }
+        resp["privacy_following"] = pv["following"]
+        resp["privacy_followers"] = pv["followers"]
+        resp["privacy_message"]   = pv["message"]
+        resp["privacy_json"]      = json.dumps(pv, ensure_ascii=False)
+
+        return jsonify(resp), 200
+
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("POST /api/settings failed: %s", e)
+        return jsonify({"message": "db_error", "detail": str(e)}), 500
 
 @app.get("/api/follow/following")
 def api_follow_following_list():
@@ -3146,7 +3371,6 @@ def api_follow_following_list():
         app.logger.exception("api_follow_following_list error: %s", e)
         return jsonify({"ok": True, "items": []}), 200
 
-
 @app.get("/api/follow/followers")
 def api_follow_followers_list():
     """
@@ -3185,135 +3409,6 @@ def api_follow_followers_list():
     except Exception as e:
         app.logger.exception("api_follow_followers_list error: %s", e)
         return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
-
-# ===========================
-#  新版：保存用户设定
-# ===========================
-@app.post("/api/settings")
-def api_post_settings():
-    """
-    保存 / 更新用户设定（配合 setting.html 使用）：
-
-    Body JSON:
-    {
-      "email": "xxx@gmail.com",   # 必填
-      "nickname": "...",
-      "bio": "...",
-      "gender": "male|female|other|''",
-      "birthday": "YYYY-MM-DD",
-      "phone": "...",
-      "avatar": "https://gcs-url...",  # 头像 URL（由 /api/profile/avatar 返回）
-      // 以下可选：
-      "city": "...",
-      "lang": "en|zh|...",
-      "public_profile": true/false,
-      "show_followers": true/false,
-      "show_following": true/false
-    }
-    """
-    try:
-        data = request.get_json(force=True) or {}
-    except Exception:
-        return jsonify({"message": "invalid_json"}), 400
-
-    # 1) email
-    email = (
-        data.get("email")
-        or request.args.get("email")
-        or request.headers.get("X-User-Email")
-        or ""
-    ).strip().lower()
-
-    if not email:
-        return jsonify({"message": "missing_email"}), 400
-
-    # ✅ 确保 users 表一定有这个账号（没有就创建）
-    _touch_user(email)
-
-    try:
-        # 2) 找 / 建记录（不区分大小写）
-        s = UserSetting.query.filter(
-            func.lower(UserSetting.email) == email
-        ).first()
-        if not s:
-            s = UserSetting(email=email)
-            db.session.add(s)
-
-        # 3) 基本信息（去掉前后空格）
-        for field in ["nickname", "bio", "birthday", "city", "gender", "lang"]:
-            if field in data:
-                value = (data.get(field) or "").strip()
-                setattr(s, field, value)
-
-        # 4) phone 字段（如果模型有）
-        if "phone" in data and hasattr(s, "phone"):
-            s.phone = (data.get("phone") or "").strip()
-
-        # 5) avatar URL（由前端 /api/profile/avatar 上传后返回的 url）
-        avatar_val = data.get("avatar") or data.get("avatar_url") or ""
-        if avatar_val:
-            if hasattr(s, "avatar_url"):
-                s.avatar_url = avatar_val
-            else:
-                # 某些旧表可能直接叫 avatar
-                if hasattr(s, "avatar"):
-                    s.avatar = avatar_val
-
-        # 6) 隐私相关（如果前端没传就不改原来的）
-        def to_bool(v):
-            if isinstance(v, bool):
-                return v
-            if isinstance(v, str):
-                return v.strip().lower() in ("1", "true", "yes", "on")
-            if isinstance(v, (int, float)):
-                return bool(v)
-            return False
-
-        for field in ["public_profile", "show_followers", "show_following"]:
-            if field in data:
-                setattr(s, field, to_bool(data.get(field)))
-
-        # 7) 更新时间
-        s.updated_at = datetime.utcnow()
-
-        db.session.commit()
-
-        # 8) 返回最新设置（结构跟 GET 一样）
-        try:
-            resp = _settings_to_dict(s)
-        except Exception:
-            resp = {}
-
-        resp["email"] = email
-
-        avatar_val = (
-            getattr(s, "avatar_url", None)
-            or getattr(s, "avatar", None)
-            or resp.get("avatar")
-            or ""
-        )
-        resp["avatar"] = avatar_val
-        resp["nickname"] = getattr(s, "nickname", "") or ""
-        resp["bio"] = getattr(s, "bio", "") or ""
-        resp["birthday"] = getattr(s, "birthday", "") or ""
-        resp["city"] = getattr(s, "city", "") or ""
-        resp["gender"] = getattr(s, "gender", "") or ""
-        resp["lang"] = getattr(s, "lang", "en") or "en"
-        resp["public_profile"] = bool(getattr(s, "public_profile", True))
-        resp["show_followers"] = bool(getattr(s, "show_followers", True))
-        resp["show_following"] = bool(getattr(s, "show_following", True))
-        if hasattr(s, "phone"):
-            resp["phone"] = getattr(s, "phone", "") or ""
-        else:
-            resp.setdefault("phone", "")
-        resp["updated_at"] = getattr(s, "updated_at", None)
-
-        return jsonify(resp), 200
-
-    except Exception as e:
-        db.session.rollback()
-        current_app.logger.exception("POST /api/settings failed: %s", e)
-        return jsonify({"message": "db_error", "detail": str(e)}), 500
 
 @app.route("/api/follow", methods=["POST"])
 def api_follow():
