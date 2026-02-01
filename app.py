@@ -2130,9 +2130,14 @@ def products_list():
 def products_get_one(pid):
     row = Product.query.get_or_404(pid)
 
-    # ✅ 软删商品：详情接口直接当不存在
     if (getattr(row, "status", "") or "") != "active":
         return jsonify({"message":"not_found"}), 404
+
+    viewer = get_viewer_email_optional()
+    owner  = (getattr(row, "merchant_email", "") or "").strip().lower()
+
+    if viewer and owner and is_blocked_pair(viewer, owner):
+        return jsonify({"message":"blocked"}), 403
 
     return jsonify(_product_to_dict(row))
 
@@ -2624,14 +2629,21 @@ def outfits_collection():
         db.session.rollback()
         return jsonify({"error":"create_failed","detail":str(e)}), 500
 
-# ✅ 单条获取：合并去重 + OPTIONS
 @app.route("/api/outfits/<int:oid>", methods=["GET", "OPTIONS"])
 def outfits_one(oid):
     if request.method == "OPTIONS":
         return _ok()
+
     row = Outfit.query.get_or_404(oid)
     if (row.status or "") != "active":
         return jsonify({"message":"not_found"}), 404
+
+    viewer = get_viewer_email_optional()
+    owner  = (getattr(row, "author_email", "") or "").strip().lower()
+
+    if viewer and owner and is_blocked_pair(viewer, owner):
+        return jsonify({"message":"blocked"}), 403
+
     return jsonify(_outfit_to_dict(row))
 
 @app.get("/api/outfits/<int:oid>/media/<int:mid>")
@@ -5392,7 +5404,6 @@ def require_api_key(fn):
 
 @app.get("/api/blocks")
 def get_blocks():
-    # 你已有 X-API-Key 校验 + authHeaders(token) 的话，照旧
     email = (request.args.get("email") or "").strip().lower()
     if not email:
         return jsonify({"error":"missing email"}), 400
@@ -5400,8 +5411,7 @@ def get_blocks():
     rows = UserBlock.query.filter_by(blocker_email=email).all()
     return jsonify({
         "blocks": [{
-            "blocked_email": r.blocked_email,
-            "reason": r.reason,
+            "blocked_email": (r.blocked_email or "").strip().lower(),
             "created_at": r.created_at.isoformat()
         } for r in rows]
     })
