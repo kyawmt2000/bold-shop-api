@@ -5138,14 +5138,60 @@ def verify_google_id_token(id_token: str):
 
     return payload
 
+def exchange_google_code_for_id_token(code: str, redirect_uri: str):
+    """
+    用授权码 code 换取 token（包含 id_token）
+    需要：GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
+    redirect_uri 必须与 Google Console 里配置的完全一致
+    """
+    token_url = "https://oauth2.googleapis.com/token"
+
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+
+    if not client_id or not client_secret:
+        raise Exception("missing GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET")
+
+    data = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code",
+    }
+
+    r = requests.post(token_url, data=data, timeout=15)
+    js = r.json() if r.content else {}
+    if r.status_code != 200:
+        raise Exception(f"google token exchange failed: {js}")
+
+    id_token = js.get("id_token") or ""
+    if not id_token:
+        raise Exception(f"google token exchange missing id_token: {js}")
+
+    return id_token
+
 @app.route("/api/auth/google", methods=["POST"])
 def auth_google():
     data = request.get_json(force=True) or {}
-    id_token = data.get("id_token") or ""
     mode = (data.get("mode") or "login").lower().strip()
 
+    id_token = (data.get("id_token") or "").strip()
+    code = (data.get("code") or "").strip()
+
+    # ✅ 你的 redirect 必须跟 Google Console 配的一模一样
+    # 建议用固定值，避免被前端传入污染
+    redirect_uri = "https://www.sohosea.com/google/callback.html"
+
+    # ✅ 如果没 id_token 但有 code，就用 code 换 id_token
+    if not id_token and code:
+        try:
+            id_token = exchange_google_code_for_id_token(code, redirect_uri)
+        except Exception as e:
+            return jsonify(ok=False, message=str(e)), 400
+
     if not id_token:
-        return jsonify(ok=False, message="missing id_token"), 400
+        return jsonify(ok=False, message="missing id_token or code"), 400
 
     try:
         p = verify_google_id_token(id_token)
@@ -5160,7 +5206,6 @@ def auth_google():
         if ident:
             u = ident.user
 
-            # ✅ 如果账号 deleted：login 继续禁止；signup 允许激活
             if getattr(u, "status", "active") == "deleted":
                 if mode != "signup":
                     return jsonify(ok=False, error="account_deleted", message="account deleted"), 403
