@@ -8,12 +8,13 @@ import re
 import random, string
 import hashlib
 import jwt, requests
+import urllib.parse, secrets
 from datetime import datetime
 from io import BytesIO
 from sqlalchemy import text
 from datetime import timedelta
 from functools import wraps
-from flask import request, jsonify
+from flask import request, jsonify, redirect
 from sqlalchemy import func
 from flask import current_app, request, jsonify
 from sqlalchemy import true as sa_true
@@ -5248,6 +5249,69 @@ def auth_google():
 
     except Exception as e:
         return jsonify(ok=False, message=str(e)), 400
+
+@app.route("/oauth/google/start")
+def oauth_google_start():
+    mode = (request.args.get("mode") or "login").lower().strip()
+    state = secrets.token_urlsafe(16)
+
+    # 你必须把 finish URL 加到 Google Console Authorized redirect URIs
+    redirect_uri = "https://bold-api-sg.onrender.com/oauth/google/finish"
+
+    scope = "openid email profile"
+    params = {
+        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": scope,
+        "state": state,
+        "prompt": "select_account",
+    }
+
+    # 可选：把 mode/state 临时存起来（最简先用 query 传回 finish）
+    # 这里简单一点：把 mode 编进 state（或你也可以用 session）
+    params["state"] = f"{state}:{mode}"
+
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+    return redirect(url, code=302)
+
+@app.route("/oauth/google/finish")
+def oauth_google_finish():
+    code = (request.args.get("code") or "").strip()
+    state = (request.args.get("state") or "").strip()
+
+    if not code:
+        return "missing code", 400
+
+    # 取 mode
+    mode = "login"
+    if ":" in state:
+        try:
+            mode = state.split(":", 1)[1]
+        except:
+            mode = "login"
+
+    redirect_uri = "https://bold-api-sg.onrender.com/oauth/google/finish"
+
+    try:
+        id_token = exchange_google_code_for_id_token(code, redirect_uri)
+        p = verify_google_id_token(id_token)
+
+        # ====== 下面复用你现有逻辑：sub/email 绑定、合并、创建、发 token ======
+        sub = p.get("sub")
+        email = (p.get("email") or "").lower().strip()
+        if not sub:
+            return "missing sub", 400
+
+        # 这里直接调用你现有逻辑“发 session token”的那一段：
+        # 建议你把现有 /api/auth/google 里 “拿到 p 后的逻辑” 抽成函数
+        token, user_email = login_or_signup_google(sub=sub, email=email, mode=mode)  # 你需要自己封装一下
+
+        # 最后回到 App：sohoapp://google_done?token=...
+        return redirect(f"sohoapp://google_done?token={urllib.parse.quote(token)}", code=302)
+
+    except Exception as e:
+        return f"oauth finish error: {e}", 400
 
 UID_FIELD = User.id  
 
