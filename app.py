@@ -5178,21 +5178,8 @@ def auth_google():
     mode = (data.get("mode") or "login").lower().strip()
 
     id_token = (data.get("id_token") or "").strip()
-    code = (data.get("code") or "").strip()
-
-    # ✅ 你的 redirect 必须跟 Google Console 配的一模一样
-    # 建议用固定值，避免被前端传入污染
-    redirect_uri = "https://www.sohosea.com/google/callback.html"
-
-    # ✅ 如果没 id_token 但有 code，就用 code 换 id_token
-    if not id_token and code:
-        try:
-            id_token = exchange_google_code_for_id_token(code, redirect_uri)
-        except Exception as e:
-            return jsonify(ok=False, message=str(e)), 400
-
     if not id_token:
-        return jsonify(ok=False, message="missing id_token or code"), 400
+        return jsonify(ok=False, message="missing id_token"), 400
 
     try:
         p = verify_google_id_token(id_token)
@@ -5253,24 +5240,23 @@ def auth_google():
 @app.route("/oauth/google/start")
 def oauth_google_start():
     mode = (request.args.get("mode") or "login").lower().strip()
-    state = secrets.token_urlsafe(16)
 
-    # 你必须把 finish URL 加到 Google Console Authorized redirect URIs
+    client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+    if not client_id:
+        return "missing GOOGLE_CLIENT_ID", 500
+
+    state = secrets.token_urlsafe(16)
     redirect_uri = "https://bold-api-sg.onrender.com/oauth/google/finish"
 
     scope = "openid email profile"
     params = {
-        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+        "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
         "scope": scope,
-        "state": state,
+        "state": f"{state}:{mode}",
         "prompt": "select_account",
     }
-
-    # 可选：把 mode/state 临时存起来（最简先用 query 传回 finish）
-    # 这里简单一点：把 mode 编进 state（或你也可以用 session）
-    params["state"] = f"{state}:{mode}"
 
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
     return redirect(url, code=302)
@@ -5283,13 +5269,11 @@ def oauth_google_finish():
     if not code:
         return "missing code", 400
 
-    # 取 mode
     mode = "login"
     if ":" in state:
-        try:
-            mode = state.split(":", 1)[1]
-        except:
-            mode = "login"
+        mode = state.split(":", 1)[1].strip().lower()
+    if mode not in ("login", "signup"):
+        mode = "login"
 
     redirect_uri = "https://bold-api-sg.onrender.com/oauth/google/finish"
 
@@ -5297,21 +5281,66 @@ def oauth_google_finish():
         id_token = exchange_google_code_for_id_token(code, redirect_uri)
         p = verify_google_id_token(id_token)
 
-        # ====== 下面复用你现有逻辑：sub/email 绑定、合并、创建、发 token ======
         sub = p.get("sub")
         email = (p.get("email") or "").lower().strip()
         if not sub:
-            return "missing sub", 400
+            return redirect("sohoapp://google_done?error=missing_sub", code=302)
 
-        # 这里直接调用你现有逻辑“发 session token”的那一段：
-        # 建议你把现有 /api/auth/google 里 “拿到 p 后的逻辑” 抽成函数
-        token, user_email = login_or_signup_google(sub=sub, email=email, mode=mode)  # 你需要自己封装一下
+        token, _ = login_or_signup_google(sub=sub, email=email, mode=mode)
 
-        # 最后回到 App：sohoapp://google_done?token=...
         return redirect(f"sohoapp://google_done?token={urllib.parse.quote(token)}", code=302)
 
     except Exception as e:
-        return f"oauth finish error: {e}", 400
+        msg = str(e)
+        if msg == "account_deleted":
+            return redirect("sohoapp://google_done?error=account_deleted", code=302)
+        return redirect("sohoapp://google_done?error=oauth_failed", code=302)
+
+def login_or_signup_google(sub: str, email: str, mode: str):
+    # 1) provider+sub 已绑定
+    ident = AuthIdentity.query.filter_by(provider="google", provider_sub=sub).first()
+    if ident:
+        u = ident.user
+
+        if getattr(u, "status", "active") == "deleted":
+            if mode != "signup":
+                raise Exception("account_deleted")
+            u.status = "active"
+            u.deleted_at = None
+            db.session.add(u)
+            db.session.commit()
+
+        u.last_seen_at = datetime.utcnow()
+        db.session.commit()
+
+        token = issue_session_token(u.id, u.email, provider="google")
+        return token, u.email
+
+    # 2) 没绑定：email 合并
+    u = None
+    if email:
+        u = User.query.filter_by(email=email).first()
+
+    if u and getattr(u, "status", "active") == "deleted":
+        if mode != "signup":
+            raise Exception("account_deleted")
+        u.status = "active"
+        u.deleted_at = None
+        db.session.add(u)
+        db.session.commit()
+
+    # 3) 否则创建新用户
+    if not u:
+        u = User(email=email or f"google_{sub}@noemail.local")
+        db.session.add(u)
+        db.session.flush()
+
+    ident = AuthIdentity(provider="google", provider_sub=sub, email=email or None, user_id=u.id)
+    db.session.add(ident)
+    db.session.commit()
+
+    token = issue_session_token(u.id, u.email, provider="google")
+    return token, u.email
 
 UID_FIELD = User.id  
 
