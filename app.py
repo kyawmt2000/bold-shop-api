@@ -99,12 +99,19 @@ def get_token_from_request():
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        token = get_token_from_request()
-        if not token:
+        tk = get_token_from_request()
+        if not tk:
             return jsonify(ok=False, error="unauthorized", message="missing token"), 401
 
         try:
-            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            payload = jwt.decode(
+                tk,
+                current_app.config["JWT_SECRET_KEY"],
+                algorithms=[current_app.config.get("JWT_ALG", "HS256")],
+                options={"require": ["exp"]},
+            )
+        except jwt.ExpiredSignatureError:
+            return jsonify(ok=False, error="unauthorized", message="token expired"), 401
         except Exception as e:
             current_app.logger.warning("JWT decode failed: %s", e)
             return jsonify(ok=False, error="unauthorized", message="invalid token"), 401
@@ -117,7 +124,7 @@ def require_login(fn):
         if not u:
             return jsonify(ok=False, error="unauthorized", message="user not found"), 401
 
-        # ✅ 封号拦截（你后端用 status 字段）
+        # ✅ 如果你要封号：后端 status="banned"
         if (getattr(u, "status", "") or "").lower() == "banned":
             return jsonify(ok=False, error="banned", message="account banned"), 403
 
