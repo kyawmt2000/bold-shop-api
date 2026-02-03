@@ -99,21 +99,14 @@ def get_token_from_request():
 def require_login(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        tk = get_token_from_request()
-        if not tk:
+        token = get_token_from_request()
+        if not token:
             return jsonify(ok=False, error="unauthorized", message="missing token"), 401
 
         try:
-            payload = jwt.decode(
-                tk,
-                current_app.config["JWT_SECRET_KEY"],
-                algorithms=[current_app.config.get("JWT_ALG", "HS256")],
-                options={"require": ["exp"]}  # 可选：强制必须有 exp
-            )
-        except jwt.ExpiredSignatureError:
-            return jsonify(ok=False, error="unauthorized", message="token expired"), 401
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
         except Exception as e:
-            current_app.logger.warning("JWT decode failed: %s", e)  # ✅ 看日志
+            current_app.logger.warning("JWT decode failed: %s", e)
             return jsonify(ok=False, error="unauthorized", message="invalid token"), 401
 
         uid = payload.get("uid") or payload.get("user_id") or payload.get("id")
@@ -124,8 +117,14 @@ def require_login(fn):
         if not u:
             return jsonify(ok=False, error="unauthorized", message="user not found"), 401
 
-        if (u.status or "").lower() == "banned":
+        # ✅ 封号拦截（你后端用 status 字段）
+        if (getattr(u, "status", "") or "").lower() == "banned":
             return jsonify(ok=False, error="banned", message="account banned"), 403
+
+        request.current_user = u
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 request.current_user = u
 return fn(*args, **kwargs)
