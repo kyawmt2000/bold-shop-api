@@ -124,8 +124,11 @@ def require_login(fn):
         if not u:
             return jsonify(ok=False, error="unauthorized", message="user not found"), 401
 
-        request.current_user = u
-        return fn(*args, **kwargs)
+        if (u.status or "").lower() == "banned":
+            return jsonify(ok=False, error="banned", message="account banned"), 403
+
+request.current_user = u
+return fn(*args, **kwargs)
     return wrapper
 
 @app.route("/api/me", methods=["GET"])
@@ -1925,6 +1928,7 @@ def admin_users_list():
             out.append({
                 "email": r.get("email") or "",
                 "user_id": uid,
+                "status": r.get("status") or "active",
                 "nickname": r.get("nickname") or "",
                 "avatar_url": r.get("avatar_url") or "",
                 "gender": r.get("gender") or "",
@@ -1939,6 +1943,38 @@ def admin_users_list():
 
     except Exception as e:
         return jsonify({"message": "server_error", "detail": str(e)}), 500
+
+@app.post("/api/admin/users/<key>/ban")
+@require_login
+@require_admin
+def admin_ban_user(key):
+    data = request.get_json(silent=True) or {}
+    banned = bool(data.get("banned", False))
+    reason = (data.get("reason") or "").strip()
+
+    k = (key or "").strip()
+
+    # key 既支持 14位 user_id，也支持 email
+    u = None
+
+    # 1) 先按 email 查
+    if "@" in k:
+        u = User.query.filter(func.lower(User.email) == k.lower()).first()
+
+    # 2) 再按 14位 user_id 走 user_settings 反查 email
+    if not u and re.fullmatch(r"\d{14}", k):
+        s = UserSetting.query.filter(UserSetting.user_id == k).first()
+        if s and s.email:
+            u = User.query.filter(func.lower(User.email) == s.email.lower()).first()
+
+    if not u:
+        return jsonify(ok=False, error="user_not_found"), 404
+
+    u.status = "banned" if banned else "active"
+
+    db.session.commit()
+
+    return jsonify(ok=True, email=u.email, status=u.status)
 
 @app.post("/api/admin/fix_user_ids")
 @require_login
