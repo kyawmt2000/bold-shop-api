@@ -118,23 +118,43 @@ def require_login(fn):
 
         uid = payload.get("uid") or payload.get("user_id") or payload.get("id")
         if not uid:
-            return jsonify(ok=False, error="unauthorized", message="token missing uid"), 401
+            return jsonify(ok=False, error="unauthorized"), 401
 
         u = User.query.get(int(uid))
         if not u:
-            return jsonify(ok=False, error="unauthorized", message="user not found"), 401
-
-        # ✅ 如果你要封号：后端 status="banned"
-        if (getattr(u, "status", "") or "").lower() == "banned":
-            return jsonify(ok=False, error="banned", message="account banned"), 403
+            return jsonify(ok=False, error="unauthorized"), 401
 
         request.current_user = u
         return fn(*args, **kwargs)
 
     return wrapper
 
-request.current_user = u
-return fn(*args, **kwargs)
+def require_admin(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        u = getattr(request, "current_user", None)
+        if not u:
+            return jsonify(ok=False, error="unauthorized"), 401
+        if getattr(u, "role", "user") != "admin":
+            return jsonify(ok=False, error="forbidden"), 403
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+def require_api_key(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            ok = check_key(request)
+        except Exception as e:
+            current_app.logger.warning("check_key failed: %s", e)
+            ok = False
+
+        if not ok:
+            return jsonify({"ok": False, "error": "invalid_api_key"}), 401
+
+        return fn(*args, **kwargs)
+
     return wrapper
 
 @app.route("/api/me", methods=["GET"])
@@ -160,17 +180,6 @@ def api_me():
         }
     }
     return jsonify(data), 200
-
-def require_admin(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        u = getattr(request, "current_user", None)
-        if not u:
-            return jsonify(ok=False, error="unauthorized"), 401
-        if getattr(u, "role", "user") != "admin":
-            return jsonify(ok=False, error="forbidden"), 403
-        return fn(*args, **kwargs)
-    return wrapper
 
 @app.route("/api/admin/me")
 @require_admin
@@ -1943,6 +1952,7 @@ def admin_users_list():
                 "created_at": r["created_at"].isoformat() if r.get("created_at") else "",
                 "last_seen_at": r["last_seen_at"].isoformat() if r.get("last_seen_at") else "",
                 "settings_updated_at": r["settings_updated_at"].isoformat() if r.get("settings_updated_at") else "",
+                "is_banned": (r.status == "banned"),
             })
 
         return jsonify(out)
@@ -1953,34 +1963,31 @@ def admin_users_list():
 @app.post("/api/admin/users/<key>/ban")
 @require_login
 @require_admin
-def admin_ban_user(key):
+def admin_user_ban(key):
     data = request.get_json(silent=True) or {}
-    banned = bool(data.get("banned", False))
-    reason = (data.get("reason") or "").strip()
+    want_ban = bool(data.get("banned"))
 
-    k = (key or "").strip()
+    key = (key or "").strip()
 
-    # key 既支持 14位 user_id，也支持 email
-    u = None
-
-    # 1) 先按 email 查
-    if "@" in k:
-        u = User.query.filter(func.lower(User.email) == k.lower()).first()
-
-    # 2) 再按 14位 user_id 走 user_settings 反查 email
-    if not u and re.fullmatch(r"\d{14}", k):
-        s = UserSetting.query.filter(UserSetting.user_id == k).first()
+    # key 可能是 email，也可能是 14位 user_id（存在 user_settings.user_id）
+    email = ""
+    if "@" in key:
+        email = key.lower()
+    else:
+        s = UserSetting.query.filter(UserSetting.user_id == key).first()
         if s and s.email:
-            u = User.query.filter(func.lower(User.email) == s.email.lower()).first()
+            email = s.email.lower()
 
+    if not email:
+        return jsonify(ok=False, error="not_found", message="user not found"), 404
+
+    u = User.query.filter(db.func.lower(User.email) == email).first()
     if not u:
-        return jsonify(ok=False, error="user_not_found"), 404
+        return jsonify(ok=False, error="not_found", message="user not found"), 404
 
-    u.status = "banned" if banned else "active"
-
+    u.status = "banned" if want_ban else "active"
     db.session.commit()
-
-    return jsonify(ok=True, email=u.email, status=u.status)
+    return jsonify(ok=True, email=u.email, status=u.status), 200
 
 @app.post("/api/admin/fix_user_ids")
 @require_login
@@ -5567,20 +5574,6 @@ def is_blocked_pair(viewer_email: str, target_email: str) -> bool:
         )
     ).first()
     return bool(exists)
-
-def require_api_key(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        try:
-            ok = check_key(request)
-        except Exception as e:
-            current_app.logger.warning("check_key failed: %s", e)
-            ok = False
-
-        if not ok:
-            return jsonify({"ok": False, "error": "invalid_api_key"}), 401
-        return fn(*args, **kwargs)
-    return wrapper
 
 @app.get("/api/blocks")
 def get_blocks():
