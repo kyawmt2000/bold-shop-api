@@ -108,53 +108,24 @@ def require_login(fn):
                 tk,
                 current_app.config["JWT_SECRET_KEY"],
                 algorithms=[current_app.config.get("JWT_ALG", "HS256")],
-                options={"require": ["exp"]},
+                options={"require": ["exp"]}  # 可选：强制必须有 exp
             )
         except jwt.ExpiredSignatureError:
             return jsonify(ok=False, error="unauthorized", message="token expired"), 401
         except Exception as e:
-            current_app.logger.warning("JWT decode failed: %s", e)
+            current_app.logger.warning("JWT decode failed: %s", e)  # ✅ 看日志
             return jsonify(ok=False, error="unauthorized", message="invalid token"), 401
 
         uid = payload.get("uid") or payload.get("user_id") or payload.get("id")
         if not uid:
-            return jsonify(ok=False, error="unauthorized"), 401
+            return jsonify(ok=False, error="unauthorized", message="token missing uid"), 401
 
         u = User.query.get(int(uid))
         if not u:
-            return jsonify(ok=False, error="unauthorized"), 401
+            return jsonify(ok=False, error="unauthorized", message="user not found"), 401
 
         request.current_user = u
         return fn(*args, **kwargs)
-
-    return wrapper
-
-def require_admin(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        u = getattr(request, "current_user", None)
-        if not u:
-            return jsonify(ok=False, error="unauthorized"), 401
-        if getattr(u, "role", "user") != "admin":
-            return jsonify(ok=False, error="forbidden"), 403
-        return fn(*args, **kwargs)
-
-    return wrapper
-
-def require_api_key(fn):
-    @wraps(fn)
-    def wrapper(*args, **kwargs):
-        try:
-            ok = check_key(request)
-        except Exception as e:
-            current_app.logger.warning("check_key failed: %s", e)
-            ok = False
-
-        if not ok:
-            return jsonify({"ok": False, "error": "invalid_api_key"}), 401
-
-        return fn(*args, **kwargs)
-
     return wrapper
 
 @app.route("/api/me", methods=["GET"])
@@ -180,6 +151,17 @@ def api_me():
         }
     }
     return jsonify(data), 200
+
+def require_admin(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        u = getattr(request, "current_user", None)
+        if not u:
+            return jsonify(ok=False, error="unauthorized"), 401
+        if getattr(u, "role", "user") != "admin":
+            return jsonify(ok=False, error="forbidden"), 403
+        return fn(*args, **kwargs)
+    return wrapper
 
 @app.route("/api/admin/me")
 @require_admin
@@ -551,18 +533,6 @@ def verify_apple_id_token(id_token: str):
     )
     return payload
 
-def _is_banned_user(u):
-    if not u:
-        return False
-    if getattr(u, "is_banned", False):
-        return True
-    if getattr(u, "banned", False):
-        return True
-    st = str(getattr(u, "status", "")).lower()
-    if st in ("banned", "disabled", "blocked"):
-        return True
-    return False
-
 @app.route("/api/auth/apple", methods=["POST"])
 def auth_apple():
     data = request.get_json(force=True) or {}
@@ -647,9 +617,6 @@ def auth_apple():
 
         # ✅ 新用户也确保有 14位 user_id
         _, uid14 = ensure_settings_uid(u.email)
-
-        if _is_banned_user(u):
-            return jsonify(ok=False, error="banned", message="You have been banned"), 403
 
         token = issue_session_token(u.id, u.email, provider="apple")
         return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email, "user_id": uid14})
@@ -1958,7 +1925,6 @@ def admin_users_list():
             out.append({
                 "email": r.get("email") or "",
                 "user_id": uid,
-                "status": r.get("status") or "active",
                 "nickname": r.get("nickname") or "",
                 "avatar_url": r.get("avatar_url") or "",
                 "gender": r.get("gender") or "",
@@ -1967,42 +1933,12 @@ def admin_users_list():
                 "created_at": r["created_at"].isoformat() if r.get("created_at") else "",
                 "last_seen_at": r["last_seen_at"].isoformat() if r.get("last_seen_at") else "",
                 "settings_updated_at": r["settings_updated_at"].isoformat() if r.get("settings_updated_at") else "",
-                "is_banned": (r.status == "banned"),
             })
 
         return jsonify(out)
 
     except Exception as e:
         return jsonify({"message": "server_error", "detail": str(e)}), 500
-
-@app.post("/api/admin/users/<key>/ban")
-@require_login
-@require_admin
-def admin_user_ban(key):
-    data = request.get_json(silent=True) or {}
-    want_ban = bool(data.get("banned"))
-
-    key = (key or "").strip()
-
-    # key 可能是 email，也可能是 14位 user_id（存在 user_settings.user_id）
-    email = ""
-    if "@" in key:
-        email = key.lower()
-    else:
-        s = UserSetting.query.filter(UserSetting.user_id == key).first()
-        if s and s.email:
-            email = s.email.lower()
-
-    if not email:
-        return jsonify(ok=False, error="not_found", message="user not found"), 404
-
-    u = User.query.filter(db.func.lower(User.email) == email).first()
-    if not u:
-        return jsonify(ok=False, error="not_found", message="user not found"), 404
-
-    u.status = "banned" if want_ban else "active"
-    db.session.commit()
-    return jsonify(ok=True, email=u.email, status=u.status), 200
 
 @app.post("/api/admin/fix_user_ids")
 @require_login
@@ -5269,9 +5205,6 @@ def auth_google():
             u.last_seen_at = datetime.utcnow()
             db.session.commit()
 
-            if _is_banned_user(u):
-                return jsonify(ok=False, error="banned", message="You have been banned"), 403
-
             token = issue_session_token(u.id, u.email, provider="google")
             return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
 
@@ -5592,6 +5525,20 @@ def is_blocked_pair(viewer_email: str, target_email: str) -> bool:
         )
     ).first()
     return bool(exists)
+
+def require_api_key(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            ok = check_key(request)
+        except Exception as e:
+            current_app.logger.warning("check_key failed: %s", e)
+            ok = False
+
+        if not ok:
+            return jsonify({"ok": False, "error": "invalid_api_key"}), 401
+        return fn(*args, **kwargs)
+    return wrapper
 
 @app.get("/api/blocks")
 def get_blocks():
