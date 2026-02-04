@@ -551,6 +551,18 @@ def verify_apple_id_token(id_token: str):
     )
     return payload
 
+def _is_banned_user(u):
+    if not u:
+        return False
+    if getattr(u, "is_banned", False):
+        return True
+    if getattr(u, "banned", False):
+        return True
+    st = str(getattr(u, "status", "")).lower()
+    if st in ("banned", "disabled", "blocked"):
+        return True
+    return False
+
 @app.route("/api/auth/apple", methods=["POST"])
 def auth_apple():
     data = request.get_json(force=True) or {}
@@ -635,6 +647,9 @@ def auth_apple():
 
         # ✅ 新用户也确保有 14位 user_id
         _, uid14 = ensure_settings_uid(u.email)
+
+        if _is_banned_user(u):
+            return jsonify(ok=False, error="banned", message="You have been banned"), 403
 
         token = issue_session_token(u.id, u.email, provider="apple")
         return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email, "user_id": uid14})
@@ -5253,6 +5268,9 @@ def auth_google():
 
             u.last_seen_at = datetime.utcnow()
             db.session.commit()
+
+            if _is_banned_user(u):
+                return jsonify(ok=False, error="banned", message="You have been banned"), 403
 
             token = issue_session_token(u.id, u.email, provider="google")
             return jsonify(ok=True, token=token, user={"id": u.id, "email": u.email})
