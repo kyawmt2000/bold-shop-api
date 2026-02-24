@@ -2756,7 +2756,6 @@ def api_delete_outfit(oid):
         app.logger.exception("delete outfit %s failed: %s", oid, e)
         return jsonify({"ok": False, "error": "delete_failed", "detail": str(e)}), 500
 
-# ==================== New Feed API (Unified) ====================
 @app.get("/api/outfits/feed")
 @app.get("/api/outfit/feed2")
 def api_outfits_feed_list():
@@ -2774,22 +2773,44 @@ def api_outfits_feed_list():
         if hidden:
             q = q.filter(~Outfit.author_email.in_(hidden))
 
+    # ✅ cursor 分页参数：before_ts + before_id
+    before_ts = (request.args.get("before_ts") or "").strip()
+    before_id = (request.args.get("before_id") or "").strip()
+
+    if before_ts:
+        try:
+            ts = datetime.fromisoformat(before_ts.replace("Z", "+00:00"))
+            # 取 created_at 更早的；如果同一时间，则取 id 更小的
+            if before_id.isdigit():
+                bid = int(before_id)
+                q = q.filter(
+                    db.or_(
+                        Outfit.created_at < ts,
+                        db.and_(Outfit.created_at == ts, Outfit.id < bid)
+                    )
+                )
+            else:
+                q = q.filter(Outfit.created_at < ts)
+        except Exception:
+            pass
+
     try:
         rows = q.order_by(
             Outfit.is_pinned.desc(),
             Outfit.pinned_at.desc(),
-            Outfit.created_at.desc()
-        ).limit(limit).all()
-
+            Outfit.created_at.desc(),
+            Outfit.id.desc()
+        ).limit(limit + 1).all()   # ✅ 多取1条判断 has_more
     except Exception as e:
         app.logger.exception("feed pinned order failed: %s", e)
         try:
             db.session.rollback()
         except Exception:
             pass
+        rows = q.order_by(Outfit.created_at.desc(), Outfit.id.desc()).limit(limit + 1).all()
 
-        # ✅ fallback：不要再引用 is_pinned/pinned_at（否则会继续 500）
-        rows = q.order_by(Outfit.created_at.desc(), Outfit.id.desc()).limit(limit).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
 
     items = []
     for o in rows:
@@ -2798,7 +2819,17 @@ def api_outfits_feed_list():
         except Exception as e:
             app.logger.exception("outfit_to_dict failed id=%s: %s", getattr(o, "id", None), e)
 
-    return jsonify({"items": items, "has_more": False})
+    # ✅ next cursor：最后一条
+    next_cursor = None
+    if has_more and rows:
+        last = rows[-1]
+        ts = getattr(last, "created_at", None)
+        next_cursor = {
+            "before_ts": ts.isoformat() if ts else "",
+            "before_id": str(getattr(last, "id", "")),
+        }
+
+    return jsonify({"items": items, "has_more": has_more, "next": next_cursor})
 
 @app.get("/api/outfit/feed")
 def outfit_feed():
