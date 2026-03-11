@@ -1069,6 +1069,7 @@ class UserPoint(db.Model):
     payment_id = db.Column(db.Integer, nullable=False, unique=True, index=True)
 
     points = db.Column(db.Integer, nullable=False, default=0)
+    remaining_points = db.Column(db.Integer, nullable=False, default=0)
     rate = db.Column(db.Float, nullable=False, default=0.03)
 
     source = db.Column(db.String(50), nullable=False, default="payment_confirmed")
@@ -4589,17 +4590,41 @@ def api_payment_create():
         shipping_address = str(data.get("shipping_address") or "").strip()
         shipping_phone = str(data.get("shipping_phone") or "").strip()
 
+        use_points = bool(data.get("use_points"))
+        points_used = int(data.get("points_used") or 0)
+        if points_used < 0:
+            points_used = 0
+
+        # 先校验 points 是否够用
+        available_total = 0
+        if use_points and points_used > 0:
+            rows = (
+                UserPoint.query
+                .filter(
+                    UserPoint.buyer_email == buyer_email,
+                    UserPoint.status == "available"
+                )
+                .order_by(UserPoint.created_at.asc())
+                .all()
+            )
+            for row in rows:
+                available_total += int(row.remaining_points or 0)
+
+            if points_used > available_total:
+                return jsonify({
+                    "message": "insufficient_points",
+                    "available_points": available_total
+                }), 400
+
         po = PaymentOrder(
             order_no=gen_order_no(),
             user_id=str(data.get("user_id") or ""),
             buyer_email=buyer_email,
             buyer_nickname=str(data.get("nickname") or ""),
             buyer_phone=str(data.get("phone") or ""),
-
             shipping_name=shipping_name,
             shipping_address=shipping_address,
             shipping_phone=shipping_phone,
-
             items=items,
             subtotal=subtotal,
             tax=tax,
@@ -4609,6 +4634,40 @@ def api_payment_create():
             paid_at=datetime.utcnow(),
         )
         db.session.add(po)
+
+        # 扣减 points
+        if use_points and points_used > 0:
+            remain = points_used
+
+            rows = (
+                UserPoint.query
+                .filter(
+                    UserPoint.buyer_email == buyer_email,
+                    UserPoint.status == "available"
+                )
+                .order_by(UserPoint.created_at.asc())
+                .all()
+            )
+
+            for row in rows:
+                if remain <= 0:
+                    break
+
+                rp = int(row.remaining_points or 0)
+                if rp <= 0:
+                    row.status = "used"
+                    row.remaining_points = 0
+                    continue
+
+                if rp <= remain:
+                    row.remaining_points = 0
+                    row.status = "used"
+                    remain -= rp
+                else:
+                    row.remaining_points = rp - remain
+                    row.status = "available" if row.remaining_points > 0 else "used"
+                    remain = 0
+
         db.session.commit()
 
         return jsonify({
@@ -4618,6 +4677,7 @@ def api_payment_create():
             "status": po.status
         })
     except Exception as e:
+        db.session.rollback()
         return jsonify({"message": "server_error", "error": str(e)}), 500
 
 @app.get("/api/payments/<int:pid>")
@@ -4926,6 +4986,7 @@ def api_admin_payments_confirm(pid):
                 order_no=po.order_no,
                 payment_id=po.id,
                 points=reward_points,
+                remaining_points=reward_points,
                 rate=0.03,
                 source="payment_confirmed",
                 status="available"
@@ -6156,22 +6217,29 @@ def api_points_list():
         if not email:
             return jsonify({"ok": False, "message": "missing_email"}), 400
 
-        rows = (UserPoint.query
-                .filter(UserPoint.buyer_email == email)
-                .order_by(UserPoint.created_at.desc())
-                .all())
+        rows = (
+            UserPoint.query
+            .filter(UserPoint.buyer_email == email)
+            .order_by(UserPoint.created_at.desc())
+            .all()
+        )
 
         items = []
         total_points = 0
 
         for r in rows:
-            total_points += int(r.points or 0)
+            remain = int(r.remaining_points or 0)
+            if (r.status or "") == "available":
+                total_points += remain
+
             items.append({
                 "id": r.id,
                 "buyer_email": r.buyer_email,
                 "order_no": r.order_no,
                 "payment_id": r.payment_id,
-                "points": r.points,
+                "points": remain,
+                "original_points": int(r.points or 0),
+                "remaining_points": remain,
                 "rate": r.rate,
                 "source": r.source,
                 "status": r.status,
