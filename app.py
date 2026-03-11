@@ -1054,6 +1054,24 @@ class Report(db.Model):
     created_at   = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     updated_at   = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
+class UserPoint(db.Model):
+    __tablename__ = "user_points"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    buyer_email = db.Column(db.String(255), nullable=False, index=True)
+    order_no = db.Column(db.String(32), nullable=False, unique=True, index=True)
+    payment_id = db.Column(db.Integer, nullable=False, unique=True, index=True)
+
+    points = db.Column(db.Integer, nullable=False, default=0)
+    rate = db.Column(db.Float, nullable=False, default=0.03)
+
+    source = db.Column(db.String(50), nullable=False, default="payment_confirmed")
+    status = db.Column(db.String(20), nullable=False, default="available")
+
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
 # -------------------- 初始化：按方言兜底建表 --------------------
 with app.app_context():
     db.create_all()
@@ -4861,15 +4879,52 @@ def api_admin_payments_confirm(pid):
     try:
         po = PaymentOrder.query.get(pid)
         if not po:
-            return jsonify({"message":"not_found"}), 404
+            return jsonify({"ok": False, "message": "not_found"}), 404
+
+        # 已确认过的话，不重复发 points
+        existing_point = UserPoint.query.filter_by(payment_id=po.id).first()
+        if po.status == "confirmed":
+            return jsonify({
+                "ok": True,
+                "id": po.id,
+                "status": po.status,
+                "already_confirmed": True,
+                "points_sent": bool(existing_point),
+                "points": existing_point.points if existing_point else 0
+            })
 
         po.status = "confirmed"
         po.confirmed_at = datetime.utcnow()
+
+        # 按商品金额 subtotal 返 3%
+        reward_base = int(po.subtotal or 0)
+        reward_points = int(reward_base * 0.03)
+
+        point_row = None
+        if reward_points > 0 and not existing_point:
+            point_row = UserPoint(
+                buyer_email=(po.buyer_email or "").strip().lower(),
+                order_no=po.order_no,
+                payment_id=po.id,
+                points=reward_points,
+                rate=0.03,
+                source="payment_confirmed",
+                status="available"
+            )
+            db.session.add(point_row)
+
         db.session.commit()
 
-        return jsonify({"ok": True, "id": po.id, "status": po.status})
+        return jsonify({
+            "ok": True,
+            "id": po.id,
+            "status": po.status,
+            "points_sent": point_row is not None,
+            "points": reward_points
+        })
     except Exception as e:
-        return jsonify({"message":"server_error","error":str(e)}), 500
+        db.session.rollback()
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
 
 @app.post("/api/chats/thread")
 def api_chat_get_or_create_thread():
@@ -6074,3 +6129,40 @@ def api_admin_notify_review():
     db.session.add(n)
     db.session.commit()
     return jsonify(ok=True, id=n.id)
+
+@app.get("/api/points")
+def api_points_list():
+    try:
+        email = (request.args.get("email") or "").strip().lower()
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
+
+        rows = (UserPoint.query
+                .filter(UserPoint.buyer_email == email)
+                .order_by(UserPoint.created_at.desc())
+                .all())
+
+        items = []
+        total_points = 0
+
+        for r in rows:
+            total_points += int(r.points or 0)
+            items.append({
+                "id": r.id,
+                "buyer_email": r.buyer_email,
+                "order_no": r.order_no,
+                "payment_id": r.payment_id,
+                "points": r.points,
+                "rate": r.rate,
+                "source": r.source,
+                "status": r.status,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            })
+
+        return jsonify({
+            "ok": True,
+            "items": items,
+            "total_points": total_points
+        })
+    except Exception as e:
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
