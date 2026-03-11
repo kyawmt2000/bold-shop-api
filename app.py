@@ -984,6 +984,11 @@ class PaymentOrder(db.Model):
     buyer_nickname = db.Column(db.String(120), nullable=True)
     buyer_phone = db.Column(db.String(50), nullable=True)
 
+    # shipping info
+    shipping_name = db.Column(db.String(255), nullable=True)
+    shipping_address = db.Column(db.Text, nullable=True)
+    shipping_phone = db.Column(db.String(50), nullable=True)
+
     # items (包含分类/尺码/颜色/卖家信息等)
     items = db.Column(db.JSON, nullable=False, default=list)
 
@@ -4580,12 +4585,21 @@ def api_payment_create():
         shipping = int(data.get("shipping") or 0)
         total = int(data.get("total") or (subtotal + tax + shipping))
 
+        shipping_name = str(data.get("shipping_name") or "").strip()
+        shipping_address = str(data.get("shipping_address") or "").strip()
+        shipping_phone = str(data.get("shipping_phone") or "").strip()
+
         po = PaymentOrder(
             order_no=gen_order_no(),
             user_id=str(data.get("user_id") or ""),
             buyer_email=buyer_email,
             buyer_nickname=str(data.get("nickname") or ""),
             buyer_phone=str(data.get("phone") or ""),
+
+            shipping_name=shipping_name,
+            shipping_address=shipping_address,
+            shipping_phone=shipping_phone,
+
             items=items,
             subtotal=subtotal,
             tax=tax,
@@ -4648,6 +4662,11 @@ def api_admin_payments_list():
                 "buyer_email": r.buyer_email,
                 "buyer_nickname": r.buyer_nickname,
                 "buyer_phone": r.buyer_phone,
+
+                "shipping_name": r.shipping_name,
+                "shipping_address": r.shipping_address,
+                "shipping_phone": r.shipping_phone,
+
                 "items": r.items or [],
                 "items_preview": short_items(r.items),
                 "subtotal": r.subtotal,
