@@ -698,6 +698,7 @@ class Product(db.Model):
     desc    = db.Column(db.Text)
     sizes_json  = db.Column(db.Text)
     colors_json = db.Column(db.Text)
+    variant_stock_json = db.Column(db.Text)
     images_json = db.Column(db.Text)
     quantity = db.Column(db.Integer, nullable=False, default=0)
     status  = db.Column(db.String(20), default="active")
@@ -1554,6 +1555,7 @@ def _product_to_dict(p: Product, req=None):
         "desc": p.desc,
         "sizes": _safe_json_loads(getattr(p, "sizes_json", None), []),
         "colors": _safe_json_loads(getattr(p, "colors_json", None), []),
+        "variant_stock": _safe_json_loads(getattr(p, "variant_stock_json", None), []),
         "images": urls,
         "quantity": int(getattr(p, "quantity", 0) or 0),
         "variants": [_variant_to_dict(v) for v in variants],
@@ -2177,6 +2179,7 @@ def add_product():
 
     sizes = request.form.get("sizes", "[]")
     colors = request.form.get("colors", "[]")
+    variant_stock = request.form.get("variant_stock", "[]")
 
     # ✅ quantity
     quantity_raw = request.form.get("quantity", "0")
@@ -2201,6 +2204,7 @@ def add_product():
     try:
         sizes_list = json.loads(sizes)
         colors_list = json.loads(colors)
+        variant_stock_list = json.loads(variant_stock)
     except:
         return jsonify({"ok": False, "error": "Invalid JSON in sizes or colors"}), 400
 
@@ -2223,8 +2227,9 @@ def add_product():
         desc=desc,
         sizes_json=json.dumps(sizes_list),
         colors_json=json.dumps(colors_list),
+        variant_stock_json=json.dumps(variant_stock_list),
         images_json=json.dumps(image_urls),
-        quantity=quantity,          # ✅ 现在 quantity 已定义
+        quantity=quantity,        
         status="active"
     )
 
