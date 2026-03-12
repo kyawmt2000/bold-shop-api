@@ -2229,9 +2229,64 @@ def add_product():
     )
 
     db.session.add(p)
-    db.session.commit()
+db.session.commit()
 
-    return jsonify({"ok": True, "id": p.id, "images": image_urls, "quantity": p.quantity})
+# 自动生成 variants
+variant_items = []
+
+# 前端如果有直接传 variants，优先用它
+raw_variants = request.form.get("variants", "[]")
+try:
+    variant_items = json.loads(raw_variants or "[]")
+    if not isinstance(variant_items, list):
+        variant_items = []
+except Exception:
+    variant_items = []
+
+# 如果没传 variants，就用 colors + sizes 自动组合
+if not variant_items and colors_list and sizes_list:
+    for color in colors_list:
+        for size in sizes_list:
+            variant_items.append({
+                "color": color,
+                "size": size,
+                "price": price,
+                "stock": quantity
+            })
+
+for v in variant_items:
+    color = str(v.get("color") or "").strip()
+    size  = str(v.get("size") or "").strip()
+    if not color or not size:
+        continue
+
+    try:
+        vp = int(v.get("price") or price or 0)
+    except Exception:
+        vp = price
+
+    try:
+        vs = int(v.get("stock") or 0)
+    except Exception:
+        vs = 0
+
+    db.session.add(ProductVariant(
+        product_id=p.id,
+        color=color,
+        size=size,
+        price=vp,
+        stock=vs
+    ))
+
+db.session.commit()
+
+return jsonify({
+    "ok": True,
+    "id": p.id,
+    "images": image_urls,
+    "quantity": p.quantity,
+    "variants": [_variant_to_dict(v) for v in ProductVariant.query.filter_by(product_id=p.id).all()]
+})
 
 # ----------- 商品评价：读取 -----------
 @app.get("/api/products/<int:pid>/reviews")
