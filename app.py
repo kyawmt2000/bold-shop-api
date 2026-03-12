@@ -2323,6 +2323,73 @@ def get_qa(pid):
         current_app.logger.exception("GET qa failed")
         return jsonify({"ok": True, "items": []})
 
+@app.delete("/api/products/<int:pid>/reviews/<int:rid>")
+def delete_product_review(pid, rid):
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or data.get("user_email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "message": "missing_email"}), 400
+
+    try:
+        r = ProductReview.query.filter_by(id=rid, product_id=pid).first()
+        if not r:
+            return jsonify({"ok": False, "message": "review_not_found"}), 404
+
+        if (r.user_email or "").strip().lower() != email:
+            return jsonify({"ok": False, "message": "forbidden"}), 403
+
+        # 先删 replies
+        ProductReview.query.filter_by(product_id=pid, parent_id=rid).delete(synchronize_session=False)
+
+        # 再删主评论
+        db.session.delete(r)
+        db.session.commit()
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("delete_product_review failed")
+        return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
+
+@app.delete("/api/products/<int:pid>/qa/<int:qid>")
+def delete_product_qa(pid, qid):
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or data.get("user_email") or "").strip().lower()
+    if not email:
+        return jsonify({"ok": False, "message": "missing_email"}), 400
+
+    try:
+        q = ProductQA.query.filter_by(id=qid, product_id=pid).first()
+        if not q:
+            return jsonify({"ok": False, "message": "qa_not_found"}), 404
+
+        if (q.user_email or "").strip().lower() != email:
+            return jsonify({"ok": False, "message": "forbidden"}), 403
+
+        # 先删 replies 的 like
+        reply_ids = [
+            x.id for x in ProductQA.query.filter_by(product_id=pid, parent_id=qid).all()
+        ]
+        all_ids = [qid] + reply_ids
+
+        ProductQALike.query.filter(
+            ProductQALike.product_id == pid,
+            ProductQALike.qa_id.in_(all_ids)
+        ).delete(synchronize_session=False)
+
+        # 先删 replies
+        ProductQA.query.filter_by(product_id=pid, parent_id=qid).delete(synchronize_session=False)
+
+        # 再删主 discussion
+        db.session.delete(q)
+        db.session.commit()
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("delete_product_qa failed")
+        return jsonify({"ok": False, "message": "server_error", "detail": str(e)}), 500
+
 # ----------- 商品讨论：新增（含回答） -----------
 @app.post("/api/products/<int:pid>/qa")
 def add_qa(pid):
