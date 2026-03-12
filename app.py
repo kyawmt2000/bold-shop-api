@@ -5027,7 +5027,7 @@ def api_admin_payments_confirm(pid):
         if not po:
             return jsonify({"ok": False, "message": "not_found"}), 404
 
-        # 已确认过的话，不重复发 points
+        # 已确认过就不要重复扣库存 / 重复发 points
         existing_point = UserPoint.query.filter_by(payment_id=po.id).first()
         if po.status == "confirmed":
             return jsonify({
@@ -5039,10 +5039,38 @@ def api_admin_payments_confirm(pid):
                 "points": existing_point.points if existing_point else 0
             })
 
+        # 先扣库存
+        items = po.items or []
+        if isinstance(items, str):
+            try:
+                items = json.loads(items)
+            except Exception:
+                items = []
+
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+
+            product_id = it.get("product_id") or it.get("id")
+            qty = int(it.get("qty") or 1)
+
+            if not product_id or qty <= 0:
+                continue
+
+            product = Product.query.get(int(product_id))
+            if not product:
+                continue
+
+            current_qty = int(product.quantity or 0)
+
+            # 不让库存变成负数
+            product.quantity = max(0, current_qty - qty)
+
+        # 再改支付状态
         po.status = "confirmed"
         po.confirmed_at = datetime.utcnow()
 
-        # 按商品金额 subtotal 返 3%
+        # 发 points
         reward_base = int(po.subtotal or 0)
         reward_points = int(reward_base * 0.03)
 
@@ -5066,9 +5094,11 @@ def api_admin_payments_confirm(pid):
             "ok": True,
             "id": po.id,
             "status": po.status,
+            "stock_updated": True,
             "points_sent": point_row is not None,
             "points": reward_points
         })
+
     except Exception as e:
         db.session.rollback()
         return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
