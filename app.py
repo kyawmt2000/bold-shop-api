@@ -5027,84 +5027,79 @@ def db_check():
 
 @app.post("/api/admin/payments/<int:pid>/confirm")
 def api_admin_payments_confirm(pid):
-    key = request.headers.get("X-API-Key") or request.args.get("key")
-    if key != API_KEY:
-        return jsonify({"ok": False, "error": "forbidden"}), 403
+    try:
+        key = request.headers.get("X-API-Key") or request.args.get("key")
+        if key != API_KEY:
+            return jsonify({"ok": False, "error": "forbidden"}), 403
 
-    po = PaymentOrder.query.get(pid)
-    if not po:
-        return jsonify({"ok": False, "error": "not_found"}), 404
+        po = PaymentOrder.query.get(pid)
+        if not po:
+            return jsonify({"ok": False, "error": "not_found"}), 404
 
-    if po.status == "confirmed":
-        return jsonify({"ok": True})
+        if po.status == "confirmed":
+            return jsonify({"ok": True})
 
-    import json
+        import json
 
-    items = po.items_json or []
+        items = po.items_json or []
 
-    if isinstance(items, str):
-        try:
-            items = json.loads(items)
-        except Exception:
+        app.logger.warning(f"[confirm] raw items_json type={type(items)} value={items}")
+
+        if isinstance(items, str):
+            try:
+                items = json.loads(items)
+            except Exception as e:
+                app.logger.exception("[confirm] items_json loads failed")
+                items = []
+
+        if not isinstance(items, list):
+            app.logger.warning(f"[confirm] items is not list: {type(items)}")
             items = []
 
-    if not isinstance(items, list):
-        items = []
-
-    for it in items:
-        if not isinstance(it, dict):
-            continue
-
-        try:
-            product_id = it.get("product_id") or it.get("id")
-            qty = int(it.get("qty") or 1)
-            size = str(it.get("size") or "").strip()
-            color = str(it.get("color") or "").strip()
-            variant_id = it.get("variant_id")
-
-            if not product_id or qty <= 0:
-                continue
-
-            product = Product.query.get(int(product_id))
-            if product:
-                current_qty = int(product.quantity or 0)
-                product.quantity = max(0, current_qty - qty)
-
-            variant = None
-
-            # 只有你项目里真的有 ProductVariant model 时才保留这段
+        for it in items:
             try:
-                if variant_id:
-                    variant = ProductVariant.query.get(int(variant_id))
+                app.logger.warning(f"[confirm] item={it}")
 
-                if not variant and (size or color):
-                    variant = ProductVariant.query.filter_by(
-                        product_id=int(product_id),
-                        size=size,
-                        color=color
-                    ).first()
+                if not isinstance(it, dict):
+                    continue
+
+                product_id = it.get("product_id") or it.get("id")
+                qty = int(it.get("qty") or 1)
+                size = str(it.get("size") or "").strip()
+                color = str(it.get("color") or "").strip()
+                variant_id = it.get("variant_id")
+
+                app.logger.warning(
+                    f"[confirm] product_id={product_id}, qty={qty}, size={size}, color={color}, variant_id={variant_id}"
+                )
+
+                if not product_id or qty <= 0:
+                    continue
+
+                product = Product.query.get(int(product_id))
+                app.logger.warning(f"[confirm] product found = {bool(product)}")
+
+                if product:
+                    current_qty = int(product.quantity or 0)
+                    product.quantity = max(0, current_qty - qty)
+
+                # 先不要碰 ProductVariant
+                # 等主流程通了再加 variant 扣库存
+
             except Exception:
-                variant = None
+                app.logger.exception(f"[confirm] single item failed: {it}")
+                raise
 
-            if variant:
-                current_stock = int(variant.stock or 0)
-                variant.stock = max(0, current_stock - qty)
+        po.status = "confirmed"
+        po.confirmed_at = datetime.utcnow()
 
-        except Exception as e:
-            app.logger.exception(f"confirm payment item failed: {it}")
-            continue
-
-    po.status = "confirmed"
-    po.confirmed_at = datetime.utcnow()
-
-    try:
         db.session.commit()
+        return jsonify({"ok": True})
+
     except Exception as e:
         db.session.rollback()
-        app.logger.exception("confirm payment commit failed")
+        app.logger.exception("[confirm] payment confirm failed")
         return jsonify({"ok": False, "error": str(e)}), 500
-
-    return jsonify({"ok": True})
 
 @app.post("/api/chats/thread")
 def api_chat_get_or_create_thread():
