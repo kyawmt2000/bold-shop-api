@@ -1500,19 +1500,14 @@ def _variant_to_dict(v: ProductVariant):
     return {"id": v.id, "size": v.size, "color": v.color, "price": v.price, "stock": v.stock}
 
 def _product_to_dict(p: Product, req=None):
-    """把 Product 转成前端需要的结构，尽量防止旧数据导致 500"""
     r = req or request
 
-    # created_at
     try:
         created_at = p.created_at.isoformat() if getattr(p, "created_at", None) else None
     except Exception:
         created_at = None
 
-    # images
     urls = []
-    imgs = []  # ✅ 先定义，避免 images_json 有数据时 imgs 未定义
-
     imgs_from_product = _safe_json_loads(getattr(p, "images_json", None), [])
     if imgs_from_product:
         urls = [u for u in imgs_from_product if isinstance(u, str) and u]
@@ -1526,17 +1521,15 @@ def _product_to_dict(p: Product, req=None):
         for im in imgs:
             try:
                 if im.filename and isinstance(im.filename, str) and im.filename.startswith("http"):
-                    urls.append(im.filename)  # GCS URL
+                    urls.append(im.filename)
                 else:
-                    urls.append(f"{base}/api/products/{p.id}/image/{im.id}")  # 老接口
+                    urls.append(f"{base}/api/products/{p.id}/image/{im.id}")
             except Exception:
                 continue
 
-    # ✅ 去重（保持顺序）
     seen = set()
     urls = [u for u in urls if (u not in seen and not seen.add(u))]
 
-    # variants
     try:
         variants = ProductVariant.query.filter_by(product_id=p.id).all()
     except Exception:
@@ -2534,10 +2527,18 @@ def product_replace_variants(pid):
     data = request.get_json(force=True, silent=True) or {}
     email = (data.get("merchant_email") or "").strip().lower()
     variants = data.get("variants") or []
+
     row = Product.query.get_or_404(pid)
     if email != (row.merchant_email or "").lower():
         return jsonify({"message":"forbidden"}), 403
+
     ProductVariant.query.filter_by(product_id=pid).delete()
+
+    sizes = []
+    colors = []
+    normalized = []
+    total_qty = 0
+
     for i, v in enumerate(variants):
         try:
             size  = (v.get("size") or "").strip()
@@ -2547,7 +2548,33 @@ def product_replace_variants(pid):
         except Exception:
             db.session.rollback()
             return jsonify({"message": f"第 {i+1} 个变体参数不合法"}), 400
-        db.session.add(ProductVariant(product_id=pid, size=size, color=color, price=price, stock=stock))
+
+        db.session.add(ProductVariant(
+            product_id=pid,
+            size=size,
+            color=color,
+            price=price,
+            stock=stock
+        ))
+
+        if size and size not in sizes:
+            sizes.append(size)
+        if color and color not in colors:
+            colors.append(color)
+
+        normalized.append({
+            "size": size,
+            "color": color,
+            "price": price,
+            "qty": stock
+        })
+        total_qty += stock
+
+    row.sizes_json = json.dumps(sizes, ensure_ascii=False)
+    row.colors_json = json.dumps(colors, ensure_ascii=False)
+    row.variant_stock_json = json.dumps(normalized, ensure_ascii=False)
+    row.quantity = total_qty
+
     db.session.commit()
     return jsonify(_product_to_dict(row))
 
