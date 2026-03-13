@@ -5069,11 +5069,26 @@ def api_admin_payments_confirm(pid):
             if product:
                 current_qty = int(product.quantity or 0)
                 product.quantity = max(0, current_qty - qty)
-                
+
+            variant = None
+
             # 只有你项目里真的有 ProductVariant model 时才保留这段
             try:
+                if variant_id:
+                    variant = ProductVariant.query.get(int(variant_id))
+
+                if not variant and (size or color):
+                    variant = ProductVariant.query.filter_by(
+                        product_id=int(product_id),
+                        size=size,
+                        color=color
+                    ).first()
             except Exception:
                 variant = None
+
+            if variant:
+                current_stock = int(variant.stock or 0)
+                variant.stock = max(0, current_stock - qty)
 
         except Exception as e:
             app.logger.exception(f"confirm payment item failed: {it}")
