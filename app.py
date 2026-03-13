@@ -1542,6 +1542,35 @@ def _product_to_dict(p: Product, req=None):
     except Exception:
         variants = []
 
+        variant_list = [_variant_to_dict(v) for v in variants]
+
+    variant_stock_live = []
+    for v in variants:
+        variant_stock_live.append({
+            "id": getattr(v, "id", None),
+            "product_id": getattr(v, "product_id", p.id),
+            "size": (getattr(v, "size", "") or "").strip(),
+            "color": (getattr(v, "color", "") or "").strip(),
+            "price": int(getattr(v, "price", 0) or 0),
+            "qty": int(getattr(v, "stock", 0) or 0),
+            "stock": int(getattr(v, "stock", 0) or 0),
+        })
+
+    sizes_live = []
+    colors_live = []
+
+    for v in variants:
+        s = (getattr(v, "size", "") or "").strip()
+        c = (getattr(v, "color", "") or "").strip()
+
+        if s and s not in sizes_live:
+            sizes_live.append(s)
+        if c and c not in colors_live:
+            colors_live.append(c)
+
+    sizes_json = _safe_json_loads(getattr(p, "sizes_json", None), [])
+    colors_json = _safe_json_loads(getattr(p, "colors_json", None), [])
+
     return {
         "id": p.id,
         "created_at": created_at,
@@ -1553,12 +1582,12 @@ def _product_to_dict(p: Product, req=None):
         "gender": p.gender,
         "category": p.category,
         "desc": p.desc,
-        "sizes": _safe_json_loads(getattr(p, "sizes_json", None), []),
-        "colors": _safe_json_loads(getattr(p, "colors_json", None), []),
-        "variant_stock": _safe_json_loads(getattr(p, "variant_stock_json", None), []),
+        "sizes": sizes_live or sizes_json,
+        "colors": colors_live or colors_json,
+        "variant_stock": variant_stock_live,
         "images": urls,
         "quantity": int(getattr(p, "quantity", 0) or 0),
-        "variants": [_variant_to_dict(v) for v in variants],
+        "variants": variant_list,
         "status": getattr(p, "status", "active") or "active",
     }
 
