@@ -1542,7 +1542,7 @@ def _product_to_dict(p: Product, req=None):
     except Exception:
         variants = []
 
-        variant_list = [_variant_to_dict(v) for v in variants]
+    variant_list = [_variant_to_dict(v) for v in variants]
 
     variant_stock_live = []
     for v in variants:
