@@ -5027,95 +5027,59 @@ def db_check():
 
 @app.post("/api/admin/payments/<int:pid>/confirm")
 def api_admin_payments_confirm(pid):
-    try:
-        po = PaymentOrder.query.get(pid)
-        if not po:
-            return jsonify({"ok": False, "message": "not_found"}), 404
+    key = request.headers.get("X-API-Key") or request.args.get("key")
+    if key != API_KEY:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
 
-        # 已确认过就不要重复扣库存 / 重复发 points
-        existing_point = UserPoint.query.filter_by(payment_id=po.id).first()
-        if po.status == "confirmed":
-            return jsonify({
-                "ok": True,
-                "id": po.id,
-                "status": po.status,
-                "already_confirmed": True,
-                "points_sent": bool(existing_point),
-                "points": existing_point.points if existing_point else 0
-            })
+    po = PaymentOrder.query.get(pid)
+    if not po:
+        return jsonify({"ok": False, "error": "not_found"}), 404
 
-        # 先扣库存
-        items = po.items or []
-        if isinstance(items, str):
-            try:
-                items = json.loads(items)
-            except Exception:
-                items = []
+    if po.status == "confirmed":
+        return jsonify({"ok": True})
 
-        for it in items:
-            if not isinstance(it, dict):
-                continue
+    items = po.items_json or []
 
-            product_id = it.get("product_id") or it.get("id")
-            qty = int(it.get("qty") or 1)
-            size = str(it.get("size") or "").strip()
-            color = str(it.get("color") or "").strip()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
 
-            if not product_id or qty <= 0:
-                continue
+        product_id = it.get("product_id") or it.get("id")
+        qty = int(it.get("qty") or 1)
+        size = str(it.get("size") or "").strip()
+        color = str(it.get("color") or "").strip()
+        variant_id = it.get("variant_id")
 
-            product = Product.query.get(int(product_id))
-            if product:
-                current_qty = int(product.quantity or 0)
-                product.quantity = max(0, current_qty - qty)
+        if not product_id or qty <= 0:
+            continue
 
-            if size or color:
-                variant = ProductVariant.query.filter_by(
-                    product_id=int(product_id),
-                    size=size,
-                    color=color
-                ).first()
+        product = Product.query.get(int(product_id))
+        if product:
+            current_qty = int(product.quantity or 0)
+            product.quantity = max(0, current_qty - qty)
 
-                if variant:
-                    current_stock = int(variant.stock or 0)
-                    variant.stock = max(0, current_stock - qty)
+        variant = None
 
-        # 再改支付状态
-        po.status = "confirmed"
-        po.confirmed_at = datetime.utcnow()
+        if variant_id:
+            variant = ProductVariant.query.get(int(variant_id))
 
-        # 发 points
-        reward_base = int(po.subtotal or 0)
-        reward_points = int(reward_base * 0.03)
+        if not variant and (size or color):
+            variant = ProductVariant.query.filter_by(
+                product_id=int(product_id),
+                size=size,
+                color=color
+            ).first()
 
-        point_row = None
-        if reward_points > 0 and not existing_point:
-            point_row = UserPoint(
-                buyer_email=(po.buyer_email or "").strip().lower(),
-                order_no=po.order_no,
-                payment_id=po.id,
-                points=reward_points,
-                remaining_points=reward_points,
-                rate=0.03,
-                source="payment_confirmed",
-                status="available"
-            )
-            db.session.add(point_row)
+        if variant:
+            current_stock = int(variant.stock or 0)
+            variant.stock = max(0, current_stock - qty)
 
-        db.session.commit()
+    po.status = "confirmed"
+    po.confirmed_at = datetime.utcnow()
 
-        return jsonify({
-            "ok": True,
-            "id": po.id,
-            "status": po.status,
-            "stock_updated": True,
-            "points_sent": point_row is not None,
-            "points": reward_points
-        })
+    db.session.commit()
 
-    except Exception as e:
-        db.session.rollback()
-        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
+    return jsonify({"ok": True})
 
 @app.post("/api/chats/thread")
 def api_chat_get_or_create_thread():
