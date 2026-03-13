@@ -1078,6 +1078,37 @@ class UserPoint(db.Model):
 
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
+class UserSaved(db.Model):
+    __tablename__ = "user_saved"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_email = db.Column(db.String(255), nullable=False, index=True)
+    item_type = db.Column(db.String(20), nullable=False, index=True)   # outfit / product
+    item_id = db.Column(db.Integer, nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        db.UniqueConstraint("user_email", "item_type", "item_id", name="uq_user_saved"),
+    )
+
+
+class UserCoupon(db.Model):
+    __tablename__ = "user_coupons"
+
+    id = db.Column(db.Integer, primary_key=True)
+    user_email = db.Column(db.String(255), nullable=False, index=True)
+
+    title = db.Column(db.String(255), nullable=False)
+    off = db.Column(db.Integer, nullable=False, default=0)
+    label = db.Column(db.String(255), nullable=True)
+    min_amount = db.Column(db.Integer, nullable=False, default=0)
+    exp = db.Column(db.String(20), nullable=True)
+
+    status = db.Column(db.String(20), nullable=False, default="unused")   # unused / used / expired
+    coupon_type = db.Column(db.String(30), nullable=False, default="coupon")
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
 
 # -------------------- 初始化：按方言兜底建表 --------------------
 with app.app_context():
@@ -6425,4 +6456,195 @@ def api_points_list():
             "total_points": total_points
         })
     except Exception as e:
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
+
+@app.get("/api/orders")
+def api_orders_list():
+    try:
+        email = (request.args.get("email") or "").strip().lower()
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
+
+        rows = (
+            PaymentOrder.query
+            .filter(func.lower(PaymentOrder.buyer_email) == email)
+            .order_by(PaymentOrder.created_at.desc())
+            .all()
+        )
+
+        items = []
+        for r in rows:
+            items.append({
+                "id": r.id,
+                "order_no": r.order_no,
+                "method": "KBZ Pay",
+                "amount": int(r.total or 0),
+                "status": (r.status or "pending"),
+                "items": r.items or [],
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "pay_time": r.paid_at.isoformat() if r.paid_at else None,
+                "received_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
+            })
+
+        return jsonify({
+            "ok": True,
+            "items": items
+        })
+    except Exception as e:
+        current_app.logger.exception("GET /api/orders failed: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
+
+@app.post("/api/orders/<int:order_id>/receive")
+def api_order_receive(order_id):
+    try:
+        data = request.get_json(silent=True) or {}
+        email = (data.get("email") or "").strip().lower()
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
+
+        row = PaymentOrder.query.get(order_id)
+        if not row:
+            return jsonify({"ok": False, "message": "order_not_found"}), 404
+
+        if (row.buyer_email or "").strip().lower() != email:
+            return jsonify({"ok": False, "message": "forbidden"}), 403
+
+        row.status = "received"
+        row.confirmed_at = datetime.utcnow()
+        db.session.commit()
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("POST /api/orders/<id>/receive failed: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
+
+@app.get("/api/saved")
+def api_saved_list():
+    try:
+        email = (request.args.get("email") or "").strip().lower()
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
+
+        rows = (
+            UserSaved.query
+            .filter(func.lower(UserSaved.user_email) == email)
+            .order_by(UserSaved.created_at.desc())
+            .all()
+        )
+
+        return jsonify({
+            "ok": True,
+            "items": [
+                {
+                    "id": r.id,
+                    "item_type": r.item_type,
+                    "item_id": r.item_id,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in rows
+            ]
+        })
+    except Exception as e:
+        current_app.logger.exception("GET /api/saved failed: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
+
+@app.post("/api/saved")
+def api_saved_add():
+    try:
+        data = request.get_json(silent=True) or {}
+
+        email = (data.get("email") or "").strip().lower()
+        item_type = (data.get("item_type") or "").strip().lower()
+        item_id = int(data.get("item_id") or 0)
+
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
+        if item_type not in ("outfit", "product"):
+            return jsonify({"ok": False, "message": "bad_item_type"}), 400
+        if item_id <= 0:
+            return jsonify({"ok": False, "message": "bad_item_id"}), 400
+
+        row = UserSaved.query.filter(
+            func.lower(UserSaved.user_email) == email,
+            UserSaved.item_type == item_type,
+            UserSaved.item_id == item_id
+        ).first()
+
+        if not row:
+            row = UserSaved(
+                user_email=email,
+                item_type=item_type,
+                item_id=item_id
+            )
+            db.session.add(row)
+            db.session.commit()
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("POST /api/saved failed: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
+
+@app.delete("/api/saved")
+def api_saved_delete():
+    try:
+        data = request.get_json(silent=True) or {}
+
+        email = (data.get("email") or "").strip().lower()
+        item_type = (data.get("item_type") or "").strip().lower()
+        item_id = int(data.get("item_id") or 0)
+
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
+        if item_type not in ("outfit", "product"):
+            return jsonify({"ok": False, "message": "bad_item_type"}), 400
+        if item_id <= 0:
+            return jsonify({"ok": False, "message": "bad_item_id"}), 400
+
+        UserSaved.query.filter(
+            func.lower(UserSaved.user_email) == email,
+            UserSaved.item_type == item_type,
+            UserSaved.item_id == item_id
+        ).delete()
+
+        db.session.commit()
+        return jsonify({"ok": True})
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("DELETE /api/saved failed: %s", e)
+        return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
+
+@app.get("/api/coupons")
+def api_coupons_list():
+    try:
+        email = (request.args.get("email") or "").strip().lower()
+        if not email:
+            return jsonify({"ok": False, "message": "missing_email"}), 400
+
+        rows = (
+            UserCoupon.query
+            .filter(func.lower(UserCoupon.user_email) == email)
+            .order_by(UserCoupon.created_at.desc())
+            .all()
+        )
+
+        return jsonify({
+            "ok": True,
+            "items": [
+                {
+                    "id": r.id,
+                    "title": r.title,
+                    "off": int(r.off or 0),
+                    "label": r.label or "",
+                    "min": int(r.min_amount or 0),
+                    "exp": r.exp or "",
+                    "status": r.status or "unused",
+                    "type": r.coupon_type or "coupon",
+                }
+                for r in rows
+            ]
+        })
+    except Exception as e:
+        current_app.logger.exception("GET /api/coupons failed: %s", e)
         return jsonify({"ok": False, "message": "server_error", "error": str(e)}), 500
