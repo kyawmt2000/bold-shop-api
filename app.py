@@ -5038,46 +5038,71 @@ def api_admin_payments_confirm(pid):
     if po.status == "confirmed":
         return jsonify({"ok": True})
 
+    import json
+
     items = po.items_json or []
+
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except Exception:
+            items = []
+
+    if not isinstance(items, list):
+        items = []
 
     for it in items:
         if not isinstance(it, dict):
             continue
 
-        product_id = it.get("product_id") or it.get("id")
-        qty = int(it.get("qty") or 1)
-        size = str(it.get("size") or "").strip()
-        color = str(it.get("color") or "").strip()
-        variant_id = it.get("variant_id")
+        try:
+            product_id = it.get("product_id") or it.get("id")
+            qty = int(it.get("qty") or 1)
+            size = str(it.get("size") or "").strip()
+            color = str(it.get("color") or "").strip()
+            variant_id = it.get("variant_id")
 
-        if not product_id or qty <= 0:
+            if not product_id or qty <= 0:
+                continue
+
+            product = Product.query.get(int(product_id))
+            if product:
+                current_qty = int(product.quantity or 0)
+                product.quantity = max(0, current_qty - qty)
+
+            variant = None
+
+            # 只有你项目里真的有 ProductVariant model 时才保留这段
+            try:
+                if variant_id:
+                    variant = ProductVariant.query.get(int(variant_id))
+
+                if not variant and (size or color):
+                    variant = ProductVariant.query.filter_by(
+                        product_id=int(product_id),
+                        size=size,
+                        color=color
+                    ).first()
+            except Exception:
+                variant = None
+
+            if variant:
+                current_stock = int(variant.stock or 0)
+                variant.stock = max(0, current_stock - qty)
+
+        except Exception as e:
+            app.logger.exception(f"confirm payment item failed: {it}")
             continue
-
-        product = Product.query.get(int(product_id))
-        if product:
-            current_qty = int(product.quantity or 0)
-            product.quantity = max(0, current_qty - qty)
-
-        variant = None
-
-        if variant_id:
-            variant = ProductVariant.query.get(int(variant_id))
-
-        if not variant and (size or color):
-            variant = ProductVariant.query.filter_by(
-                product_id=int(product_id),
-                size=size,
-                color=color
-            ).first()
-
-        if variant:
-            current_stock = int(variant.stock or 0)
-            variant.stock = max(0, current_stock - qty)
 
     po.status = "confirmed"
     po.confirmed_at = datetime.utcnow()
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("confirm payment commit failed")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
     return jsonify({"ok": True})
 
