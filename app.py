@@ -2820,24 +2820,21 @@ def outfits_update(oid):
     if (row.author_email or "").strip().lower() != author_email:
         return jsonify({"message": "forbidden"}), 403
 
-    # 标题 / 正文
     if "title" in data:
         row.title = (data.get("title") or "").strip()
+
     if "desc" in data:
         row.desc = (data.get("desc") or "").strip()
 
-    # 可见性：public / following / private
     if "visibility" in data:
         vis = (data.get("visibility") or "public").strip().lower()
         if vis not in ("public", "following", "private"):
             vis = "public"
         row.visibility = vis
 
-    # 位置（可选）
     if "location" in data:
         row.location = (data.get("location") or "").strip() or None
 
-    # 风格 = tags（数组或字符串）
     if "tags" in data:
         tags = data.get("tags") or []
         if isinstance(tags, str):
@@ -2856,6 +2853,7 @@ def outfits_update(oid):
         if isinstance(tags, list):
             row.tags_json = json.dumps(tags, ensure_ascii=False)
 
+    # ✅ 加上这个：编辑时保存 related products
     if (
         "tag_products" in data
         or "related_products" in data
