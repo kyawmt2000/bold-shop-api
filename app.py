@@ -5058,18 +5058,27 @@ def api_admin_payments_confirm(pid):
 
             product_id = it.get("product_id") or it.get("id")
             qty = int(it.get("qty") or 1)
+            size = str(it.get("size") or "").strip()
+            color = str(it.get("color") or "").strip()
 
             if not product_id or qty <= 0:
                 continue
 
             product = Product.query.get(int(product_id))
-            if not product:
-                continue
+            if product:
+                current_qty = int(product.quantity or 0)
+                product.quantity = max(0, current_qty - qty)
 
-            current_qty = int(product.quantity or 0)
+            if size or color:
+                variant = ProductVariant.query.filter_by(
+                    product_id=int(product_id),
+                    size=size,
+                    color=color
+                ).first()
 
-            # 不让库存变成负数
-            product.quantity = max(0, current_qty - qty)
+                if variant:
+                    current_stock = int(variant.stock or 0)
+                    variant.stock = max(0, current_stock - qty)
 
         # 再改支付状态
         po.status = "confirmed"
