@@ -2856,6 +2856,39 @@ def outfits_update(oid):
         if isinstance(tags, list):
             row.tags_json = json.dumps(tags, ensure_ascii=False)
 
+    if (
+        "tag_products" in data
+        or "related_products" in data
+        or "product_ids" in data
+        or "tagged_products" in data
+    ):
+        raw_tp = (
+            data.get("tag_products")
+            or data.get("related_products")
+            or data.get("product_ids")
+            or data.get("tagged_products")
+            or []
+        )
+
+        tp_list = []
+
+        if isinstance(raw_tp, str):
+            try:
+                raw_tp = json.loads(raw_tp)
+            except Exception:
+                raw_tp = []
+
+        if isinstance(raw_tp, list):
+            for x in raw_tp:
+                try:
+                    pid = int(x if not isinstance(x, dict) else (x.get("id") or x.get("product_id")))
+                    if pid > 0:
+                        tp_list.append(pid)
+                except Exception:
+                    pass
+
+        row.tag_products_json = json.dumps(tp_list, ensure_ascii=False)
+
     db.session.commit()
     return jsonify(_outfit_to_dict(row))
 
