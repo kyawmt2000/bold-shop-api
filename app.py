@@ -1258,7 +1258,7 @@ with app.app_context():
     ensure_outfit_like_comment_tables_fix()
 
     try:
-        with db.engine.connect() as conn:
+        with db.engine.begin() as conn:
             dialect = conn.engine.dialect.name.lower()
             is_pg = 'postgres' in dialect
 
@@ -1279,7 +1279,7 @@ with app.app_context():
     
 
     try:
-        with db.engine.connect() as conn:
+        with db.engine.begin() as conn:
             dialect = conn.engine.dialect.name.lower()
             is_pg = 'postgres' in dialect
 
@@ -1868,13 +1868,8 @@ from sqlalchemy import text  # 你 app.py 最上面已经有的话就不用重�
 
 # ================== 旧库兼容：自动补充 outfits 缺的列 ==================
 def ensure_outfits_legacy_columns():
-    """
-    确保旧数据库里的 outfits 表有 favorites / shares 这些新列。
-    如果没有，就自动 ADD COLUMN（IF NOT EXISTS，不会重复报错）。
-    """
     try:
         with db.engine.begin() as conn:
-            # 点赞 / 收藏 / 分享计数列
             conn.execute(text("""
                 ALTER TABLE outfits
                 ADD COLUMN IF NOT EXISTS favorites integer DEFAULT 0
@@ -1883,12 +1878,9 @@ def ensure_outfits_legacy_columns():
                 ALTER TABLE outfits
                 ADD COLUMN IF NOT EXISTS shares integer DEFAULT 0
             """))
-
-            # 如果你担心 tags_json / images_json / videos_json 旧库也没有，
-            # 也可以一起兜底加上（TEXT 类型，默认 '[]'）：
             conn.execute(text("""
                 ALTER TABLE outfits
-                ADD COLUMN IF NOT EXISTS tags_json   text DEFAULT '[]'
+                ADD COLUMN IF NOT EXISTS tags_json text DEFAULT '[]'
             """))
             conn.execute(text("""
                 ALTER TABLE outfits
@@ -1898,11 +1890,17 @@ def ensure_outfits_legacy_columns():
                 ALTER TABLE outfits
                 ADD COLUMN IF NOT EXISTS videos_json text DEFAULT '[]'
             """))
-
-            # 如果旧表里没有 created_at，也可以一并加上（可选）：
             conn.execute(text("""
                 ALTER TABLE outfits
                 ADD COLUMN IF NOT EXISTS created_at timestamptz DEFAULT NOW()
+            """))
+            conn.execute(text("""
+                ALTER TABLE outfits
+                ADD COLUMN IF NOT EXISTS admin_hidden boolean DEFAULT FALSE
+            """))
+            conn.execute(text("""
+                ALTER TABLE outfits
+                ADD COLUMN IF NOT EXISTS admin_hidden_at timestamptz NULL
             """))
 
         app.logger.info("ensure_outfits_legacy_columns: OK")
