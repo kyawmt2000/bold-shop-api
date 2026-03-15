@@ -776,6 +776,9 @@ class Outfit(db.Model):
     
     is_pinned = db.Column(db.Boolean, default=False, nullable=False)
     pinned_at = db.Column(db.DateTime, nullable=True)
+
+    admin_hidden = db.Column(db.Boolean, default=False, nullable=False)
+    admin_hidden_at = db.Column(db.DateTime, nullable=True)
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
     author_email = db.Column(db.String(200), index=True, nullable=False)
@@ -1268,6 +1271,8 @@ with app.app_context():
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS favorites INTEGER DEFAULT 0"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS shares INTEGER DEFAULT 0"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS admin_hidden BOOLEAN DEFAULT FALSE"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS admin_hidden_at TIMESTAMP NULL"))
 
     except Exception as e:
         print("❌ outfits ALTER TABLE failed:", e)
@@ -1380,6 +1385,8 @@ with app.app_context():
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS videos_json TEXT"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS favorites INTEGER DEFAULT 0"))
             conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS shares INTEGER DEFAULT 0"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS admin_hidden BOOLEAN DEFAULT FALSE"))
+            conn.execute(db.text("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS admin_hidden_at TIMESTAMP NULL"))
             
     except Exception:
         # 兜底，不中断启动
@@ -1800,6 +1807,9 @@ def _outfit_to_dict(o: Outfit, req=None):
         "status": getattr(o, "status", "active") or "active",
         "location": getattr(o, "location", None),
         "visibility": getattr(o, "visibility", "public") or "public",
+        
+        "admin_hidden": bool(getattr(o, "admin_hidden", False)),
+        "admin_hidden_at": o.admin_hidden_at.isoformat() if getattr(o, "admin_hidden_at", None) else None,
     }
 
 
@@ -2978,7 +2988,9 @@ def api_outfits_feed_list():
     except Exception:
         limit = 50
 
-    q = Outfit.query.filter_by(status="active")
+    q = Outfit.query.filter_by(status="active").filter(
+        or_(Outfit.admin_hidden == False, Outfit.admin_hidden.is_(None))
+    )
 
     viewer = get_viewer_email_optional()
     if viewer:
@@ -3892,6 +3904,8 @@ def admin_migrate():
             run("ALTER TABLE products ADD COLUMN IF NOT EXISTS images_json TEXT")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS filename VARCHAR(255)")
             run("ALTER TABLE product_images ADD COLUMN IF NOT EXISTS mimetype VARCHAR(128)")
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS admin_hidden BOOLEAN DEFAULT FALSE")
+            run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS admin_hidden_at TIMESTAMP NULL")
 
             # outfits 补列
             run("ALTER TABLE outfits ADD COLUMN IF NOT EXISTS author_avatar VARCHAR(500)")
@@ -5436,6 +5450,32 @@ def admin_pin_outfit(outfit_id):
     return jsonify({"ok": True, "id": outfit_id, "is_pinned": outfit.is_pinned})
 
 from datetime import datetime
+
+@app.post("/api/admin/outfits/<int:outfit_id>/hidden")
+@require_login
+@require_admin
+def admin_set_outfit_hidden(outfit_id):
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key != API_KEY:
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    data = request.get_json(silent=True) or {}
+    hidden = bool(data.get("hidden"))
+
+    outfit = Outfit.query.get(outfit_id)
+    if not outfit:
+        return jsonify({"ok": False, "error": "not_found"}), 404
+
+    outfit.admin_hidden = hidden
+    outfit.admin_hidden_at = datetime.utcnow() if hidden else None
+
+    db.session.commit()
+    return jsonify({
+        "ok": True,
+        "id": outfit_id,
+        "admin_hidden": outfit.admin_hidden,
+        "admin_hidden_at": outfit.admin_hidden_at.isoformat() if outfit.admin_hidden_at else None
+    })
 
 @app.post("/api/admin/products/<int:pid>/pin")
 @require_login
