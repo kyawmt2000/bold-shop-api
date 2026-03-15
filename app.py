@@ -2986,10 +2986,14 @@ def api_outfits_feed_list():
     except Exception:
         limit = 50
 
-    q = Outfit.query.filter_by(status="active").filter(
-        db.or_(Outfit.admin_hidden == False, Outfit.admin_hidden.is_(None))
-    )
+    include_hidden = request.args.get("include_hidden", "").strip() in ("1", "true", "yes")
 
+    q = Outfit.query.filter_by(status="active")
+
+    if not include_hidden:
+        q = q.filter(
+            db.or_(Outfit.admin_hidden == False, Outfit.admin_hidden.is_(None))
+        )
     viewer = get_viewer_email_optional()
     if viewer:
         viewer_blocked, blocked_viewer = get_blocked_sets(viewer)
